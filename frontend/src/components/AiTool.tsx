@@ -22,7 +22,10 @@ const AiTool: React.FC = () => {
     setMessages((prev) => [
       ...prev,
       { role: 'user', text: t },
-      { role: 'ai', text: 'AI integration coming soon. This is a placeholder response.' },
+      {
+        role: 'ai',
+        text: 'AI integration coming soon. This is a placeholder response.',
+      },
     ]);
     setInput('');
   };
@@ -38,9 +41,7 @@ const AiTool: React.FC = () => {
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
-                m.role === 'user'
-                  ? 'bg-cyan-600 text-white'
-                  : 'bg-slate-100 text-slate-700'
+                m.role === 'user' ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-700'
               }`}
             >
               {m.role === 'ai' && (

@@ -12,10 +12,22 @@ type MarginRulerProps = {
   onChangeRight: (v: number) => void;
 };
 
-
-const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 100, step = 1, pageRef, paperWidthMm, onChangeLeft, onChangeRight }) => {
+const MarginRuler: React.FC<MarginRulerProps> = ({
+  left,
+  right,
+  min = 0,
+  max = 100,
+  step = 1,
+  pageRef,
+  paperWidthMm,
+  onChangeLeft,
+  onChangeRight,
+}) => {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [pageBox, setPageBox] = useState<{ left: number; width: number } | null>(null);
+  const [pageBox, setPageBox] = useState<{
+    left: number;
+    width: number;
+  } | null>(null);
   const [dragging, setDragging] = useState<'left' | 'right' | null>(null);
 
   const updatePageBox = () => {
@@ -26,12 +38,15 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
     }
     const containerRect = ref.current.getBoundingClientRect();
     const pageRect = pageRef.current.getBoundingClientRect();
-    setPageBox({ left: pageRect.left - containerRect.left, width: pageRect.width });
+    setPageBox({
+      left: pageRect.left - containerRect.left,
+      width: pageRect.width,
+    });
   };
 
   const percentToValue = useCallback(
     (p: number) => Math.round(((p / 100) * (max - min) + min) / step) * step,
-    [min, max, step]
+    [min, max, step],
   );
 
   useEffect(() => {
@@ -83,10 +98,16 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
     };
   }, [pageRef]);
 
-  const leftPx  = pageBox ? `${Math.round(pageBox.left + (left  / 100) * pageBox.width)}px` : `${left}%`;
-  const rightPx = pageBox ? `${Math.round(pageBox.left + (right / 100) * pageBox.width)}px` : `${right}%`;
-  const leftTooltip  = paperWidthMm ? `${(left  / 100 * paperWidthMm).toFixed(0)} mm` : `${left}%`;
-  const rightTooltip = paperWidthMm ? `${((100 - right) / 100 * paperWidthMm).toFixed(0)} mm` : `${right}%`;
+  const leftPx = pageBox
+    ? `${Math.round(pageBox.left + (left / 100) * pageBox.width)}px`
+    : `${left}%`;
+  const rightPx = pageBox
+    ? `${Math.round(pageBox.left + (right / 100) * pageBox.width)}px`
+    : `${right}%`;
+  const leftTooltip = paperWidthMm ? `${((left / 100) * paperWidthMm).toFixed(0)} mm` : `${left}%`;
+  const rightTooltip = paperWidthMm
+    ? `${(((100 - right) / 100) * paperWidthMm).toFixed(0)} mm`
+    : `${right}%`;
 
   return (
     <div className="w-full select-none" ref={ref}>
@@ -145,9 +166,17 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
                       <div
                         key={`mm2-${mm}`}
                         className="absolute top-0 h-full"
-                        style={{ left: mmToPx(mm), width: 0, overflow: 'visible', transform: 'translateX(-50%)' }}
+                        style={{
+                          left: mmToPx(mm),
+                          width: 0,
+                          overflow: 'visible',
+                          transform: 'translateX(-50%)',
+                        }}
                       >
-                        <div className="absolute left-0 -translate-x-1/2 w-px bg-slate-300" style={{ bottom: '18px', height: '6px' }} />
+                        <div
+                          className="absolute left-0 -translate-x-1/2 w-px bg-slate-300"
+                          style={{ bottom: '18px', height: '6px' }}
+                        />
                       </div>
                     ))}
 
@@ -158,11 +187,20 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
                         <div
                           key={`cm-${mm}`}
                           className="absolute top-0 h-full"
-                          style={{ left: mmToPx(mm), width: 0, overflow: 'visible', transform: 'translateX(-50%)' }}
+                          style={{
+                            left: mmToPx(mm),
+                            width: 0,
+                            overflow: 'visible',
+                            transform: 'translateX(-50%)',
+                          }}
                         >
                           <div
                             className="absolute left-0 -translate-x-1/2 w-px"
-                            style={{ bottom: '16px', height: isEven ? '12px' : '8px', backgroundColor: isEven ? '#0f172a' : '#6b7280' }}
+                            style={{
+                              bottom: '16px',
+                              height: isEven ? '12px' : '8px',
+                              backgroundColor: isEven ? '#0f172a' : '#6b7280',
+                            }}
                           />
                           <div className="absolute bottom-0 left-0 -translate-x-1/2 text-[9px] leading-none text-slate-500 font-medium">
                             {cm}
@@ -177,9 +215,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
           ) : (
             (() => {
               const pctToPx = (p: number) =>
-                pageBox
-                  ? `${Math.round(pageBox.left + (p / 100) * pageBox.width)}px`
-                  : `${p}%`;
+                pageBox ? `${Math.round(pageBox.left + (p / 100) * pageBox.width)}px` : `${p}%`;
 
               // fixed scale: ticks every 2% from 0 to 100
               const ticks2: { pos: number }[] = [];
@@ -189,14 +225,18 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
 
               return ticks2.map(({ pos }) => {
                 const is10 = pos % 10 === 0;
-                const is5  = pos % 5 === 0 && !is10;
+                const is5 = pos % 5 === 0 && !is10;
                 const height = is10 ? '12px' : is5 ? '8px' : '4px';
-                const color  = is10 ? '#0f172a' : is5 ? '#6b7280' : '#cbd5e1';
+                const color = is10 ? '#0f172a' : is5 ? '#6b7280' : '#cbd5e1';
                 return (
                   <div
                     key={`pct-${pos}`}
                     className="absolute top-0 h-full -translate-x-1/2"
-                    style={{ left: pctToPx(pos), width: 0, overflow: 'visible' }}
+                    style={{
+                      left: pctToPx(pos),
+                      width: 0,
+                      overflow: 'visible',
+                    }}
                   >
                     <div
                       className="absolute left-0 -translate-x-1/2 w-px"
@@ -221,16 +261,23 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
           style={{ left: leftPx }}
           className="absolute bottom-0 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
           onPointerDown={(e) => {
-            try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch {}
+            try {
+              (e.currentTarget as Element).setPointerCapture(e.pointerId);
+            } catch {}
             e.preventDefault();
             setDragging('left');
           }}
         >
-          <div className="absolute bottom-full mb-1.5 whitespace-nowrap rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150" style={{ opacity: dragging === 'left' ? 1 : undefined }}>
+          <div
+            className="absolute bottom-full mb-1.5 whitespace-nowrap rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150"
+            style={{ opacity: dragging === 'left' ? 1 : undefined }}
+          >
             {leftTooltip}
           </div>
           <div className="-mt-1">
-            <svg width="10" height="6" viewBox="0 0 12 8" fill="none"><path d="M0 0L12 0L6 8Z" fill="#0ea5e9" /></svg>
+            <svg width="10" height="6" viewBox="0 0 12 8" fill="none">
+              <path d="M0 0L12 0L6 8Z" fill="#0ea5e9" />
+            </svg>
           </div>
         </div>
 
@@ -241,16 +288,23 @@ const MarginRuler: React.FC<MarginRulerProps> = ({ left, right, min = 0, max = 1
           style={{ left: rightPx }}
           className="absolute bottom-0 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
           onPointerDown={(e) => {
-            try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch {}
+            try {
+              (e.currentTarget as Element).setPointerCapture(e.pointerId);
+            } catch {}
             e.preventDefault();
             setDragging('right');
           }}
         >
-          <div className="absolute bottom-full mb-1.5 whitespace-nowrap rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150" style={{ opacity: dragging === 'right' ? 1 : undefined }}>
+          <div
+            className="absolute bottom-full mb-1.5 whitespace-nowrap rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150"
+            style={{ opacity: dragging === 'right' ? 1 : undefined }}
+          >
             {rightTooltip}
           </div>
           <div className="-mt-1">
-            <svg width="10" height="6" viewBox="0 0 12 8" fill="none"><path d="M0 0L12 0L6 8Z" fill="#0ea5e9" /></svg>
+            <svg width="10" height="6" viewBox="0 0 12 8" fill="none">
+              <path d="M0 0L12 0L6 8Z" fill="#0ea5e9" />
+            </svg>
           </div>
         </div>
       </div>

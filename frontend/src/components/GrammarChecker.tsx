@@ -1,10 +1,20 @@
 import React, { useState } from 'react';
 
-type Issue = { id: number; type: 'grammar' | 'spelling' | 'style'; text: string; suggestion: string };
+type Issue = {
+  id: number;
+  type: 'grammar' | 'spelling' | 'style';
+  text: string;
+  suggestion: string;
+};
 
 const PLACEHOLDER_ISSUES: Issue[] = [
   { id: 1, type: 'spelling', text: 'recieve', suggestion: 'receive' },
-  { id: 2, type: 'grammar', text: 'He go to the store', suggestion: 'He goes to the store' },
+  {
+    id: 2,
+    type: 'grammar',
+    text: 'He go to the store',
+    suggestion: 'He goes to the store',
+  },
   { id: 3, type: 'style', text: 'very good', suggestion: 'excellent' },
 ];
 
@@ -81,7 +91,10 @@ const GrammarChecker: React.FC = () => {
             </ul>
           )}
           <button
-            onClick={() => { setState('idle'); setDismissed([]); }}
+            onClick={() => {
+              setState('idle');
+              setDismissed([]);
+            }}
             className="mt-3 shrink-0 text-xs text-cyan-600 hover:underline"
           >
             Check again

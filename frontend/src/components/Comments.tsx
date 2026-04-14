@@ -10,7 +10,9 @@ const Comments: React.FC<CommentsProps> = ({ comments = [], onAddComment }) => {
 
   return (
     <section className="mb-4 rounded-xl border border-slate-200/80 bg-white/80 p-4">
-      <h3 className="mb-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-600">Comments</h3>
+      <h3 className="mb-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-600">
+        Comments
+      </h3>
       <div className="rounded-lg border border-dashed border-slate-300/80 bg-slate-50 p-3 min-h-20">
         <div className="mb-3">
           <textarea
