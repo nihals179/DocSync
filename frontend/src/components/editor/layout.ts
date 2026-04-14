@@ -9,6 +9,11 @@ import {
   type RunFmt,
 } from './textModel';
 import { toRunFmt } from './runFmt';
+import {
+  isBlockImageParagraphWrap,
+  isFlowingImageWrap,
+  isTextInFrontWrap,
+} from './image/imageWrapMode';
 
 // ── Visual layout types ───────────────────────────────────────────────────────
 export type VisualSegment = { text: string; x: number; fmt: RunFmt };
@@ -76,6 +81,7 @@ export function layoutParagraph(
   /** Pixel offset for the first line (standard indent for bullets) */
   firstLineIndentPx = 0,
   imageSizes?: Map<string, { w: number; h: number }>,
+  breakFlow?: { leftEndPx: number; rightStartPx: number; remainingLines: number },
 ): VisualLine[] {
   type Tok = { w: string; space: boolean; fmt: RunFmt };
   const toks: Tok[] = [];
@@ -126,48 +132,105 @@ export function layoutParagraph(
 
   const lines: VisualLine[] = [];
   let curSegs: VisualSegment[] = [];
-  let curW = firstLineIndentPx;
-  let curMaxW = maxWidth;
+  let breakLeftEndPx = breakFlow?.leftEndPx ?? 0;
+  let breakRightStartPx = breakFlow?.rightStartPx ?? maxWidth;
+  let breakLinesRemaining = breakFlow?.remainingLines ?? 0;
+  let isFirstVisualLine = true;
+  let lineRegions: Array<{ start: number; end: number }> = [];
+  let regionIndex = 0;
+  let curW = 0;
+
+  const applyLineRegions = () => {
+    const baseStart = isFirstVisualLine ? firstLineIndentPx : hangIndentPx;
+    const nextRegions: Array<{ start: number; end: number }> = [];
+
+    if (breakLinesRemaining > 0) {
+      const leftStart = Math.max(0, baseStart);
+      const leftEnd = Math.min(maxWidth, Math.max(leftStart, breakLeftEndPx));
+      const rightStart = Math.min(maxWidth, Math.max(baseStart, breakRightStartPx));
+      const rightEnd = maxWidth;
+
+      if (leftEnd - leftStart >= 20) nextRegions.push({ start: leftStart, end: leftEnd });
+      if (rightEnd - rightStart >= 20) nextRegions.push({ start: rightStart, end: rightEnd });
+    }
+
+    if (nextRegions.length === 0) {
+      nextRegions.push({ start: Math.max(0, baseStart), end: maxWidth });
+    }
+
+    lineRegions = nextRegions;
+    regionIndex = 0;
+    curW = lineRegions[0].start;
+  };
+
+  applyLineRegions();
 
   const pushLine = () => {
     lines.push({ segs: curSegs, y: 0, startOffset: 0, endOffset: 0, lineH: 0 });
     curSegs = [];
-    curW = hangIndentPx;
-    curMaxW = maxWidth;
+    if (breakLinesRemaining > 0) breakLinesRemaining -= 1;
+    isFirstVisualLine = false;
+    applyLineRegions();
+  };
+
+  const getAlignedImageX = (align: ImageAlign, boxWidth: number) =>
+    align === 'right'
+      ? Math.max(0, maxWidth - boxWidth)
+      : align === 'center'
+        ? Math.max(0, (maxWidth - boxWidth) / 2)
+        : 0;
+
+  const placeBreakLineImage = (tokenText: string, fmt: RunFmt, imageMeta: ImageTokenMeta) => {
+    const dims = imageSizes?.get(imageMeta.src);
+    const metrics = getImageRenderMetrics(imageMeta, maxWidth, dims);
+    if (curSegs.length > 0) pushLine();
+    curSegs.push({ text: tokenText, x: getAlignedImageX(imageMeta.align, metrics.boxWidth), fmt });
+    // Break-line mode is block-only: text continues only above and below.
+    pushLine();
+  };
+
+  const placeWrapTextImage = (tokenText: string, fmt: RunFmt, imageMeta: ImageTokenMeta) => {
+    const dims = imageSizes?.get(imageMeta.src);
+    const metrics = getImageRenderMetrics(imageMeta, maxWidth, dims);
+    if (curSegs.length > 0) pushLine();
+    const imageX = getAlignedImageX(imageMeta.align, metrics.boxWidth);
+    curSegs.push({ text: tokenText, x: imageX, fmt });
+
+    // Wrap-text mode: text flows around image on both sides for image height.
+    const approxLineH = Math.max(12, fmt.fontSize * (fmt.lineSpacing ?? 1.5));
+    breakLinesRemaining = Math.max(1, Math.ceil(metrics.boxHeight / approxLineH));
+    breakLeftEndPx = Math.max(0, imageX - 8);
+    breakRightStartPx = Math.min(maxWidth, imageX + metrics.boxWidth + 8);
+    applyLineRegions();
+  };
+
+  const placeFrontTextImage = (tokenText: string, fmt: RunFmt, imageMeta: ImageTokenMeta) => {
+    // Keep image as a visual overlay and preserve normal text flow width.
+    const dims = imageSizes?.get(imageMeta.src);
+    const metrics = getImageRenderMetrics(imageMeta, maxWidth, dims);
+    const imageX = getAlignedImageX(imageMeta.align, metrics.boxWidth);
+    curSegs.push({ text: tokenText, x: imageX, fmt });
   };
 
   for (const tok of toks) {
     const imageMeta = parseImageToken(tok.w);
-    if (imageMeta && (imageMeta.wrap === 'inline' || imageMeta.wrap === 'break')) {
+    if (imageMeta && isTextInFrontWrap(imageMeta.wrap)) {
+      placeFrontTextImage(tok.w, tok.fmt, imageMeta);
+      continue;
+    }
+
+    if (imageMeta && isFlowingImageWrap(imageMeta.wrap)) {
       // Inline image: measure width
       const dims = imageSizes?.get(imageMeta.src);
       const metrics = getImageRenderMetrics(imageMeta, maxWidth, dims);
 
-      if (imageMeta.position === 'fixed') {
-        if (imageMeta.align === 'center') {
-          // Keep image and surrounding text on the same line so the whole
-          // inline group can be centered as one block.
-          if (curW + metrics.boxWidth > curMaxW && curSegs.length > 0) pushLine();
-          curSegs.push({ text: tok.w, x: curW, fmt: tok.fmt });
-          curW += metrics.boxWidth;
-          continue;
-        }
+      if (imageMeta.wrap === 'break') {
+        placeBreakLineImage(tok.w, tok.fmt, imageMeta);
+        continue;
+      }
 
-        if (imageMeta.align === 'right') {
-          // Keep image and surrounding text on the same line so the whole
-          // inline group can be right-aligned as one block.
-          if (curW + metrics.boxWidth > curMaxW && curSegs.length > 0) pushLine();
-          curSegs.push({ text: tok.w, x: curW, fmt: tok.fmt });
-          curW += metrics.boxWidth;
-          continue;
-        }
-
-        // Fixed left: text continues on the right side.
-        if (curSegs.length > 0) pushLine();
-        curSegs.push({ text: tok.w, x: 0, fmt: tok.fmt });
-        // Left-fixed image: text should start immediately to the right of the image.
-        curW = metrics.boxWidth;
-        curMaxW = maxWidth;
+      if (imageMeta.wrap === 'wrap') {
+        placeWrapTextImage(tok.w, tok.fmt, imageMeta);
         continue;
       }
 
@@ -186,27 +249,45 @@ export function layoutParagraph(
         continue;
       }
 
-      if (curW + metrics.boxWidth > curMaxW && curSegs.length > 0) pushLine();
+      let currentRegion = lineRegions[regionIndex];
+      while (
+        curW + metrics.boxWidth > currentRegion.end &&
+        curSegs.length > 0 &&
+        regionIndex < lineRegions.length - 1
+      ) {
+        regionIndex += 1;
+        currentRegion = lineRegions[regionIndex];
+        curW = currentRegion.start;
+      }
+      if (curW + metrics.boxWidth > currentRegion.end && curSegs.length > 0) {
+        pushLine();
+      }
       curSegs.push({ text: tok.w, x: curW, fmt: tok.fmt });
       curW += metrics.boxWidth;
     } else {
       // Normal text
       ctx.font = buildFont(tok.fmt.fontSize, tok.fmt.bold, tok.fmt.italic, tok.fmt.fontFamily);
       const w = ctx.measureText(tok.w).width;
-      if (curW + w > curMaxW && curSegs.length > 0) pushLine();
+      let currentRegion = lineRegions[regionIndex];
+      while (curW + w > currentRegion.end && curSegs.length > 0 && regionIndex < lineRegions.length - 1) {
+        regionIndex += 1;
+        currentRegion = lineRegions[regionIndex];
+        curW = currentRegion.start;
+      }
+      if (curW + w > currentRegion.end && curSegs.length > 0) pushLine();
       curSegs.push({ text: tok.w, x: curW, fmt: tok.fmt });
       curW += w;
     }
   }
   if (curSegs.length > 0 || lines.length === 0) pushLine();
 
-  // For fixed+center/right inline images, align the entire line content block
+  // For center/right inline images, align the entire line content block
   // (image + adjacent text), not just the image rectangle.
   for (const line of lines) {
     const fixedInlineAlign = line.segs.reduce<'center' | 'right' | null>((acc, seg) => {
       if (acc) return acc;
       const meta = parseImageToken(seg.text);
-      if (!meta || meta.position !== 'fixed' || (meta.wrap !== 'inline' && meta.wrap !== 'break')) {
+      if (!meta || meta.wrap !== 'inline') {
         return null;
       }
       if (meta.align === 'center' || meta.align === 'right') return meta.align;
@@ -219,7 +300,7 @@ export function layoutParagraph(
 
     for (const seg of line.segs) {
       const imageMeta = parseImageToken(seg.text);
-      if (imageMeta && (imageMeta.wrap === 'inline' || imageMeta.wrap === 'break')) {
+      if (imageMeta && imageMeta.wrap === 'inline') {
         const dims = imageSizes?.get(imageMeta.src);
         const metrics = getImageRenderMetrics(imageMeta, maxWidth, dims);
         minX = Math.min(minX, seg.x);
@@ -291,17 +372,19 @@ export function buildVisualLines(
   const vls: VisualLine[] = [];
   let flatOffset = 0;
   let yPos = padTop - scrollY;
+  let activeBreakFlow: {
+    leftEndPx: number;
+    rightStartPx: number;
+    remainingLines: number;
+  } | null = null;
 
   for (let pi = 0; pi < paragraphs.length; pi++) {
     const paraLen = paragraphs[pi].length;
     const pRuns = extractParaRuns(runs, flatOffset, paraLen, curFmt);
-    // Treat as block when image is fixed-position, or non-flow wrap.
+    // Treat as block for non-flow wrap.
     const imageMeta = parseImageToken(paragraphs[pi]);
-    if (
-      imageMeta &&
-      (imageMeta.position === 'fixed' ||
-        (imageMeta.wrap !== 'inline' && imageMeta.wrap !== 'break'))
-    ) {
+    if (imageMeta && isBlockImageParagraphWrap(imageMeta.wrap)) {
+      activeBreakFlow = null;
       const dims = imageSizes?.get(imageMeta.src);
       const metrics = getImageRenderMetrics(imageMeta, textAreaWidth, dims);
       const imageLineH = Math.ceil(metrics.boxHeight) + 16;
@@ -355,6 +438,7 @@ export function buildVisualLines(
         paraWrapWidth = Math.max(40, textAreaWidth - BULLET_RIGHT_PAD_PX);
       }
     }
+
     const lines = layoutParagraph(
       ctx,
       pRuns,
@@ -362,6 +446,7 @@ export function buildVisualLines(
       hangIndentPx,
       firstLineIndentPx,
       imageSizes,
+      activeBreakFlow ?? undefined,
     );
     // Add explicit visual gap after bullet prefix on the first visual line.
     if (bulletPrefixLen > 0 && lines.length > 0) {
@@ -379,7 +464,7 @@ export function buildVisualLines(
       let maxInlineImageHeight = 0;
       for (const sg of line.segs) {
         const inlineMeta = parseImageToken(sg.text);
-        if (!inlineMeta || (inlineMeta.wrap !== 'inline' && inlineMeta.wrap !== 'break')) continue;
+        if (!inlineMeta || inlineMeta.wrap !== 'inline') continue;
         const dims = imageSizes?.get(inlineMeta.src);
         const metrics = getImageRenderMetrics(inlineMeta, textAreaWidth, dims);
         maxInlineImageHeight = Math.max(maxInlineImageHeight, metrics.boxHeight);
@@ -398,6 +483,45 @@ export function buildVisualLines(
       charsSoFar += lineLen;
       yPos += line.lineH;
     }
+
+    let wrapPlacement: { meta: ImageTokenMeta; x: number } | null = null;
+    for (const line of lines) {
+      for (const seg of line.segs) {
+        const meta = parseImageToken(seg.text);
+        if (meta && meta.wrap === 'wrap') {
+          wrapPlacement = { meta, x: seg.x };
+          break;
+        }
+      }
+      if (wrapPlacement) break;
+    }
+
+    if (wrapPlacement) {
+      const dims = imageSizes?.get(wrapPlacement.meta.src);
+      const metrics = getImageRenderMetrics(wrapPlacement.meta, textAreaWidth, dims);
+      const refLineH = Math.max(1, lines[0]?.lineH ?? baseLineH);
+      const totalWrapLines = Math.max(1, Math.ceil(metrics.boxHeight / refLineH));
+      const remainingLines = Math.max(0, totalWrapLines - lines.length);
+      activeBreakFlow =
+        remainingLines > 0
+          ? {
+              leftEndPx: Math.max(0, wrapPlacement.x - 8),
+              rightStartPx: Math.min(textAreaWidth, wrapPlacement.x + metrics.boxWidth + 8),
+              remainingLines,
+            }
+          : null;
+    } else if (activeBreakFlow && activeBreakFlow.remainingLines > 0) {
+      const nextRemaining = Math.max(0, activeBreakFlow.remainingLines - lines.length);
+      activeBreakFlow = {
+        leftEndPx: activeBreakFlow.leftEndPx,
+        rightStartPx: activeBreakFlow.rightStartPx,
+        remainingLines: nextRemaining,
+      };
+      if (activeBreakFlow.remainingLines === 0) activeBreakFlow = null;
+    } else {
+      activeBreakFlow = null;
+    }
+
     flatOffset += paraLen + 1; // +1 for \n
   }
 

@@ -107,7 +107,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
   const leftTooltip = paperWidthMm ? `${((left / 100) * paperWidthMm).toFixed(0)} mm` : `${left}%`;
   const rightTooltip = paperWidthMm
     ? `${(((100 - right) / 100) * paperWidthMm).toFixed(0)} mm`
-    : `${right}%`;
+    : `${100 - right}%`;
 
   return (
     <div className="w-full select-none" ref={ref}>
@@ -202,7 +202,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
                               backgroundColor: isEven ? '#0f172a' : '#6b7280',
                             }}
                           />
-                          <div className="absolute bottom-0 left-0 -translate-x-1/2 text-[9px] leading-none text-slate-500 font-medium">
+                          <div className="absolute -bottom-1 left-0 -translate-x-1/2 text-[9px] leading-none text-slate-500 font-medium">
                             {cm}
                           </div>
                         </div>
@@ -217,17 +217,17 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
               const pctToPx = (p: number) =>
                 pageBox ? `${Math.round(pageBox.left + (p / 100) * pageBox.width)}px` : `${p}%`;
 
-              // fixed scale: ticks every 2% from 0 to 100
-              const ticks2: { pos: number }[] = [];
-              for (let p = 0; p <= 100; p += 2) {
-                ticks2.push({ pos: p });
-              }
+              // fixed scale: show small every 1%, medium every 5%, large every 10%
+              const tickSet = new Set<number>();
+              for (let p = 0; p <= 100; p += 1) tickSet.add(p);
+              for (let p = 0; p <= 100; p += 5) tickSet.add(p);
+              const ticks = Array.from(tickSet).sort((a, b) => a - b).map((pos) => ({ pos }));
 
-              return ticks2.map(({ pos }) => {
+              return ticks.map(({ pos }) => {
                 const is10 = pos % 10 === 0;
                 const is5 = pos % 5 === 0 && !is10;
-                const height = is10 ? '12px' : is5 ? '8px' : '4px';
-                const color = is10 ? '#0f172a' : is5 ? '#6b7280' : '#cbd5e1';
+                const height = is10 ? '12px' : is5 ? '8px' : '5px';
+                const color = is10 ? '#0f172a' : is5 ? '#6b7280' : 'rgba(148, 163, 184, 0.72)';
                 return (
                   <div
                     key={`pct-${pos}`}
@@ -243,7 +243,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
                       style={{ bottom: '16px', height, backgroundColor: color }}
                     />
                     {is10 && (
-                      <div className="absolute bottom-0 left-0 -translate-x-1/2 text-[9px] leading-none text-slate-500 font-medium">
+                      <div className="absolute -bottom-1 left-0 -translate-x-1/2 text-[9px] leading-none text-slate-500 font-medium">
                         {pos}%
                       </div>
                     )}
@@ -259,7 +259,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
           role="slider"
           aria-label="Left margin"
           style={{ left: leftPx }}
-          className="absolute bottom-0 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
+          className="absolute bottom-2 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
           onPointerDown={(e) => {
             try {
               (e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -274,9 +274,9 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
           >
             {leftTooltip}
           </div>
-          <div className="-mt-1">
+          <div>
             <svg width="10" height="6" viewBox="0 0 12 8" fill="none">
-              <path d="M0 0L12 0L6 8Z" fill="#0ea5e9" />
+              <path d="M0 8L12 8L6 0Z" fill="#0ea5e9" />
             </svg>
           </div>
         </div>
@@ -286,7 +286,7 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
           role="slider"
           aria-label="Right margin"
           style={{ left: rightPx }}
-          className="absolute bottom-0 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
+          className="absolute bottom-2 z-20 flex -translate-x-1/2 cursor-grab flex-col items-center group"
           onPointerDown={(e) => {
             try {
               (e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -301,9 +301,9 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
           >
             {rightTooltip}
           </div>
-          <div className="-mt-1">
+          <div>
             <svg width="10" height="6" viewBox="0 0 12 8" fill="none">
-              <path d="M0 0L12 0L6 8Z" fill="#0ea5e9" />
+              <path d="M0 8L12 8L6 0Z" fill="#0ea5e9" />
             </svg>
           </div>
         </div>

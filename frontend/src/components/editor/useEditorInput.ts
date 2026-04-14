@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import {
   applyFormatToRange,
   buildImageToken,
@@ -16,11 +16,11 @@ import {
   paraColToOffset,
   runsToText,
   toggleBulletRange,
-  type ImagePosition,
   type ImageWrap,
   type Run,
   type RunFmt,
 } from './textModel';
+import { resolveInsertOffsetForWrapMode } from './image/imageWrapMode';
 
 export interface InputRefs {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -47,6 +47,7 @@ export function useEditorInput(
   callbacks: InputCallbacks & { onImageInserted?: (offset: number) => void },
 ) {
   const { runsRef, cursorRef, selStartRef, curFmtRef, isDraggingRef, canvasRef } = refs;
+  const resetFmtOnNextCursorMoveRef = useRef(false);
   const {
     draw,
     resetBlink,
@@ -66,6 +67,15 @@ export function useEditorInput(
     return { selF, selT, hasSel };
   }, [cursorRef, selStartRef]);
 
+  const resolveInsertOffset = useCallback(
+    (offset: number) => {
+      const text = runsToText(runsRef.current);
+      const image = getImageTokenAtOffset(text, offset);
+      return resolveInsertOffsetForWrapMode(text, image, offset);
+    },
+    [runsRef],
+  );
+
   const applyOrSetFmt = useCallback(
     (patch: Partial<RunFmt>) => {
       const { selF, selT, hasSel } = getSelRange();
@@ -73,12 +83,19 @@ export function useEditorInput(
         pushHistory();
         runsRef.current = applyFormatToRange(runsRef.current, selF, selT, patch);
         emitChange();
+        // Selection formatting should reset to underlying text format after next cursor move.
+        resetFmtOnNextCursorMoveRef.current = true;
+        notifyFmt();
+        draw();
+        return;
       }
+      // No-selection formatting should persist for subsequent typing.
+      resetFmtOnNextCursorMoveRef.current = false;
       curFmtRef.current = { ...curFmtRef.current, ...patch };
       notifyFmt();
       draw();
     },
-    [getSelRange, runsRef, curFmtRef, emitChange, notifyFmt, draw, pushHistory],
+    [getSelRange, runsRef, curFmtRef, emitChange, notifyFmt, draw, pushHistory, cursorRef],
   );
 
   const handleKeyDown = useCallback(
@@ -101,14 +118,18 @@ export function useEditorInput(
         return next;
       };
 
-      const imageRangeEndingAt = (at: number) => {
+      const getImageRangeAtBoundary = (at: number, boundary: 'start' | 'end') => {
         const currentText = runsToText(runsRef.current);
-        return getImageTokenRanges(currentText).find((r) => r.end === at) ?? null;
+        const ranges = getImageTokenRanges(currentText);
+        return ranges.find((r) => (boundary === 'start' ? r.start === at : r.end === at)) ?? null;
+      };
+
+      const imageRangeEndingAt = (at: number) => {
+        return getImageRangeAtBoundary(at, 'end');
       };
 
       const imageRangeStartingAt = (at: number) => {
-        const currentText = runsToText(runsRef.current);
-        return getImageTokenRanges(currentText).find((r) => r.start === at) ?? null;
+        return getImageRangeAtBoundary(at, 'start');
       };
 
       const deleteSelection = () => {
@@ -465,13 +486,14 @@ export function useEditorInput(
         didNavigation = true;
       } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
         if (hasSel) deleteSelection();
-        // Inline typing should keep image tokens in flow so images move with text.
+        const insertAt = resolveInsertOffset(cursor);
+        // Inline typing keeps image tokens in document flow.
         runsRef.current = insertRun(
           runsRef.current,
-          cursor,
+          insertAt,
           makeRun(e.key, { ...curFmtRef.current }),
         );
-        cursor++;
+        cursor = insertAt + 1;
       } else {
         handled = false;
       }
@@ -495,6 +517,7 @@ export function useEditorInput(
     [
       getSelRange,
       applyOrSetFmt,
+      resolveInsertOffset,
       runsRef,
       cursorRef,
       selStartRef,
@@ -517,7 +540,7 @@ export function useEditorInput(
       pushHistory();
       const { selF, selT, hasSel } = getSelRange();
       if (hasSel) runsRef.current = deleteRange(runsRef.current, selF, selT);
-      const insertPos = selF;
+      const insertPos = resolveInsertOffset(selF);
       // Inline paste should preserve token flow so images move with surrounding edits.
       runsRef.current = insertRun(
         runsRef.current,
@@ -540,6 +563,7 @@ export function useEditorInput(
       resetBlink,
       draw,
       pushHistory,
+      resolveInsertOffset,
     ],
   );
 
@@ -550,7 +574,6 @@ export function useEditorInput(
         widthPct: number;
         rotationDeg: number;
         wrap: ImageWrap;
-        position: ImagePosition;
         alt: string;
       }>,
       withHistory = true,
@@ -566,7 +589,6 @@ export function useEditorInput(
         widthPct: patch.widthPct ?? image.widthPct,
         rotationDeg: patch.rotationDeg ?? image.rotationDeg,
         wrap: patch.wrap ?? image.wrap,
-        position: patch.position ?? image.position,
         alt: patch.alt ?? image.alt,
       });
       const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
@@ -602,6 +624,16 @@ export function useEditorInput(
       isDraggingRef.current = true;
       cursorRef.current = snappedOffset;
       selStartRef.current = snappedOffset;
+      if (resetFmtOnNextCursorMoveRef.current) {
+        const nextText = runsToText(runsRef.current);
+        if (nextText.length > 0) {
+          curFmtRef.current = getFormatAt(
+            runsRef.current,
+            Math.min(snappedOffset, nextText.length - 1),
+          );
+        }
+        resetFmtOnNextCursorMoveRef.current = false;
+      }
       notifyFmt();
       resetBlink();
       draw();
@@ -990,13 +1022,15 @@ export function useEditorInput(
       pushHistory();
       if (hasSel) runsRef.current = deleteRange(runsRef.current, selF, selT);
 
+      const insertPos = resolveInsertOffset(selF);
+
       const linkFmt: RunFmt = {
         ...curFmtRef.current,
         color: '#2563eb',
         underline: true,
       };
-      runsRef.current = insertRun(runsRef.current, selF, makeRun(normalized, linkFmt));
-      cursorRef.current = selF + normalized.length;
+      runsRef.current = insertRun(runsRef.current, insertPos, makeRun(normalized, linkFmt));
+      cursorRef.current = insertPos + normalized.length;
       selStartRef.current = null;
       emitChange();
       notifyFmt();
@@ -1014,6 +1048,7 @@ export function useEditorInput(
       notifyFmt,
       resetBlink,
       draw,
+      resolveInsertOffset,
     ],
   );
 
@@ -1027,25 +1062,30 @@ export function useEditorInput(
         widthPct: 10, // Smaller default width for inline images
         align: 'left',
         rotationDeg: 0,
-        wrap: 'inline', // Use inline mode with the same left alignment behavior as break
+        wrap: 'break', // Default new images to break text mode
         alt: '',
-        position: 'move',
       });
 
       pushHistory();
       if (hasSel) runsRef.current = deleteRange(runsRef.current, selF, selT);
 
-      let insertPos = selF;
-      // Insert image token exactly at cursor, inline with surrounding text.
+      let insertPos = resolveInsertOffset(selF);
+      const textAfterSelection = runsToText(runsRef.current);
+      const needsLeadingNewline = insertPos > 0 && textAfterSelection[insertPos - 1] !== '\n';
+      const needsTrailingNewline =
+        insertPos >= textAfterSelection.length || textAfterSelection[insertPos] !== '\n';
+      const insertedText = `${needsLeadingNewline ? '\n' : ''}${token}${needsTrailingNewline ? '\n' : ''}`;
+
+      // Keep break images on their own line even when inserted between existing text.
       runsRef.current = insertRun(
         runsRef.current,
         insertPos,
-        makeRun(token, { ...curFmtRef.current }),
+        makeRun(insertedText, { ...curFmtRef.current }),
       );
-      const imageStart = insertPos;
-      insertPos += token.length;
+      const imageStart = insertPos + (needsLeadingNewline ? 1 : 0);
+      insertPos = imageStart + token.length + 1;
 
-      cursorRef.current = imageStart;
+      cursorRef.current = insertPos;
       selStartRef.current = null;
       emitChange();
       notifyFmt();
@@ -1069,6 +1109,7 @@ export function useEditorInput(
       resetBlink,
       draw,
       callbacks,
+      resolveInsertOffset,
     ],
   );
 
@@ -1076,8 +1117,8 @@ export function useEditorInput(
     (align: 'left' | 'center' | 'right') => {
       const text = runsToText(runsRef.current);
       const image = getImageTokenAtOffset(text, cursorRef.current);
-      if (image?.position === 'fixed' && (image.wrap === 'front' || image.wrap === 'wrap')) {
-        patchImageAtCursor({ align, wrap: 'break' }, true);
+      if (image?.wrap === 'break') {
+        patchImageAtCursor({ align }, true);
         return;
       }
       patchImageAtCursor({ align }, true);
@@ -1101,24 +1142,244 @@ export function useEditorInput(
 
   const setImageWrap = useCallback(
     (wrap: ImageWrap) => {
+      const text = runsToText(runsRef.current);
+      const image = getImageTokenAtOffset(text, cursorRef.current);
+
+      if (wrap === 'break' && image?.wrap === 'front') {
+        const nextAlign = image.align === 'right' || image.align === 'center' ? image.align : 'left';
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: nextAlign,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] !== '\n') {
+          runsRef.current = insertRun(
+            runsRef.current,
+            trailingOffset,
+            makeRun('\n', { ...fmt }),
+          );
+        }
+
+        cursorRef.current = atStart ? image.start : image.start + nextToken.length + 1;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'break' && image?.wrap === 'wrap') {
+        const nextAlign = image.align === 'right' || image.align === 'center' ? image.align : 'left';
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: nextAlign,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] !== '\n') {
+          runsRef.current = insertRun(
+            runsRef.current,
+            trailingOffset,
+            makeRun('\n', { ...fmt }),
+          );
+        }
+
+        // Keep start-anchor behavior; otherwise land below the image line in break mode.
+        cursorRef.current = atStart ? image.start : image.start + nextToken.length + 1;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'break' && image?.wrap === 'inline') {
+        const nextAlign = image.align === 'right' || image.align === 'center' ? image.align : 'left';
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: nextAlign,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] !== '\n') {
+          runsRef.current = insertRun(
+            runsRef.current,
+            trailingOffset,
+            makeRun('\n', { ...fmt }),
+          );
+        }
+
+        // Keep start-anchor behavior, otherwise land below image in break-line mode.
+        cursorRef.current = atStart ? image.start : image.start + nextToken.length + 1;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'break') {
+        const nextAlign = image?.align === 'right' || image?.align === 'center' ? image.align : 'left';
+        patchImageAtCursor({ wrap, align: nextAlign }, true);
+        return;
+      }
+
+      if (wrap === 'inline' && image?.wrap === 'break') {
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: image.align,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        let nextCursor = atStart ? image.start : image.start + nextToken.length;
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] === '\n') {
+          runsRef.current = deleteRange(runsRef.current, trailingOffset, trailingOffset + 1);
+          if (nextCursor > trailingOffset) nextCursor -= 1;
+        }
+
+        cursorRef.current = nextCursor;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'front' && image?.wrap === 'break') {
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: image.align,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        let nextCursor = atStart ? image.start : image.start + nextToken.length;
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] === '\n') {
+          runsRef.current = deleteRange(runsRef.current, trailingOffset, trailingOffset + 1);
+          if (nextCursor > trailingOffset) nextCursor -= 1;
+        }
+
+        cursorRef.current = nextCursor;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'wrap' && image?.wrap === 'break') {
+        const nextAlign = image.align === 'right' || image.align === 'left' ? image.align : 'left';
+        const nextToken = buildImageToken({
+          src: image.src,
+          align: nextAlign,
+          widthPct: image.widthPct,
+          rotationDeg: image.rotationDeg,
+          wrap,
+          alt: image.alt,
+        });
+        const fmt = getFormatAt(runsRef.current, Math.max(0, image.start));
+        const atStart = cursorRef.current <= image.start;
+
+        pushHistory();
+        runsRef.current = deleteRange(runsRef.current, image.start, image.end);
+        runsRef.current = insertRun(runsRef.current, image.start, makeRun(nextToken, { ...fmt }));
+
+        let nextCursor = atStart ? image.start : image.start + nextToken.length;
+        const trailingOffset = image.start + nextToken.length;
+        const nextText = runsToText(runsRef.current);
+        if (nextText[trailingOffset] === '\n') {
+          runsRef.current = deleteRange(runsRef.current, trailingOffset, trailingOffset + 1);
+          if (nextCursor > trailingOffset) nextCursor -= 1;
+        }
+
+        cursorRef.current = nextCursor;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        resetBlink();
+        draw();
+        return;
+      }
+
+      if (wrap === 'wrap') {
+        const nextAlign = image?.align === 'right' || image?.align === 'left' ? image.align : 'left';
+        patchImageAtCursor({ wrap, align: nextAlign }, true);
+        return;
+      }
+
       patchImageAtCursor({ wrap }, true);
     },
-    [patchImageAtCursor],
-  );
-
-  const setImagePosition = useCallback(
-    (position: ImagePosition) => {
-      if (position === 'fixed') {
-        const text = runsToText(runsRef.current);
-        const image = getImageTokenAtOffset(text, cursorRef.current);
-        if (image && (image.wrap === 'front' || image.wrap === 'wrap')) {
-          patchImageAtCursor({ position, wrap: 'break' }, true);
-          return;
-        }
-      }
-      patchImageAtCursor({ position }, true);
-    },
-    [patchImageAtCursor, runsRef, cursorRef],
+    [
+      patchImageAtCursor,
+      runsRef,
+      cursorRef,
+      pushHistory,
+      selStartRef,
+      emitChange,
+      notifyFmt,
+      resetBlink,
+      draw,
+    ],
   );
 
   const setImageAltText = useCallback(
@@ -1132,12 +1393,22 @@ export function useEditorInput(
     (offset: number) => {
       cursorRef.current = Math.max(0, offset);
       selStartRef.current = null;
+      if (resetFmtOnNextCursorMoveRef.current) {
+        const text = runsToText(runsRef.current);
+        if (text.length > 0) {
+          curFmtRef.current = getFormatAt(
+            runsRef.current,
+            Math.min(cursorRef.current, text.length - 1),
+          );
+        }
+        resetFmtOnNextCursorMoveRef.current = false;
+      }
       notifyFmt();
       resetBlink();
       draw();
       canvasRef.current?.focus();
     },
-    [cursorRef, selStartRef, notifyFmt, resetBlink, draw, canvasRef],
+    [cursorRef, selStartRef, runsRef, curFmtRef, notifyFmt, resetBlink, draw, canvasRef],
   );
 
   return {
@@ -1163,7 +1434,6 @@ export function useEditorInput(
     setImageWidthPct,
     setImageRotationDeg,
     setImageWrap,
-    setImagePosition,
     setImageAltText,
     setCursorOffset,
   };

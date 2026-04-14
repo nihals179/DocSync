@@ -7,7 +7,6 @@ export function imageMetaKey(meta: ImageTokenMeta): string {
     meta.align,
     meta.rotationDeg,
     meta.wrap,
-    meta.position,
     meta.alt,
   ]);
 }

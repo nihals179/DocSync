@@ -3,7 +3,7 @@ import type { CursorFormat, RichEditorHandle } from '../editor';
 import { ToolbarDivider } from './ToolbarDivider';
 import { PageSizeSelector } from './PageSizeSelector';
 import { HistoryControls } from './HistoryControls';
-import { FontControls } from './FontControls';
+import { FontControls, type TextTypeOption } from './FontControls';
 import { TextFormatting } from './TextFormatting';
 import { ToolbarButton } from './ToolbarButton';
 
@@ -29,6 +29,22 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onToggleFullscreen,
   cursorFormat,
 }) => {
+  const getTextTypeFromFormat = (fontSizeValue: number, isBoldValue: boolean): TextTypeOption => {
+    if (fontSizeValue >= 38) return 'title';
+    if (fontSizeValue >= 30) return 'heading1';
+    if (fontSizeValue >= 24) return 'heading2';
+    if (fontSizeValue >= 20) return 'heading3';
+    return isBoldValue && fontSizeValue >= 18 ? 'heading3' : 'paragraph';
+  };
+
+  const TEXT_TYPE_PRESETS: Record<TextTypeOption, { fontSize: number; bold: boolean }> = {
+    title: { fontSize: 38, bold: true },
+    heading1: { fontSize: 32, bold: true },
+    heading2: { fontSize: 26, bold: true },
+    heading3: { fontSize: 22, bold: true },
+    paragraph: { fontSize: 16, bold: false },
+  };
+
   // Local display state — mirrored from cursorFormat prop
   const [bold, setBold] = useState(cursorFormat?.bold ?? false);
   const [italic, setItalic] = useState(cursorFormat?.italic ?? false);
@@ -45,6 +61,9 @@ const Toolbar: React.FC<ToolbarProps> = ({
     cursorFormat?.hasSpaceAfterLine ?? false,
   );
   const [selectedFont, setSelectedFont] = useState(cursorFormat?.fontFamily ?? 'Raleway');
+  const [selectedTextType, setSelectedTextType] = useState<TextTypeOption>(
+    getTextTypeFromFormat(cursorFormat?.fontSize ?? 16, cursorFormat?.bold ?? false),
+  );
   const [textColor, setTextColor] = useState(cursorFormat?.color ?? '#1e293b');
   const [fontSize, setFontSize] = useState(cursorFormat?.fontSize ?? 16);
   const [lineSpacing, setLineSpacing] = useState(cursorFormat?.lineSpacing ?? 1.5);
@@ -61,6 +80,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
     setHasSpaceBeforeLine(cursorFormat.hasSpaceBeforeLine ?? false);
     setHasSpaceAfterLine(cursorFormat.hasSpaceAfterLine ?? false);
     setSelectedFont(cursorFormat.fontFamily);
+    setSelectedTextType(getTextTypeFromFormat(cursorFormat.fontSize, cursorFormat.bold));
     setTextColor(cursorFormat.color);
     setFontSize(cursorFormat.fontSize);
     setLineSpacing(cursorFormat.lineSpacing ?? 1.5);
@@ -73,6 +93,21 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const handleFontChange = (fontName: string) => {
     setSelectedFont(fontName);
     editorRef.current?.setFontFamily(fontName);
+    refocus();
+  };
+
+  const handleTextTypeChange = (textType: TextTypeOption) => {
+    setSelectedTextType(textType);
+    const preset = TEXT_TYPE_PRESETS[textType];
+    setFontSize(preset.fontSize);
+    editorRef.current?.setFontSize(preset.fontSize);
+
+    const currentBold = editorRef.current?.getBold();
+    if (typeof currentBold === 'boolean' && currentBold !== preset.bold) {
+      editorRef.current?.toggleBold();
+      setBold(preset.bold);
+    }
+
     refocus();
   };
 
@@ -160,6 +195,16 @@ const Toolbar: React.FC<ToolbarProps> = ({
     refocus();
   };
 
+  const handleFormatPainter = () => {
+    editorRef.current?.formatPainter();
+    refocus();
+  };
+
+  const handleClearFormatting = () => {
+    editorRef.current?.clearFormatting();
+    refocus();
+  };
+
   return (
     <div className="sticky top-0 z-40 mt-2 mb-2 rounded-full border border-slate-200/80 bg-slate-50/90 px-3 py-1 shadow-sm backdrop-blur-md">
       <div className="flex items-center justify-between gap-2">
@@ -170,12 +215,24 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
           {/* Undo / Redo */}
           <HistoryControls onUndo={handleUndo} onRedo={handleRedo} />
+          <ToolbarButton
+            title="Formatting Painter"
+            icon="format_paint"
+            onClick={handleFormatPainter}
+          />
+          <ToolbarButton
+            title="Clear Formatting"
+            icon="format_clear"
+            onClick={handleClearFormatting}
+          />
           <ToolbarDivider />
 
           {/* Font Controls */}
           <FontControls
+            selectedTextType={selectedTextType}
             selectedFont={selectedFont}
             fontSize={fontSize}
+            onTextTypeChange={handleTextTypeChange}
             onFontChange={handleFontChange}
             onFontSizeDecrease={handleFontSizeDecrease}
             onFontSizeIncrease={handleFontSizeIncrease}
@@ -225,18 +282,23 @@ const Toolbar: React.FC<ToolbarProps> = ({
           )}
         </div>
 
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onToggleFullscreen}
-          title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
-          aria-label={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-600 transition-colors duration-100 hover:bg-slate-100 hover:text-slate-800"
-        >
-          <span className="material-icons" style={{ fontSize: 18 }}>
-            {isFullscreen ? 'fullscreen_exit' : 'fullscreen'}
+        <div className="group relative inline-flex">
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onToggleFullscreen}
+            title={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+            aria-label={isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-600 transition-colors duration-100 hover:bg-slate-100 hover:text-slate-800"
+          >
+            <span className="material-icons" style={{ fontSize: 18 }}>
+              {isFullscreen ? 'fullscreen_exit' : 'fullscreen'}
+            </span>
+          </button>
+          <span className="pointer-events-none absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
+            {isFullscreen ? 'Exit Full Screen' : 'Full Screen'}
           </span>
-        </button>
+        </div>
       </div>
     </div>
   );

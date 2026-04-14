@@ -142,6 +142,19 @@ function App() {
   const [activeTool, setActiveTool] = useState<RightTool | null>(null);
   const [comments, setComments] = useState<string[]>([]);
 
+  useEffect(() => {
+    const openComments = () => setActiveTool('comments');
+    const openSpelling = () => setActiveTool('grammar');
+
+    window.addEventListener('docsync:open-comments', openComments);
+    window.addEventListener('docsync:open-spelling', openSpelling);
+
+    return () => {
+      window.removeEventListener('docsync:open-comments', openComments);
+      window.removeEventListener('docsync:open-spelling', openSpelling);
+    };
+  }, []);
+
   const handleRestoreVersion = useCallback(
     (id: string) => {
       const version = savedVersions.find((v) => v.id === id);

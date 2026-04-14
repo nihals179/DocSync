@@ -1,9 +1,4 @@
 export { default as Toolbar } from './toolbar';
-export { default as Header } from './Header';
-export { default as RichEditor } from './RichEditor';
-export { default as Comments } from './Comments';
-export { default as VersionHistory } from './VersionHistory';
-export { default as Sidebar } from './Sidebar';
-export { default as TodoList } from './TodoList';
-export { default as GrammarChecker } from './GrammarChecker';
-export { default as AiTool } from './AiTool';
+export { Header, Sidebar } from './features/layout';
+export { default as RichEditor } from './editor/RichEditor';
+export { AiTool, Comments, GrammarChecker, TodoList, VersionHistory } from './features/panels';

@@ -1,16 +1,10 @@
-import type { ImageWrap } from './textModel';
-import type { ResizeHandle } from './types';
+import type { ImageWrap } from '../textModel';
+import type { ResizeHandle } from '../types';
 
 export type ImageWrapOption = {
   key: ImageWrap;
   title: string;
   label: string;
-};
-
-export type ImageBehaviorOption = {
-  key: 'move' | 'fixed';
-  label: string;
-  description: string;
 };
 
 export type ResizeHandleConfig = {
@@ -21,23 +15,10 @@ export type ResizeHandleConfig = {
 };
 
 export const IMAGE_WRAP_OPTIONS: ImageWrapOption[] = [
+  { key: 'break', title: 'Break line', label: 'Break line' },
   { key: 'inline', title: 'In line', label: 'In line' },
-  { key: 'break', title: 'Break text', label: 'Break text' },
-  { key: 'front', title: 'Text in front of image', label: 'Text in front' },
   { key: 'wrap', title: 'Wrap text', label: 'Wrap text' },
-];
-
-export const IMAGE_BEHAVIOR_OPTIONS: ImageBehaviorOption[] = [
-  {
-    key: 'move',
-    label: 'Move with text',
-    description: 'Image moves as text is edited.',
-  },
-  {
-    key: 'fixed',
-    label: 'Fixed position',
-    description: 'Image stays fixed on the page layout.',
-  },
+  { key: 'front', title: 'Text in front of image', label: 'Text in front' },
 ];
 
 export const IMAGE_RESIZE_HANDLES: ResizeHandleConfig[] = [

@@ -3,9 +3,21 @@ import { ToolbarButton } from './ToolbarButton';
 
 const FONT_OPTIONS = ['Raleway', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana'];
 
+const TEXT_TYPE_OPTIONS = [
+  { value: 'title', label: 'Title' },
+  { value: 'heading1', label: 'Heading 1' },
+  { value: 'heading2', label: 'Heading 2' },
+  { value: 'heading3', label: 'Heading 3' },
+  { value: 'paragraph', label: 'Paragraph' },
+] as const;
+
+export type TextTypeOption = (typeof TEXT_TYPE_OPTIONS)[number]['value'];
+
 type FontControlsProps = {
+  selectedTextType: TextTypeOption;
   selectedFont: string;
   fontSize: number;
+  onTextTypeChange: (textType: TextTypeOption) => void;
   onFontChange: (fontName: string) => void;
   onFontSizeDecrease: () => void;
   onFontSizeIncrease: () => void;
@@ -17,8 +29,10 @@ type FontControlsProps = {
  * Font family selector, font size decrease/input/increase controls in one cohesive section.
  */
 export const FontControls: React.FC<FontControlsProps> = ({
+  selectedTextType,
   selectedFont,
   fontSize,
+  onTextTypeChange,
   onFontChange,
   onFontSizeDecrease,
   onFontSizeIncrease,
@@ -26,6 +40,20 @@ export const FontControls: React.FC<FontControlsProps> = ({
   onFontSizeBlur,
 }) => (
   <>
+    {/* Text type */}
+    <select
+      value={selectedTextType}
+      onChange={(e) => onTextTypeChange(e.target.value as TextTypeOption)}
+      className="h-7 max-w-28 truncate rounded-md border-none bg-transparent pl-2 pr-5 text-xs font-medium text-slate-600 outline-none hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300"
+      aria-label="Text Type"
+    >
+      {TEXT_TYPE_OPTIONS.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+
     {/* Font family */}
     <select
       value={selectedFont}

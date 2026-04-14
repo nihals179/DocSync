@@ -2,7 +2,7 @@ export * from './types';
 export * from './textModel';
 export * from './layout';
 export * from './pageConfig';
-export * from './imageUiConfig';
+export * from './image/imageUiConfig';
 export * from './runFmt';
 export * from './drawHelpers';
 export * from './useEditorDraw';

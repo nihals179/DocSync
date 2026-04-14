@@ -2,30 +2,33 @@
 import { useRef, useImperativeHandle, forwardRef, useState, useEffect, useCallback } from 'react';
 import MarginRuler from './MarginRuler';
 import {
+  applyFormatToRange,
   DEFAULT_RUN_FMT,
+  deleteRange,
   getFormatAt,
+  getImageTokenRanges,
   isBulletAtOffset,
   isFormatUniform,
   isNumberListAtOffset,
   isSpaceAfterLineAtOffset,
   isSpaceBeforeLineAtOffset,
+  insertRun,
   makeRun,
   runsToText,
   type ImageWrap,
   type Run,
   type RunFmt,
-} from './editor/textModel';
-import type { CursorFormat, ResizeHandle, RichEditorHandle } from './editor/types';
-import {
-  IMAGE_BEHAVIOR_OPTIONS,
-  IMAGE_RESIZE_HANDLES,
-  IMAGE_WRAP_OPTIONS,
-} from './editor/imageUiConfig';
-import { DEFAULT_MARGINS, PAGE_DIMENSIONS, type PageSize } from './editor/pageConfig';
-import { useEditorDraw, type ImageBox } from './editor/useEditorDraw';
-import { useEditorInput } from './editor/useEditorInput';
+} from './textModel';
+import type { CursorFormat, ResizeHandle, RichEditorHandle } from './types';
+import { IMAGE_RESIZE_HANDLES } from './image/imageUiConfig';
+import { BreakLayoutControls, WrapModeControls } from './image/imageWrapControls';
+import { CanvasContextMenu, type CanvasMenuAction } from './CanvasContextMenu';
+import { getWrapAnchorOffset, resolveImageClickOffsetByWrap } from './image/imageWrapMode';
+import { DEFAULT_MARGINS, PAGE_DIMENSIONS, type PageSize } from './pageConfig';
+import { useEditorDraw, type ImageBox } from './useEditorDraw';
+import { useEditorInput } from './useEditorInput';
 
-export type { CursorFormat, RichEditorHandle } from './editor/types';
+export type { CursorFormat, RichEditorHandle } from './types';
 
 type RichEditorProps = {
   initialContent?: string;
@@ -38,8 +41,45 @@ type RichEditorProps = {
 // ── Component ────────────────────────────────────────────────────────────────
 const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
   ({ initialContent, onContentChange, onCursorFormatChange, pageSize }, ref) => {
+    const IMAGE_ALIGN_OPTIONS: Array<{
+      key: 'left' | 'center' | 'right';
+      icon: 'format_align_left' | 'format_align_center' | 'format_align_right';
+      title: string;
+      order: '1' | '2' | '3';
+    }> = [
+      { key: 'left', icon: 'format_align_left', title: 'Align left', order: '1' },
+      { key: 'center', icon: 'format_align_center', title: 'Align center', order: '2' },
+      { key: 'right', icon: 'format_align_right', title: 'Align right', order: '3' },
+    ];
+
+    const renderWrapAlignIcon = useCallback(
+      (align: 'left' | 'center' | 'right', className: string) => {
+        if (align === 'left') {
+          return (
+            <svg viewBox="0 -960 960 960" className={className} fill="currentColor" aria-hidden="true">
+              <path d="M120-280v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm480 160v-80h240v80H600Zm0 160v-80h240v80H600Zm0 160v-80h240v80H600ZM120-120v-80h720v80H120Zm200-360Z" />
+            </svg>
+          );
+        }
+        if (align === 'center') {
+          return (
+            <svg viewBox="0 -960 960 960" className={className} fill="currentColor" aria-hidden="true">
+              <path d="M120-120v-80h720v80H120Zm0-160v-80h100v80H120Zm160 0v-400h400v400H280Zm460 0v-80h100v80H740Zm-380-80h240v-240H360v240Zm-240-80v-80h100v80H120Zm620 0v-80h100v80H740ZM120-600v-80h100v80H120Zm620 0v-80h100v80H740ZM120-760v-80h720v80H120Zm360 280Z" />
+            </svg>
+          );
+        }
+        return (
+          <svg viewBox="0 -960 960 960" className={className} fill="currentColor" aria-hidden="true">
+            <path d="M440-280v-400h400v400H440Zm80-80h240v-240H520v240ZM120-120v-80h720v80H120Zm0-160v-80h240v80H120Zm0-160v-80h240v80H120Zm0-160v-80h240v80H120Zm0-160v-80h720v80H120Zm520 280Z" />
+          </svg>
+        );
+      },
+      [],
+    );
+
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const pageElRef = useRef<HTMLDivElement | null>(null);
+    const rootRef = useRef<HTMLDivElement | null>(null);
 
     const [leftMargin, setLeftMargin] = useState(DEFAULT_MARGINS[pageSize].left);
     const [rightMargin, setRightMargin] = useState(DEFAULT_MARGINS[pageSize].right);
@@ -48,6 +88,18 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const [isImagePanelOpen, setIsImagePanelOpen] = useState(false);
     const [altDraft, setAltDraft] = useState('');
     const [contentVersion, setContentVersion] = useState(0);
+    const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [showQuickFormatting, setShowQuickFormatting] = useState(false);
+    const [quickFormattingState, setQuickFormattingState] = useState({
+      bold: false,
+      italic: false,
+      underline: false,
+      fontFamily: DEFAULT_RUN_FMT.fontFamily,
+      fontSize: DEFAULT_RUN_FMT.fontSize,
+      color: DEFAULT_RUN_FMT.color,
+      highlightColor: DEFAULT_RUN_FMT.highlightColor as string | null,
+    });
     const prevPageSize = useRef(pageSize);
     const isPaperMode = pageSize !== 'responsive';
 
@@ -57,6 +109,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const scrollYRef = useRef(0);
     const blinkRef = useRef(true);
     const blinkTimerRef = useRef<number | null>(null);
+    const formatPainterRef = useRef<RunFmt | null>(null);
     const selStartRef = useRef<number | null>(null);
     const curFmtRef = useRef<RunFmt>({ ...DEFAULT_RUN_FMT });
     const isDraggingRef = useRef(false);
@@ -198,7 +251,6 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setImageWidthPct,
       setImageRotationDeg,
       setImageWrap,
-      setImagePosition,
       setImageAltText,
       setCursorOffset,
     } = useEditorInput(inputRefs, {
@@ -251,13 +303,24 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
     const handleCanvasMouseDown = useCallback(
       (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (e.button !== 0) return;
+        if (isMenuOpen) setIsMenuOpen(false);
         const hit = getImageBoxAtClientXY(e.clientX, e.clientY);
         if (hit) {
           e.preventDefault();
           const canvasRect = canvasRef.current?.getBoundingClientRect();
           const clickX = canvasRect ? e.clientX - canvasRect.left : hit.x;
           const midX = hit.x + hit.width / 2;
-          setCursorOffset(clickX <= midX ? hit.start : hit.end);
+          const text = runsToText(runsRef.current);
+          const nextOffset = resolveImageClickOffsetByWrap({
+            wrap: hit.meta.wrap,
+            text,
+            imageStart: hit.start,
+            imageEnd: hit.end,
+            clickX,
+            imageMidX: midX,
+          });
+          setCursorOffset(nextOffset);
           setSelectedImage(hit);
           setAltDraft(hit.meta.alt);
           return;
@@ -266,7 +329,332 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         setIsImagePanelOpen(false);
         handleMouseDown(e);
       },
-      [getImageBoxAtClientXY, setCursorOffset, handleMouseDown],
+      [getImageBoxAtClientXY, setCursorOffset, handleMouseDown, runsRef, isMenuOpen],
+    );
+
+    const handleCanvasDoubleClick = useCallback(
+      (e: React.MouseEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+
+        const imageHit = getImageBoxAtClientXY(e.clientX, e.clientY);
+        if (imageHit) return;
+
+        const clickOffset = getOffsetFromClientXY(e.clientX, e.clientY);
+        if (clickOffset === null) return;
+
+        const text = runsToText(runsRef.current);
+        if (!text.length) return;
+
+        const imageRanges = getImageTokenRanges(text);
+        const insideImage = imageRanges.some(
+          (range) => clickOffset > range.start && clickOffset < range.end,
+        );
+        if (insideImage) return;
+
+        const isWordChar = (ch: string) => /[A-Za-z0-9_]/.test(ch);
+
+        let anchor = Math.max(0, Math.min(clickOffset, text.length - 1));
+        if (!isWordChar(text[anchor])) {
+          if (anchor > 0 && isWordChar(text[anchor - 1])) {
+            anchor -= 1;
+          } else {
+            setCursorOffset(clickOffset);
+            return;
+          }
+        }
+
+        let start = anchor;
+        while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+
+        let end = anchor + 1;
+        while (end < text.length && isWordChar(text[end])) end += 1;
+
+        selStartRef.current = start;
+        cursorRef.current = end;
+        setSelectedImage(null);
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      [
+        getImageBoxAtClientXY,
+        getOffsetFromClientXY,
+        runsRef,
+        selStartRef,
+        cursorRef,
+        setCursorOffset,
+        notifyFmt,
+        resetBlink,
+        draw,
+      ],
+    );
+
+    const copySelectionToClipboard = useCallback(async () => {
+      const { selF, selT, hasSel } = getSelRange();
+      if (!hasSel) return false;
+      const text = runsToText(runsRef.current).slice(selF, selT);
+      if (!text) return false;
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        return false;
+      }
+    }, [getSelRange, runsRef]);
+
+    const cutSelectionToClipboard = useCallback(async () => {
+      const { selF, selT, hasSel } = getSelRange();
+      if (!hasSel) return;
+      const didCopy = await copySelectionToClipboard();
+      if (!didCopy) return;
+
+      pushHistory();
+      runsRef.current = deleteRange(runsRef.current, selF, selT);
+      cursorRef.current = selF;
+      selStartRef.current = null;
+      emitChange();
+      notifyFmt();
+      resetBlink();
+      draw();
+    }, [
+      getSelRange,
+      copySelectionToClipboard,
+      pushHistory,
+      runsRef,
+      cursorRef,
+      selStartRef,
+      emitChange,
+      notifyFmt,
+      resetBlink,
+      draw,
+    ]);
+
+    const pasteFromClipboard = useCallback(async () => {
+      let pasteText = '';
+      try {
+        pasteText = await navigator.clipboard.readText();
+      } catch {
+        return;
+      }
+      if (!pasteText) return;
+
+      const { selF, selT, hasSel } = getSelRange();
+      pushHistory();
+      if (hasSel) {
+        runsRef.current = deleteRange(runsRef.current, selF, selT);
+      }
+
+      runsRef.current = insertRun(runsRef.current, selF, makeRun(pasteText, { ...curFmtRef.current }));
+      cursorRef.current = selF + pasteText.length;
+      selStartRef.current = null;
+      emitChange();
+      notifyFmt();
+      resetBlink();
+      draw();
+    }, [
+      getSelRange,
+      pushHistory,
+      runsRef,
+      curFmtRef,
+      cursorRef,
+      selStartRef,
+      emitChange,
+      notifyFmt,
+      resetBlink,
+      draw,
+    ]);
+
+    const handleCanvasContextMenu = useCallback(
+      (e: React.MouseEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        const clickOffset = getOffsetFromClientXY(e.clientX, e.clientY);
+        let insideSelection = false;
+        let hasSelection = false;
+        if (clickOffset !== null) {
+          const { selF, selT, hasSel } = getSelRange();
+          hasSelection = hasSel;
+          insideSelection = hasSel && clickOffset >= selF && clickOffset <= selT;
+          if (!insideSelection) {
+            setCursorOffset(clickOffset);
+          }
+        }
+
+        if (insideSelection && hasSelection) {
+          const { selF, selT } = getSelRange();
+          setQuickFormattingState({
+            bold: isFormatUniform(runsRef.current, selF, selT, 'bold', true),
+            italic: isFormatUniform(runsRef.current, selF, selT, 'italic', true),
+            underline: isFormatUniform(runsRef.current, selF, selT, 'underline', true),
+            fontFamily: curFmtRef.current.fontFamily,
+            fontSize: curFmtRef.current.fontSize,
+            color: curFmtRef.current.color,
+            highlightColor: curFmtRef.current.highlightColor,
+          });
+          setShowQuickFormatting(true);
+        } else {
+          setShowQuickFormatting(false);
+        }
+
+        const rootRect = rootRef.current?.getBoundingClientRect();
+        const rawX = rootRect ? e.clientX - rootRect.left : e.clientX;
+        const rawY = rootRect ? e.clientY - rootRect.top : e.clientY;
+
+        const menuW = 256;
+        const menuH = 420;
+        const maxX = rootRect ? Math.max(8, rootRect.width - menuW - 8) : rawX;
+        const maxY = rootRect ? Math.max(8, rootRect.height - menuH - 8) : rawY;
+
+        setMenuPos({ x: Math.max(8, Math.min(rawX, maxX)), y: Math.max(8, Math.min(rawY, maxY)) });
+        setIsMenuOpen(true);
+      },
+      [getOffsetFromClientXY, setCursorOffset, getSelRange],
+    );
+
+    const runFormattingPainter = useCallback(() => {
+      if (!formatPainterRef.current) {
+        formatPainterRef.current = { ...curFmtRef.current };
+        return;
+      }
+
+      const { selF, selT, hasSel } = getSelRange();
+      const copiedFormat = { ...formatPainterRef.current };
+      if (hasSel) {
+        pushHistory();
+        runsRef.current = applyFormatToRange(runsRef.current, selF, selT, copiedFormat);
+        emitChange();
+      }
+
+      curFmtRef.current = copiedFormat;
+      formatPainterRef.current = null;
+      notifyFmt();
+      resetBlink();
+      draw();
+    }, [
+      curFmtRef,
+      getSelRange,
+      pushHistory,
+      runsRef,
+      emitChange,
+      notifyFmt,
+      resetBlink,
+      draw,
+    ]);
+
+    const runClearFormatting = useCallback(() => {
+      applyOrSetFmt({ ...DEFAULT_RUN_FMT });
+    }, [applyOrSetFmt]);
+
+    const handleContextMenuAction = useCallback(
+      async (action: CanvasMenuAction, value?: string | number | null) => {
+        if (action === 'cut') {
+          await cutSelectionToClipboard();
+          return;
+        }
+        if (action === 'copy') {
+          await copySelectionToClipboard();
+          return;
+        }
+        if (action === 'paste') {
+          await pasteFromClipboard();
+          return;
+        }
+        if (action === 'format-painter') {
+          runFormattingPainter();
+          return;
+        }
+        if (action === 'toggle-bold') {
+          const { selF, selT, hasSel } = getSelRange();
+          const allBold = hasSel && isFormatUniform(runsRef.current, selF, selT, 'bold', true);
+          applyOrSetFmt({ bold: hasSel ? !allBold : !curFmtRef.current.bold });
+          return;
+        }
+        if (action === 'toggle-italic') {
+          const { selF, selT, hasSel } = getSelRange();
+          const allItalic = hasSel && isFormatUniform(runsRef.current, selF, selT, 'italic', true);
+          applyOrSetFmt({ italic: hasSel ? !allItalic : !curFmtRef.current.italic });
+          return;
+        }
+        if (action === 'toggle-underline') {
+          const { selF, selT, hasSel } = getSelRange();
+          const allUnderline =
+            hasSel && isFormatUniform(runsRef.current, selF, selT, 'underline', true);
+          applyOrSetFmt({ underline: hasSel ? !allUnderline : !curFmtRef.current.underline });
+          return;
+        }
+        if (action === 'set-font-family' && typeof value === 'string') {
+          applyOrSetFmt({ fontFamily: value });
+          setQuickFormattingState((prev) => ({ ...prev, fontFamily: value }));
+          return;
+        }
+        if (action === 'set-font-size') {
+          const numeric = typeof value === 'number' ? value : Number(value);
+          if (Number.isFinite(numeric)) {
+            const nextSize = Math.max(8, Math.min(72, Math.round(numeric)));
+            applyOrSetFmt({ fontSize: nextSize });
+            setQuickFormattingState((prev) => ({ ...prev, fontSize: nextSize }));
+          }
+          return;
+        }
+        if (action === 'set-font-color' && typeof value === 'string') {
+          applyOrSetFmt({ color: value });
+          setQuickFormattingState((prev) => ({ ...prev, color: value }));
+          return;
+        }
+        if (action === 'set-highlight-color') {
+          const nextHighlight = typeof value === 'string' ? value : null;
+          setHighlightColor(nextHighlight);
+          setQuickFormattingState((prev) => ({ ...prev, highlightColor: nextHighlight }));
+          return;
+        }
+        if (action === 'clear-formatting') {
+          runClearFormatting();
+          return;
+        }
+        if (action === 'insert-link') {
+          const url = window.prompt('Enter link URL');
+          if (url && url.trim()) insertLink(url.trim());
+          return;
+        }
+        if (action === 'insert-image') {
+          const url = window.prompt('Enter image URL');
+          if (url && url.trim()) insertImage(url.trim());
+          return;
+        }
+        if (action === 'comments') {
+          window.dispatchEvent(new CustomEvent('docsync:open-comments'));
+          return;
+        }
+        if (action === 'spelling-check') {
+          window.dispatchEvent(new CustomEvent('docsync:open-spelling'));
+        }
+      },
+      [
+        cutSelectionToClipboard,
+        copySelectionToClipboard,
+        pasteFromClipboard,
+        runFormattingPainter,
+        getSelRange,
+        runsRef,
+        applyOrSetFmt,
+        setHighlightColor,
+        curFmtRef,
+        runClearFormatting,
+        insertLink,
+        insertImage,
+      ],
+    );
+
+    const handleCanvasKeyDown = useCallback(
+      (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+        const isMod = e.metaKey || e.ctrlKey;
+        if (isMod && !e.shiftKey && e.key.toLowerCase() === 'x') {
+          e.preventDefault();
+          void cutSelectionToClipboard();
+          return;
+        }
+        handleKeyDown(e);
+      },
+      [cutSelectionToClipboard, handleKeyDown],
     );
 
     const applyImageMutation = useCallback(
@@ -279,48 +667,55 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       [setCursorOffset, syncImageOverlay, getImageBoxAtOffset, selectedImage, hoveredImage],
     );
 
+    const getTargetImage = useCallback(() => selectedImage ?? hoveredImage, [selectedImage, hoveredImage]);
+
     const updateSelectedImageAlign = useCallback(
       (align: 'left' | 'center' | 'right') => {
-        const image = selectedImage ?? hoveredImage;
+        const image = getTargetImage();
         if (!image) return;
         applyImageMutation(image.start, () => setImageAlign(align));
       },
-      [selectedImage, hoveredImage, applyImageMutation, setImageAlign],
+      [getTargetImage, applyImageMutation, setImageAlign],
     );
 
     const updateSelectedImageWrap = useCallback(
       (wrap: ImageWrap) => {
-        const image = selectedImage ?? hoveredImage;
+        const image = getTargetImage();
         if (!image) return;
-        applyImageMutation(image.start, () => setImageWrap(wrap));
+        const anchorOffset = getWrapAnchorOffset(wrap, image);
+        applyImageMutation(anchorOffset, () => setImageWrap(wrap));
       },
-      [selectedImage, hoveredImage, applyImageMutation, setImageWrap],
+      [getTargetImage, applyImageMutation, setImageWrap],
     );
 
-    const updateSelectedImagePosition = useCallback(
-      (position: 'move' | 'fixed') => {
-        const image = selectedImage ?? hoveredImage;
+    const updateBreakLayout = useCallback(
+      (mode: 'break-right' | 'break-left' | 'break-center') => {
+        const image = getTargetImage();
         if (!image) return;
-        applyImageMutation(image.start, () => setImagePosition(position));
+        const anchorOffset = mode === 'break-right' ? image.start : image.end;
+        applyImageMutation(anchorOffset, () => {
+          setImageWrap('break');
+          setImageAlign(mode === 'break-right' ? 'right' : mode === 'break-center' ? 'center' : 'left');
+        });
       },
-      [selectedImage, hoveredImage, applyImageMutation, setImagePosition],
+      [getTargetImage, applyImageMutation, setImageWrap, setImageAlign],
     );
 
     const commitSelectedImageAlt = useCallback(() => {
-      const image = selectedImage ?? hoveredImage;
+      const image = getTargetImage();
       if (!image) return;
       applyImageMutation(image.start, () => setImageAltText(altDraft));
-    }, [selectedImage, hoveredImage, altDraft, applyImageMutation, setImageAltText]);
+    }, [getTargetImage, altDraft, applyImageMutation, setImageAltText]);
 
     const rotateSelectedImageBy = useCallback(
       (deltaDeg: number) => {
-        const image = selectedImage ?? hoveredImage;
+        const image = getTargetImage();
         if (!image) return;
         applyImageMutation(image.start, () =>
           setImageRotationDeg(image.meta.rotationDeg + deltaDeg),
         );
       },
-      [selectedImage, hoveredImage, applyImageMutation, setImageRotationDeg],
+      [getTargetImage, applyImageMutation, setImageRotationDeg],
     );
 
     const startResize = useCallback(
@@ -466,6 +861,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setImageRotationDeg,
       setImageWrap,
       setImageAltText,
+      formatPainter: runFormattingPainter,
+      clearFormatting: runClearFormatting,
       toggleImagePanel: () => setIsImagePanelOpen((prev) => !prev),
       openImagePanel: () => setIsImagePanelOpen(true),
       closeImagePanel: () => setIsImagePanelOpen(false),
@@ -523,8 +920,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const renderImageOverlay = (image: ImageBox | null) => {
       if (!image) return null;
       const isSelected = selectedImage?.start === image.start;
-      const canAlignImage = image.meta.position === 'fixed';
-      const popupWidth = canAlignImage ? 300 : 210;
+      const canAlignImage = image.meta.wrap !== 'break';
+      const popupWidth = 240;
       const popupHeight = 56;
       const canvasWidth = canvasRef.current?.clientWidth ?? 0;
       // For right-aligned images, show popup on the left side of the image.
@@ -555,27 +952,22 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             }}
           >
             <div className="flex items-center gap-2 px-2.5 py-2">
+              {image.meta.wrap === 'break' && (
+                <BreakLayoutControls
+                  image={image}
+                  variant="compact"
+                  onSelect={updateBreakLayout}
+                  onMouseDownButton={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    focusImageControls();
+                  }}
+                />
+              )}
+
               {canAlignImage && (
                 <div className="flex items-center gap-1 rounded-full bg-slate-100/90 p-1">
-                  {(
-                    [
-                      {
-                        key: 'left',
-                        icon: 'format_align_left',
-                        title: 'Align left',
-                      },
-                      {
-                        key: 'center',
-                        icon: 'format_align_center',
-                        title: 'Align center',
-                      },
-                      {
-                        key: 'right',
-                        icon: 'format_align_right',
-                        title: 'Align right',
-                      },
-                    ] as const
-                  ).map((option) => (
+                  {IMAGE_ALIGN_OPTIONS.map((option) => (
                     <div key={option.key} className="relative inline-flex group">
                       <button
                         type="button"
@@ -586,9 +978,13 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                           focusImageControls();
                         }}
                         onClick={() => updateSelectedImageAlign(option.key)}
-                        className={`flex h-5 w-5 items-center justify-center rounded-full transition-all ${image.meta.align === option.key ? 'bg-white text-cyan-700 shadow-[0_2px_6px_rgba(15,23,42,0.14)]' : 'text-slate-500 hover:bg-white/90 hover:text-slate-700'}`}
+                        className={`relative flex h-5 w-5 items-center justify-center rounded-full transition-all ${image.meta.align === option.key ? 'bg-white text-cyan-700 shadow-[0_2px_6px_rgba(15,23,42,0.14)]' : 'text-slate-500 hover:bg-white/90 hover:text-slate-700'}`}
                       >
-                        <span className="material-icons text-[16px]">{option.icon}</span>
+                        {image.meta.wrap === 'wrap' ? (
+                          renderWrapAlignIcon(option.key, 'h-4 w-4')
+                        ) : (
+                          <span className="material-icons text-[16px]">{option.icon}</span>
+                        )}
                       </button>
                       <span className="pointer-events-none absolute top-full mt-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
                         {option.title}
@@ -598,95 +994,17 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 </div>
               )}
 
-              <div className="flex items-center gap-1 rounded-full bg-slate-100/90 p-1">
-                {IMAGE_WRAP_OPTIONS.map((option) => (
-                  <div key={option.key} className="relative inline-flex group">
-                    <button
-                      type="button"
-                      title={option.title}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        focusImageControls();
-                      }}
-                      onClick={() => updateSelectedImageWrap(option.key)}
-                      className={`flex h-5 w-5 items-center justify-center rounded-full transition-all ${image.meta.wrap === option.key ? 'bg-white text-cyan-700 shadow-[0_2px_6px_rgba(15,23,42,0.14)]' : 'text-slate-500 hover:bg-white/90 hover:text-slate-700'}`}
-                    >
-                      {option.key === 'inline' && (
-                        <svg
-                          viewBox="0 -960 960 960"
-                          className="h-4 w-4"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path d="M120-120v-80h720v80H120Zm0-160v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm200 280Zm280 200v-80h240v80H600Z" />
-                        </svg>
-                      )}
-                      {option.key === 'break' && (
-                        <svg
-                          viewBox="0 -960 960 960"
-                          className="h-4 w-4"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path d="M120-120v-80h720v80H120Zm0-160v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm200 280Z" />
-                        </svg>
-                      )}
-                      {option.key === 'front' && (
-                        <svg
-                          viewBox="0 -960 960 960"
-                          className="h-4 w-4"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path d="M120-120v-80h720v80H120Zm0-160v-80h100v80H120Zm160 0v-400h400v400H280Zm460 0v-80h100v80H740Zm-380-80h240v-240H360v240Zm-240-80v-80h100v80H120Zm620 0v-80h100v80H740ZM120-600v-80h100v80H120Zm620 0v-80h100v80H740ZM120-760v-80h720v80H120Zm360 280Z" />
-                        </svg>
-                      )}
-                      {option.key === 'wrap' && (
-                        <svg
-                          viewBox="0 -960 960 960"
-                          className="h-4 w-4"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path d="M120-280v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm480 160v-80h240v80H600Zm0 160v-80h240v80H600Zm0 160v-80h240v80H600ZM120-120v-80h720v80H120Zm200-360Z" />
-                        </svg>
-                      )}
-                    </button>
-                    <span className="pointer-events-none absolute top-full mt-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                      {option.title}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <WrapModeControls
+                currentWrap={image.meta.wrap}
+                variant="compact"
+                onSelect={updateSelectedImageWrap}
+                onMouseDownButton={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  focusImageControls();
+                }}
+              />
 
-              <div className="flex items-center gap-1 rounded-full bg-slate-100/90 p-1">
-                {(
-                  [
-                    { key: 'move', icon: 'open_with', title: 'Move with text' },
-                    { key: 'fixed', icon: 'push_pin', title: 'Fixed position' },
-                  ] as const
-                ).map((option) => (
-                  <div key={option.key} className="relative inline-flex group">
-                    <button
-                      type="button"
-                      title={option.title}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        focusImageControls();
-                      }}
-                      onClick={() => updateSelectedImagePosition(option.key)}
-                      className={`flex h-5 w-5 items-center justify-center rounded-full transition-all ${image.meta.position === option.key ? 'bg-white text-cyan-700 shadow-[0_2px_6px_rgba(15,23,42,0.14)]' : 'text-slate-500 hover:bg-white/90 hover:text-slate-700'}`}
-                    >
-                      <span className="material-icons text-[14px]">{option.icon}</span>
-                    </button>
-                    <span className="pointer-events-none absolute top-full mt-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                      {option.title}
-                    </span>
-                  </div>
-                ))}
-              </div>
               <button
                 type="button"
                 title="Open image options"
@@ -748,11 +1066,13 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
     const renderImagePanel = (image: ImageBox | null) => {
       const isSelected = image && selectedImage?.start === image.start;
-      const canAlignImage = image ? image.meta.position === 'fixed' : false;
+      const canAlignImage = image ? image.meta.wrap !== 'break' : false;
+      const hasMoreOptions = image ? image.meta.wrap === 'break' || canAlignImage : false;
+      const panelWidthClass = hasMoreOptions ? 'w-[300px]' : 'w-[250px]';
 
       return (
         <aside
-          className={`pointer-events-auto absolute bottom-3 right-3 top-16 z-30 w-72 max-w-[96vw] overflow-hidden rounded-3xl border border-slate-200/80 bg-white/95 shadow-[-12px_0_28px_rgba(15,23,42,0.10)] backdrop-blur transition-transform duration-200 ${image ? 'translate-x-0' : 'translate-x-[120%]'}`}
+          className={`pointer-events-auto absolute bottom-3 right-3 top-16 z-30 ${panelWidthClass} max-w-[96vw] overflow-hidden rounded-3xl border border-slate-200/80 bg-white/95 shadow-[-12px_0_28px_rgba(15,23,42,0.10)] backdrop-blur transition-transform duration-200 ${image ? 'translate-x-0' : 'translate-x-[120%]'}`}
           onMouseDown={(event) => event.stopPropagation()}
         >
           {image ? (
@@ -803,24 +1123,22 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                       Alignment
                     </div>
                     <div className="flex gap-2">
-                      {(['left', 'center', 'right'] as const).map((align) => (
-                        <div key={align} className="relative group">
+                      {IMAGE_ALIGN_OPTIONS.map((option) => (
+                        <div key={option.key} className="relative group">
                           <button
                             type="button"
-                            className={`flex h-8 w-8 items-center justify-center rounded-full transition-all ${image.meta.align === align ? 'bg-cyan-600 text-white shadow' : 'bg-white text-slate-500 border border-slate-200 hover:bg-cyan-50 hover:text-cyan-700'}`}
-                            onClick={() => updateSelectedImageAlign(align)}
-                            title={`Align ${align}`}
+                            className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all ${image.meta.align === option.key ? 'bg-cyan-600 text-white shadow' : 'bg-white text-slate-500 border border-slate-200 hover:bg-cyan-50 hover:text-cyan-700'}`}
+                            onClick={() => updateSelectedImageAlign(option.key)}
+                            title={option.title}
                           >
-                            <span className="material-icons text-[20px]">
-                              {align === 'left'
-                                ? 'format_align_left'
-                                : align === 'center'
-                                  ? 'format_align_center'
-                                  : 'format_align_right'}
-                            </span>
+                            {image.meta.wrap === 'wrap' ? (
+                              renderWrapAlignIcon(option.key, 'h-5 w-5')
+                            ) : (
+                              <span className="material-icons text-[20px]">{option.icon}</span>
+                            )}
                           </button>
                           <span className="pointer-events-none absolute top-full mt-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                            Align {align}
+                            {option.title}
                           </span>
                         </div>
                       ))}
@@ -828,96 +1146,24 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   </section>
                 )}
 
-                {/* Wrap */}
-                <section className="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-3">
-                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                    Position Behavior
-                  </div>
-                  <label className="block text-[11px] font-medium text-slate-600">
-                    <select
-                      value={image.meta.position}
-                      onChange={(event) =>
-                        updateSelectedImagePosition(event.target.value as 'move' | 'fixed')
-                      }
-                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-cyan-400"
-                    >
-                      {IMAGE_BEHAVIOR_OPTIONS.map((option) => (
-                        <option key={option.key} value={option.key}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="mt-2 text-[11px] text-slate-500">
-                    {
-                      IMAGE_BEHAVIOR_OPTIONS.find((option) => option.key === image.meta.position)
-                        ?.description
-                    }
-                  </div>
-                </section>
-
-                {/* Wrap */}
                 <section className="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-3">
                   <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                     Text Wrap
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {IMAGE_WRAP_OPTIONS.map((option) => (
-                      <button
-                        key={option.key}
-                        type="button"
-                        className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition-all ${image.meta.wrap === option.key ? 'border-cyan-300 bg-cyan-50 text-cyan-800' : 'border-slate-200 bg-white text-slate-600 hover:border-cyan-200 hover:bg-cyan-50/40'}`}
-                        onClick={() => updateSelectedImageWrap(option.key)}
-                        title={option.title}
-                      >
-                        <span
-                          className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${image.meta.wrap === option.key ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-600'}`}
-                        >
-                          {option.key === 'inline' && (
-                            <svg
-                              viewBox="0 -960 960 960"
-                              className="h-5 w-5"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path d="M120-120v-80h720v80H120Zm0-160v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm200 280Zm280 200v-80h240v80H600Z" />
-                            </svg>
-                          )}
-                          {option.key === 'break' && (
-                            <svg
-                              viewBox="0 -960 960 960"
-                              className="h-5 w-5"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path d="M120-120v-80h720v80H120Zm0-160v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm200 280Z" />
-                            </svg>
-                          )}
-                          {option.key === 'front' && (
-                            <svg
-                              viewBox="0 -960 960 960"
-                              className="h-5 w-5"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path d="M120-120v-80h720v80H120Zm0-160v-80h100v80H120Zm160 0v-400h400v400H280Zm460 0v-80h100v80H740Zm-380-80h240v-240H360v240Zm-240-80v-80h100v80H120Zm620 0v-80h100v80H740ZM120-600v-80h100v80H120Zm620 0v-80h100v80H740ZM120-760v-80h720v80H120Zm360 280Z" />
-                            </svg>
-                          )}
-                          {option.key === 'wrap' && (
-                            <svg
-                              viewBox="0 -960 960 960"
-                              className="h-5 w-5"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <path d="M120-280v-400h400v400H120Zm80-80h240v-240H200v240Zm-80-400v-80h720v80H120Zm480 160v-80h240v80H600Zm0 160v-80h240v80H600Zm0 160v-80h240v80H600ZM120-120v-80h720v80H120Zm200-360Z" />
-                            </svg>
-                          )}
-                        </span>
-                        <span className="text-xs font-medium leading-tight">{option.label}</span>
-                      </button>
-                    ))}
-                  </div>
+
+                  {image.meta.wrap === 'break' && (
+                    <BreakLayoutControls
+                      image={image}
+                      variant="panel"
+                      onSelect={updateBreakLayout}
+                    />
+                  )}
+
+                  <WrapModeControls
+                    currentWrap={image.meta.wrap}
+                    variant="panel"
+                    onSelect={updateSelectedImageWrap}
+                  />
                 </section>
 
                 {/* Width */}
@@ -949,9 +1195,14 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                           setImageWidthPct(Number(e.currentTarget.value), false),
                         )
                       }
-                      onMouseUp={() =>
+                      onMouseUp={(e) =>
                         applyImageMutation(image.start, () =>
-                          setImageWidthPct(image.meta.widthPct, true),
+                          setImageWidthPct(Number(e.currentTarget.value), true),
+                        )
+                      }
+                      onTouchEnd={(e) =>
+                        applyImageMutation(image.start, () =>
+                          setImageWidthPct(Number(e.currentTarget.value), true),
                         )
                       }
                       className="flex-1 h-2 rounded-full bg-slate-200 accent-cyan-600 focus:outline-none focus:ring-2 focus:ring-cyan-200"
@@ -1034,6 +1285,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     // ── JSX ───────────────────────────────────────────────────────────────────
     return (
       <div
+        ref={rootRef}
         className={`relative min-h-0 flex-1 ${isPaperMode ? 'overflow-auto' : 'overflow-hidden'} rounded-xl border border-slate-200/80 bg-white shadow-sm`}
       >
         <div className="sticky top-0 z-30 w-full px-3 py-1">
@@ -1070,11 +1322,13 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 ref={canvasRef}
                 className="w-full h-full cursor-text"
                 tabIndex={0}
-                onKeyDown={handleKeyDown}
+                onKeyDown={handleCanvasKeyDown}
                 onPaste={handlePaste}
                 onMouseDown={handleCanvasMouseDown}
+                onDoubleClick={handleCanvasDoubleClick}
                 onMouseMove={handleCanvasMouseMove}
                 onWheel={handleWheel}
+                onContextMenu={handleCanvasContextMenu}
                 aria-label="Document editor"
                 style={{ display: 'block', outline: 'none' }}
               />
@@ -1087,17 +1341,28 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               ref={canvasRef}
               className="h-full w-full cursor-text"
               tabIndex={0}
-              onKeyDown={handleKeyDown}
+              onKeyDown={handleCanvasKeyDown}
               onPaste={handlePaste}
               onMouseDown={handleCanvasMouseDown}
+              onDoubleClick={handleCanvasDoubleClick}
               onMouseMove={handleCanvasMouseMove}
               onWheel={handleWheel}
+              onContextMenu={handleCanvasContextMenu}
               aria-label="Document editor"
               style={{ display: 'block', outline: 'none' }}
             />
             {renderImageOverlay(visibleImage)}
           </div>
         )}
+        <CanvasContextMenu
+          open={isMenuOpen}
+          x={menuPos.x}
+          y={menuPos.y}
+          showQuickFormatting={showQuickFormatting}
+          quickFormattingState={quickFormattingState}
+          onClose={() => setIsMenuOpen(false)}
+          onAction={handleContextMenuAction}
+        />
         {renderImagePanel(selectedImage && isImagePanelOpen ? selectedImage : null)}
       </div>
     );

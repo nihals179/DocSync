@@ -9,6 +9,14 @@ import {
 } from './textModel';
 import { buildVisualLines, getImageRenderMetrics, type VisualLine } from './layout';
 import { getLayoutMetrics, imageMetaKey } from './drawHelpers';
+import {
+  isBreakLineWrap,
+  isFlowingImageWrap,
+  isInlineWrap,
+  isTextInFrontWrap,
+  resolveImageClickOffsetByWrap,
+  isWrapTextWrap,
+} from './image/imageWrapMode';
 
 export type ImageBox = {
   start: number;
@@ -72,6 +80,42 @@ export function useEditorDraw(
     [],
   );
 
+  const hasBreakOrWrapImageInLine = useCallback((line: VisualLine) => {
+    return line.segs.some((sg) => {
+      const meta = parseImageToken(sg.text);
+      return Boolean(meta && (isBreakLineWrap(meta.wrap) || isWrapTextWrap(meta.wrap)));
+    });
+  }, []);
+
+  const hasInlineImageInLine = useCallback((line: VisualLine) => {
+    return line.segs.some((sg) => {
+      const meta = parseImageToken(sg.text);
+      return Boolean(meta && isInlineWrap(meta.wrap));
+    });
+  }, []);
+
+  const buildImageDimsMap = useCallback(() => {
+    const imageDims = new Map<string, { w: number; h: number }>();
+    for (const [src, cached] of imageCacheRef.current) {
+      imageDims.set(src, { w: cached.w, h: cached.h });
+    }
+    return imageDims;
+  }, []);
+
+  const getClosestVisualLine = useCallback((lines: VisualLine[], clickY: number): VisualLine => {
+    let closest = lines[0];
+    let bestDist = Infinity;
+    for (const line of lines) {
+      const mid = line.y + line.lineH / 2;
+      const d = Math.abs(clickY - mid);
+      if (d < bestDist) {
+        bestDist = d;
+        closest = line;
+      }
+    }
+    return closest;
+  }, []);
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -133,10 +177,7 @@ export function useEditorDraw(
       }
     }
 
-    const imageDimsForLayout = new Map<string, { w: number; h: number }>();
-    for (const [src, cached] of imageCacheRef.current) {
-      imageDimsForLayout.set(src, { w: cached.w, h: cached.h });
-    }
+    const imageDimsForLayout = buildImageDimsMap();
     const { vls } = buildVisualLines(
       ctx,
       runsRef.current,
@@ -167,17 +208,15 @@ export function useEditorDraw(
 
     for (const vl of vls) {
       if (vl.y + vl.lineH < 0 || vl.y > h) continue;
-      const lineHasFlowImage = vl.segs.some((sg) => {
-        const meta = parseImageToken(sg.text);
-        return Boolean(meta && (meta.wrap === 'inline' || meta.wrap === 'break'));
-      });
+      const lineHasBreakImage = hasBreakOrWrapImageInLine(vl);
+      const lineHasInlineImage = hasInlineImageInLine(vl);
       // Inline image and text rendering
       let lineOffset = vl.startOffset;
       for (const seg of vl.segs) {
         const segStart = lineOffset;
         const segEnd = segStart + seg.text.length;
         const imageMeta = parseImageToken(seg.text);
-        if (imageMeta && (imageMeta.wrap === 'inline' || imageMeta.wrap === 'break')) {
+        if (imageMeta && (isFlowingImageWrap(imageMeta.wrap) || isTextInFrontWrap(imageMeta.wrap))) {
           const cached = imageCacheRef.current.get(imageMeta.src);
           const metrics = getImageRenderMetrics(
             imageMeta,
@@ -189,9 +228,17 @@ export function useEditorDraw(
               ? getAlignedXInTextArea(metrics.align, metrics.boxWidth, textAreaWidth)
               : seg.x;
           const boxX = padLeft + alignedSegX;
-          const imgY = vl.y + (vl.lineH - metrics.boxHeight) / 2;
+          const imgY =
+            isBreakLineWrap(imageMeta.wrap) ||
+            isWrapTextWrap(imageMeta.wrap) ||
+            isTextInFrontWrap(imageMeta.wrap)
+              ? vl.y
+              : vl.y + (vl.lineH - metrics.boxHeight) / 2;
           if (cached) {
             ctx.save();
+            if (isTextInFrontWrap(imageMeta.wrap)) {
+              ctx.globalAlpha = 0.45;
+            }
             ctx.translate(boxX + metrics.boxWidth / 2, imgY + metrics.boxHeight / 2);
             ctx.rotate((imageMeta.rotationDeg * Math.PI) / 180);
             ctx.drawImage(
@@ -232,9 +279,11 @@ export function useEditorDraw(
         }
         // Normal text rendering
         ctx.font = buildFont(seg.fmt.fontSize, seg.fmt.bold, seg.fmt.italic, seg.fmt.fontFamily);
-        const segY = lineHasFlowImage
-          ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
-          : vl.y + (vl.lineH - seg.fmt.fontSize) / 2;
+        const segY = lineHasBreakImage
+          ? vl.y
+          : lineHasInlineImage
+            ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
+            : vl.y + (vl.lineH - seg.fmt.fontSize) / 2;
         if (hasSelection && segStart < selTo && segEnd > selFrom && seg.text.length > 0) {
           const localStart = Math.max(0, selFrom - segStart);
           const localEnd = Math.min(seg.text.length, selTo - segStart);
@@ -283,13 +332,7 @@ export function useEditorDraw(
           textAreaWidth,
           cached ? { w: cached.w, h: cached.h } : undefined,
         );
-        const boxX =
-          padLeft +
-          (metrics.align === 'left'
-            ? 0
-            : metrics.align === 'right'
-              ? textAreaWidth - metrics.boxWidth
-              : (textAreaWidth - metrics.boxWidth) / 2);
+        const boxX = padLeft + getAlignedXInTextArea(metrics.align, metrics.boxWidth, textAreaWidth);
         const boxY = vl.y + (vl.lineH - metrics.boxHeight) / 2;
 
         if (cached) {
@@ -339,29 +382,106 @@ export function useEditorDraw(
       let caretY = padTop;
       let caretH = Math.max(16, curFmtRef.current.fontSize);
       const imageCaretH = Math.max(16, curFmtRef.current.fontSize);
+      const breakCaretGapY = 6;
 
       const imageAtStart = imageBoxesRef.current.find((box) => cursor === box.start) ?? null;
       const imageAtEnd = imageBoxesRef.current.find((box) => cursor === box.end) ?? null;
 
       if (imageAtStart) {
-        // Cursor at image bottom-left when at image start.
-        caretX = imageAtStart.x;
-        caretY = imageAtStart.y + Math.max(0, imageAtStart.height - imageCaretH);
-        caretH = imageCaretH;
+        if (isBreakLineWrap(imageAtStart.meta.wrap)) {
+          // If text exists immediately before break image, anchor caret at the end
+          // of that rendered text line so caret follows typed characters.
+          let prevTextLine: VisualLine | null = null;
+          for (let i = vls.length - 1; i >= 0; i--) {
+            const vl = vls[i];
+            if (vl.endOffset > cursor) continue;
+            const hasBreakImageSeg = vl.segs.some((sg) => {
+              const meta = parseImageToken(sg.text);
+              return Boolean(meta && isBreakLineWrap(meta.wrap));
+            });
+            if (!hasBreakImageSeg && vl.segs.length > 0) {
+              prevTextLine = vl;
+              break;
+            }
+          }
+
+          if (prevTextLine && prevTextLine.segs.length > 0) {
+            const reverseTextSegs = [...prevTextLine.segs].reverse();
+            const lastTextSeg =
+              reverseTextSegs.find(
+                (sg) => !parseImageToken(sg.text) && /\S/.test(sg.text),
+              ) ?? reverseTextSegs.find((sg) => !parseImageToken(sg.text) && sg.text.length > 0);
+            if (!lastTextSeg) {
+              caretX = imageAtStart.x;
+              caretY = imageAtStart.y;
+              caretH = Math.max(16, curFmtRef.current.fontSize);
+            } else {
+              ctx.font = buildFont(
+                lastTextSeg.fmt.fontSize,
+                lastTextSeg.fmt.bold,
+                lastTextSeg.fmt.italic,
+                lastTextSeg.fmt.fontFamily,
+              );
+              const anchorText =
+                /\S/.test(lastTextSeg.text) ? lastTextSeg.text.replace(/\s+$/, '') : lastTextSeg.text;
+              caretX = padLeft + lastTextSeg.x + ctx.measureText(anchorText).width;
+              const prevLineHasInlineImage = prevTextLine.segs.some((sg) => {
+                const meta = parseImageToken(sg.text);
+                return Boolean(meta && isInlineWrap(meta.wrap));
+              });
+              caretY = prevLineHasInlineImage
+                ? prevTextLine.y + Math.max(0, prevTextLine.lineH - lastTextSeg.fmt.fontSize)
+                : prevTextLine.y + Math.max(0, (prevTextLine.lineH - lastTextSeg.fmt.fontSize) / 2);
+              caretH = Math.max(16, lastTextSeg.fmt.fontSize);
+            }
+          } else {
+            // Break-line start anchor: show caret on the same top line as image.
+            caretX = imageAtStart.x;
+            caretY = imageAtStart.y;
+            caretH = Math.max(16, curFmtRef.current.fontSize);
+          }
+        } else if (isWrapTextWrap(imageAtStart.meta.wrap)) {
+          // Wrap-text writes from the post-image lane to keep image stable.
+          caretX = padLeft;
+          caretY = imageAtStart.y;
+          caretH = Math.max(16, curFmtRef.current.fontSize);
+        } else if (isTextInFrontWrap(imageAtStart.meta.wrap)) {
+          caretX = padLeft;
+          caretY = imageAtStart.y;
+          caretH = Math.max(16, curFmtRef.current.fontSize);
+        } else {
+          // Cursor at image bottom-left when at image start.
+          caretX = imageAtStart.x;
+          caretY = imageAtStart.y + Math.max(0, imageAtStart.height - imageCaretH);
+          caretH = imageCaretH;
+        }
       } else if (imageAtEnd) {
-        caretX = imageAtEnd.x + imageAtEnd.width;
-        caretY = imageAtEnd.y + Math.max(0, imageAtEnd.height - imageCaretH);
-        caretH = imageCaretH;
+        if (isBreakLineWrap(imageAtEnd.meta.wrap)) {
+          // Break-line mode: caret should continue below the image block.
+          caretX = padLeft;
+          caretY = imageAtEnd.y + imageAtEnd.height + breakCaretGapY;
+          caretH = Math.max(16, curFmtRef.current.fontSize);
+        } else if (isWrapTextWrap(imageAtEnd.meta.wrap)) {
+          caretX = padLeft;
+          caretY = imageAtEnd.y;
+          caretH = Math.max(16, curFmtRef.current.fontSize);
+        } else if (isTextInFrontWrap(imageAtEnd.meta.wrap)) {
+          caretX = padLeft;
+          caretY = imageAtEnd.y;
+          caretH = Math.max(16, curFmtRef.current.fontSize);
+        } else {
+          caretX = imageAtEnd.x + imageAtEnd.width;
+          caretY = imageAtEnd.y + Math.max(0, imageAtEnd.height - imageCaretH);
+          caretH = imageCaretH;
+        }
       } else if (vls.length > 0) {
         const lastLine = vls[vls.length - 1];
         let placed = false;
 
         for (const vl of vls) {
           if (cursor < vl.startOffset || cursor > vl.endOffset) continue;
-          const lineHasFlowImage = vl.segs.some((sg) => {
-            const meta = parseImageToken(sg.text);
-            return Boolean(meta && (meta.wrap === 'inline' || meta.wrap === 'break'));
-          });
+          const lineHasBreakImage = hasBreakOrWrapImageInLine(vl);
+          const lineHasInlineImage = hasInlineImageInLine(vl);
 
           let lineOffset = vl.startOffset;
           if (vl.segs.length === 0) {
@@ -378,7 +498,7 @@ export function useEditorDraw(
 
             if (cursor >= segStart && cursor <= segEnd) {
               const inlineImage = parseImageToken(seg.text);
-              if (inlineImage && (inlineImage.wrap === 'inline' || inlineImage.wrap === 'break')) {
+              if (inlineImage && isFlowingImageWrap(inlineImage.wrap)) {
                 const cached = imageCacheRef.current.get(inlineImage.src);
                 const metrics = getImageRenderMetrics(
                   inlineImage,
@@ -392,13 +512,41 @@ export function useEditorDraw(
                 const imgX = padLeft + imgAlignedX;
                 const imgY = vl.y + (vl.lineH - metrics.boxHeight) / 2;
                 if (cursor <= segStart) {
-                  caretX = imgX;
-                  caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
-                  caretH = imageCaretH;
+                  if (isBreakLineWrap(inlineImage.wrap)) {
+                    caretX = imgX;
+                    caretY = imgY;
+                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                  } else if (isTextInFrontWrap(inlineImage.wrap)) {
+                    caretX = padLeft;
+                    caretY = vl.y;
+                    caretH = Math.max(16, seg.fmt.fontSize);
+                  } else if (isWrapTextWrap(inlineImage.wrap)) {
+                    caretX = padLeft;
+                    caretY = vl.y;
+                    caretH = Math.max(16, seg.fmt.fontSize);
+                  } else {
+                    caretX = imgX;
+                    caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
+                    caretH = imageCaretH;
+                  }
                 } else {
-                  caretX = imgX + metrics.boxWidth;
-                  caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
-                  caretH = imageCaretH;
+                  if (isBreakLineWrap(inlineImage.wrap)) {
+                    caretX = padLeft;
+                    caretY = imgY + metrics.boxHeight + breakCaretGapY;
+                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                  } else if (isTextInFrontWrap(inlineImage.wrap)) {
+                    caretX = padLeft;
+                    caretY = vl.y;
+                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                  } else if (isWrapTextWrap(inlineImage.wrap)) {
+                    caretX = padLeft;
+                    caretY = vl.y;
+                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                  } else {
+                    caretX = imgX + metrics.boxWidth;
+                    caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
+                    caretH = imageCaretH;
+                  }
                 }
               } else {
                 ctx.font = buildFont(
@@ -409,9 +557,11 @@ export function useEditorDraw(
                 );
                 const prefix = seg.text.slice(0, Math.max(0, cursor - segStart));
                 caretX = padLeft + seg.x + ctx.measureText(prefix).width;
-                caretY = lineHasFlowImage
-                  ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
-                  : vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
+                caretY = lineHasBreakImage
+                  ? vl.y
+                  : lineHasInlineImage
+                    ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
+                    : vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
                 caretH = Math.max(16, seg.fmt.fontSize);
               }
               placed = true;
@@ -424,7 +574,7 @@ export function useEditorDraw(
           if (!placed && cursor === vl.endOffset) {
             const lastSeg = vl.segs[vl.segs.length - 1];
             const inlineImage = parseImageToken(lastSeg.text);
-            if (inlineImage && (inlineImage.wrap === 'inline' || inlineImage.wrap === 'break')) {
+            if (inlineImage && (isFlowingImageWrap(inlineImage.wrap) || isTextInFrontWrap(inlineImage.wrap))) {
               const cached = imageCacheRef.current.get(inlineImage.src);
               const metrics = getImageRenderMetrics(
                 inlineImage,
@@ -436,11 +586,21 @@ export function useEditorDraw(
                   ? getAlignedXInTextArea(metrics.align, metrics.boxWidth, textAreaWidth)
                   : lastSeg.x;
               caretX = padLeft + lastAlignedX + metrics.boxWidth;
-              caretY =
-                vl.y +
-                (vl.lineH - metrics.boxHeight) / 2 +
-                Math.max(0, metrics.boxHeight - imageCaretH);
-              caretH = imageCaretH;
+              if (isBreakLineWrap(inlineImage.wrap)) {
+                caretX = padLeft;
+                caretY = vl.y + metrics.boxHeight + breakCaretGapY;
+                caretH = Math.max(16, curFmtRef.current.fontSize);
+              } else if (isTextInFrontWrap(inlineImage.wrap)) {
+                caretX = padLeft;
+                caretY = vl.y;
+                caretH = Math.max(16, curFmtRef.current.fontSize);
+              } else {
+                caretY =
+                  vl.y +
+                  (vl.lineH - metrics.boxHeight) / 2 +
+                  Math.max(0, metrics.boxHeight - imageCaretH);
+                caretH = imageCaretH;
+              }
             } else {
               ctx.font = buildFont(
                 lastSeg.fmt.fontSize,
@@ -449,9 +609,11 @@ export function useEditorDraw(
                 lastSeg.fmt.fontFamily,
               );
               caretX = padLeft + lastSeg.x + ctx.measureText(lastSeg.text).width;
-              caretY = lineHasFlowImage
-                ? vl.y + Math.max(0, vl.lineH - lastSeg.fmt.fontSize)
-                : vl.y + Math.max(0, (vl.lineH - lastSeg.fmt.fontSize) / 2);
+              caretY = lineHasBreakImage
+                ? vl.y
+                : lineHasInlineImage
+                  ? vl.y + Math.max(0, vl.lineH - lastSeg.fmt.fontSize)
+                  : vl.y + Math.max(0, (vl.lineH - lastSeg.fmt.fontSize) / 2);
               caretH = Math.max(16, lastSeg.fmt.fontSize);
             }
             placed = true;
@@ -461,10 +623,8 @@ export function useEditorDraw(
         }
 
         if (!placed) {
-          const lastLineHasFlowImage = lastLine.segs.some((sg) => {
-            const meta = parseImageToken(sg.text);
-            return Boolean(meta && (meta.wrap === 'inline' || meta.wrap === 'break'));
-          });
+          const lastLineHasBreakImage = hasBreakOrWrapImageInLine(lastLine);
+          const lastLineHasInlineImage = hasInlineImageInLine(lastLine);
           if (lastLine.segs.length > 0) {
             const lastSeg = lastLine.segs[lastLine.segs.length - 1];
             ctx.font = buildFont(
@@ -474,9 +634,11 @@ export function useEditorDraw(
               lastSeg.fmt.fontFamily,
             );
             caretX = padLeft + lastSeg.x + ctx.measureText(lastSeg.text).width;
-            caretY = lastLineHasFlowImage
-              ? lastLine.y + Math.max(0, lastLine.lineH - lastSeg.fmt.fontSize)
-              : lastLine.y + Math.max(0, (lastLine.lineH - lastSeg.fmt.fontSize) / 2);
+            caretY = lastLineHasBreakImage
+              ? lastLine.y
+              : lastLineHasInlineImage
+                ? lastLine.y + Math.max(0, lastLine.lineH - lastSeg.fmt.fontSize)
+                : lastLine.y + Math.max(0, (lastLine.lineH - lastSeg.fmt.fontSize) / 2);
             caretH = Math.max(16, lastSeg.fmt.fontSize);
           } else {
             caretX = padLeft;
@@ -582,10 +744,7 @@ export function useEditorDraw(
       const clickY = clientY - rect.top;
 
       const flatText = runsToText(runsRef.current);
-      const imageDims = new Map<string, { w: number; h: number }>();
-      for (const [src, cached] of imageCacheRef.current) {
-        imageDims.set(src, { w: cached.w, h: cached.h });
-      }
+      const imageDims = buildImageDimsMap();
       const { vls } = buildVisualLines(
         ctx,
         runsRef.current,
@@ -607,16 +766,7 @@ export function useEditorDraw(
       const contentBottom = lastLine.y + lastLine.lineH;
       if (clickY < contentTop || clickY > contentBottom) return null;
 
-      let best: VisualLine = vls[0];
-      let bestDist = Infinity;
-      for (const vl of vls) {
-        const mid = vl.y + vl.lineH / 2;
-        const d = Math.abs(clickY - mid);
-        if (d < bestDist) {
-          bestDist = d;
-          best = vl;
-        }
-      }
+      const best = getClosestVisualLine(vls, clickY);
 
       const imageMeta = best.imageMeta ?? null;
       if (imageMeta) {
@@ -626,14 +776,16 @@ export function useEditorDraw(
           textAreaWidth,
           dims ? { w: dims.w, h: dims.h } : undefined,
         );
-        const imageStartX =
-          metrics.align === 'left'
-            ? 0
-            : metrics.align === 'right'
-              ? Math.max(0, textAreaWidth - metrics.boxWidth)
-              : Math.max(0, (textAreaWidth - metrics.boxWidth) / 2);
+        const imageStartX = getAlignedXInTextArea(metrics.align, metrics.boxWidth, textAreaWidth);
         const imageMidX = imageStartX + metrics.boxWidth / 2;
-        return clickX <= imageMidX ? best.startOffset : best.endOffset;
+        return resolveImageClickOffsetByWrap({
+          wrap: imageMeta.wrap,
+          text: flatText,
+          imageStart: best.startOffset,
+          imageEnd: best.endOffset,
+          clickX,
+          imageMidX,
+        });
       }
 
       let lastOffset = best.startOffset;
@@ -643,7 +795,7 @@ export function useEditorDraw(
 
       for (const seg of best.segs) {
         const inlineImage = parseImageToken(seg.text);
-        if (inlineImage && (inlineImage.wrap === 'inline' || inlineImage.wrap === 'break')) {
+        if (inlineImage && (isFlowingImageWrap(inlineImage.wrap) || isTextInFrontWrap(inlineImage.wrap))) {
           const dims = imageCacheRef.current.get(inlineImage.src);
           const metrics = getImageRenderMetrics(
             inlineImage,
@@ -659,7 +811,14 @@ export function useEditorDraw(
             const imageStartOffset = best.startOffset + (lastOffset - best.startOffset);
             const imageEndOffset = imageStartOffset + seg.text.length;
             const imageMidX = segStartX + metrics.boxWidth / 2;
-            return clickX <= imageMidX ? imageStartOffset : imageEndOffset;
+            return resolveImageClickOffsetByWrap({
+              wrap: inlineImage.wrap,
+              text: flatText,
+              imageStart: imageStartOffset,
+              imageEnd: imageEndOffset,
+              clickX,
+              imageMidX,
+            });
           }
           lastOffset += seg.text.length;
           continue;
@@ -693,6 +852,8 @@ export function useEditorDraw(
       curFmtRef,
       scrollYRef,
       getAlignedXInTextArea,
+      buildImageDimsMap,
+      getClosestVisualLine,
     ],
   );
 

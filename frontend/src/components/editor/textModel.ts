@@ -281,7 +281,6 @@ export function isSpaceAfterLineAtOffset(text: string, offset: number): boolean 
 
 export type ImageAlign = 'left' | 'center' | 'right';
 export type ImageWrap = 'inline' | 'break' | 'front' | 'wrap';
-export type ImagePosition = 'move' | 'fixed';
 export type ImageTokenMeta = {
   src: string;
   widthPct: number;
@@ -289,7 +288,6 @@ export type ImageTokenMeta = {
   rotationDeg: number;
   wrap: ImageWrap;
   alt: string;
-  position: ImagePosition;
 };
 
 const LEGACY_IMAGE_TOKEN_RE = /^\[\[IMAGE:(.+)\]\]$/;
@@ -308,10 +306,6 @@ function parseImageWrap(value: string | undefined): ImageWrap {
   if (value === 'inline' || value === 'front' || value === 'wrap') return value;
   if (value === 'left' || value === 'right') return 'wrap';
   return 'break';
-}
-
-function parseImagePosition(value: string | undefined): ImagePosition {
-  return value === 'fixed' ? 'fixed' : 'move';
 }
 
 /** Parse image token metadata from paragraph/token text. Supports legacy and v2 tokens. */
@@ -350,7 +344,6 @@ export function parseImageToken(value: string): ImageTokenMeta | null {
           : 'center';
     const rotationDeg = clampImageRotationDeg(Number.parseInt(fields.get('rot') ?? '0', 10));
     const wrap = normalizedWrap;
-    const position = parseImagePosition(fields.get('pos'));
     let alt = fields.get('alt') ?? '';
     try {
       alt = decodeURIComponent(alt);
@@ -365,7 +358,6 @@ export function parseImageToken(value: string): ImageTokenMeta | null {
       rotationDeg,
       wrap,
       alt,
-      position,
     };
   }
 
@@ -380,7 +372,6 @@ export function parseImageToken(value: string): ImageTokenMeta | null {
       rotationDeg: 0,
       wrap: 'break',
       alt: '',
-      position: 'move',
     };
   }
 
@@ -393,9 +384,8 @@ export function buildImageToken(meta: ImageTokenMeta): string {
   const widthPct = clampImageWidthPct(meta.widthPct ?? 40);
   const rotationDeg = clampImageRotationDeg(meta.rotationDeg);
   const wrap = parseImageWrap(meta.wrap);
-  const position = parseImagePosition(meta.position);
   const alt = encodeURIComponent(meta.alt.trim());
-  return `[[IMAGE|src=${src}|w=${widthPct}|a=${meta.align}|rot=${rotationDeg}|wrap=${wrap}|pos=${position}|alt=${alt}]]`;
+  return `[[IMAGE|src=${src}|w=${widthPct}|a=${meta.align}|rot=${rotationDeg}|wrap=${wrap}|alt=${alt}]]`;
 }
 
 /** Returns absolute [start,end) ranges for all image tokens in the flat text. */
