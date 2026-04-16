@@ -1,34 +1,37 @@
 import React, { useState } from 'react';
+import { grammarApi } from '../../../lib/api';
 
 type Issue = {
   id: number;
-  type: 'grammar' | 'spelling' | 'style';
+  type: string;
   text: string;
   suggestion: string;
 };
 
-const PLACEHOLDER_ISSUES: Issue[] = [
-  { id: 1, type: 'spelling', text: 'recieve', suggestion: 'receive' },
-  {
-    id: 2,
-    type: 'grammar',
-    text: 'He go to the store',
-    suggestion: 'He goes to the store',
-  },
-  { id: 3, type: 'style', text: 'very good', suggestion: 'excellent' },
-];
-
-const badgeClass: Record<Issue['type'], string> = {
+const badgeClass: Record<string, string> = {
   spelling: 'bg-red-100 text-red-600',
   grammar: 'bg-amber-100 text-amber-600',
   style: 'bg-blue-100 text-blue-600',
 };
 
-const GrammarChecker: React.FC = () => {
-  const [state, setState] = useState<'idle' | 'done'>('idle');
+const GrammarChecker: React.FC<{ token: string; docText: string }> = ({ token, docText }) => {
+  const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
   const [dismissed, setDismissed] = useState<number[]>([]);
+  const [issues, setIssues] = useState<Issue[]>([]);
 
-  const visible = PLACEHOLDER_ISSUES.filter((i) => !dismissed.includes(i.id));
+  const visible = issues.filter((i) => !dismissed.includes(i.id));
+
+  async function checkDocument() {
+    setState('loading');
+    setDismissed([]);
+    try {
+      const { issues: found } = await grammarApi.check(token, docText || ' ');
+      setIssues(found);
+    } catch {
+      setIssues([]);
+    }
+    setState('done');
+  }
 
   return (
     <section className="flex h-full flex-col">
@@ -36,7 +39,15 @@ const GrammarChecker: React.FC = () => {
         Grammar Checker
       </h3>
 
-      {state === 'idle' ? (
+      {state === 'loading' ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <svg className="h-8 w-8 animate-spin text-cyan-500" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+          </svg>
+          <p className="text-xs text-slate-500">Checking document…</p>
+        </div>
+      ) : state === 'idle' ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
           <span className="material-icons text-slate-300" style={{ fontSize: '3rem' }}>
             spellcheck
@@ -45,7 +56,7 @@ const GrammarChecker: React.FC = () => {
             Check your document for grammar, spelling, and style issues.
           </p>
           <button
-            onClick={() => setState('done')}
+            onClick={() => void checkDocument()}
             className="rounded-md bg-cyan-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-cyan-700 transition-colors"
           >
             Check Document
@@ -91,10 +102,7 @@ const GrammarChecker: React.FC = () => {
             </ul>
           )}
           <button
-            onClick={() => {
-              setState('idle');
-              setDismissed([]);
-            }}
+            onClick={() => { setState('idle'); setDismissed([]); setIssues([]); }}
             className="mt-3 shrink-0 text-xs text-cyan-600 hover:underline"
           >
             Check again

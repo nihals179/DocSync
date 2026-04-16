@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { aiApi } from '../../../lib/api';
 
 type Message = { role: 'user' | 'ai'; text: string };
 
@@ -7,7 +8,7 @@ const INITIAL: Message = {
   text: "Hi! I'm your AI writing assistant. Ask me to improve your text, summarize content, or help brainstorm ideas.",
 };
 
-const AiTool: React.FC = () => {
+const AiTool: React.FC<{ token: string }> = ({ token }) => {
   const [messages, setMessages] = useState<Message[]>([INITIAL]);
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -16,18 +17,17 @@ const AiTool: React.FC = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const send = () => {
+  const send = async () => {
     const t = input.trim();
     if (!t) return;
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', text: t },
-      {
-        role: 'ai',
-        text: 'AI integration coming soon. This is a placeholder response.',
-      },
-    ]);
+    setMessages((prev) => [...prev, { role: 'user', text: t }]);
     setInput('');
+    try {
+      const { response } = await aiApi.chat(token, t);
+      setMessages((prev) => [...prev, { role: 'ai', text: response }]);
+    } catch {
+      setMessages((prev) => [...prev, { role: 'ai', text: 'Failed to get a response. Please try again.' }]);
+    }
   };
 
   return (

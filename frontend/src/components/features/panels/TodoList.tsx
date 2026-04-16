@@ -1,22 +1,51 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { todosApi } from '../../../lib/api';
 
 type TodoItem = { id: string; text: string; done: boolean };
 
-const TodoList: React.FC = () => {
+const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) => {
   const [items, setItems] = useState<TodoItem[]>([]);
   const [input, setInput] = useState('');
 
-  const add = () => {
+  useEffect(() => {
+    if (!docId) return;
+    todosApi.list(token, docId)
+      .then(({ todos }) => setItems(todos))
+      .catch(() => {});
+  }, [token, docId]);
+
+  const add = async () => {
     const t = input.trim();
-    if (!t) return;
-    setItems((prev) => [...prev, { id: String(Date.now()), text: t, done: false }]);
-    setInput('');
+    if (!t || !docId) return;
+    try {
+      const { todo } = await todosApi.add(token, docId, t);
+      setItems((prev) => [...prev, todo]);
+      setInput('');
+    } catch {
+      // silent
+    }
   };
 
-  const toggle = (id: string) =>
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, done: !i.done } : i)));
+  const toggle = async (id: string) => {
+    const item = items.find((i) => i.id === id);
+    if (!item || !docId) return;
+    try {
+      const { todo } = await todosApi.update(token, docId, id, { done: !item.done });
+      setItems((prev) => prev.map((i) => (i.id === id ? todo : i)));
+    } catch {
+      // silent
+    }
+  };
 
-  const remove = (id: string) => setItems((prev) => prev.filter((i) => i.id !== id));
+  const remove = async (id: string) => {
+    if (!docId) return;
+    try {
+      await todosApi.delete(token, docId, id);
+      setItems((prev) => prev.filter((i) => i.id !== id));
+    } catch {
+      // silent
+    }
+  };
 
   return (
     <section className="flex h-full flex-col">
@@ -27,12 +56,12 @@ const TodoList: React.FC = () => {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && add()}
+          onKeyDown={(e) => { if (e.key === 'Enter') void add(); }}
           placeholder="Add a task…"
           className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm text-slate-800 focus:border-cyan-400 focus:outline-none"
         />
         <button
-          onClick={add}
+          onClick={() => void add()}
           className="rounded-md bg-cyan-600 px-3 py-1 text-sm font-medium text-white hover:bg-cyan-700 transition-colors"
         >
           Add
@@ -50,7 +79,7 @@ const TodoList: React.FC = () => {
             <input
               type="checkbox"
               checked={item.done}
-              onChange={() => toggle(item.id)}
+              onChange={() => void toggle(item.id)}
               className="accent-cyan-600"
             />
             <span
@@ -59,7 +88,7 @@ const TodoList: React.FC = () => {
               {item.text}
             </span>
             <button
-              onClick={() => remove(item.id)}
+              onClick={() => void remove(item.id)}
               className="text-slate-300 hover:text-red-400 transition-colors"
               title="Remove task"
             >
