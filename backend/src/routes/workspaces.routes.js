@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { workspaces } = require('../store');
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { attachEntitlements } = require('../middleware/entitlements');
 
 const router = express.Router();
 
@@ -24,7 +25,7 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('work
  * Creates a workspace owned by current user.
  * Body: { name? }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.create'), (req, res) => {
+router.post('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.create'), attachEntitlements, (req, res) => {
   const name = typeof req.body?.name === 'string' && req.body.name.trim().length > 0
     ? req.body.name.trim()
     : 'New Workspace';

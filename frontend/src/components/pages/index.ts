@@ -5,3 +5,6 @@ export { default as SecuritySettingsPage } from './SecuritySettingsPage';
 export { default as VerifyEmailPage } from './VerifyEmailPage';
 export { default as WorkspaceHomePage } from './WorkspaceHomePage';
 export { default as OrganizationAdminPage } from './OrganizationAdminPage';
+export { default as BillingPortalPage } from './BillingPortalPage';
+export { default as EnterpriseSecuritySettingsPage } from './EnterpriseSecuritySettingsPage';
+export { default as OrganizationAuditConsolePage } from './OrganizationAuditConsolePage';

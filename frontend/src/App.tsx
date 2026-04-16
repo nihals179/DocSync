@@ -4,10 +4,13 @@ import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-do
 import {
   AiTool,
   AuthPage,
+  BillingPortalPage,
   Comments,
+  EnterpriseSecuritySettingsPage,
   GrammarChecker,
   Header,
   LandingPage,
+  OrganizationAuditConsolePage,
   OrganizationAdminPage,
   ResetPasswordPage,
   RichEditor,
@@ -1467,6 +1470,36 @@ function App() {
         element={
           session ? (
             <OrganizationAdminPage token={session.accessToken} userName={session.user.name} />
+          ) : (
+            <Navigate to="/auth" replace />
+          )
+        }
+      />
+      <Route
+        path="/enterprise-security"
+        element={
+          session ? (
+            <EnterpriseSecuritySettingsPage token={session.accessToken} userName={session.user.name} />
+          ) : (
+            <Navigate to="/auth" replace />
+          )
+        }
+      />
+      <Route
+        path="/organization-audit"
+        element={
+          session ? (
+            <OrganizationAuditConsolePage token={session.accessToken} userName={session.user.name} />
+          ) : (
+            <Navigate to="/auth" replace />
+          )
+        }
+      />
+      <Route
+        path="/billing"
+        element={
+          session ? (
+            <BillingPortalPage token={session.accessToken} userName={session.user.name} />
           ) : (
             <Navigate to="/auth" replace />
           )

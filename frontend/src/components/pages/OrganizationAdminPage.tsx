@@ -161,9 +161,20 @@ export default function OrganizationAdminPage({ token, userName }: OrganizationA
             <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-900">Tenant membership and access control</h1>
             <p className="mt-2 text-sm text-slate-600">Signed in as {userName}</p>
           </div>
-          <Link to="/workspace" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
-            Back to workspace
-          </Link>
+          <div className="flex gap-2">
+            <Link to="/billing" className="rounded-xl border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700">
+              Billing portal
+            </Link>
+            <Link to="/enterprise-security" className="rounded-xl border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700">
+              Enterprise security
+            </Link>
+            <Link to="/organization-audit" className="rounded-xl border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700">
+              Audit console
+            </Link>
+            <Link to="/workspace" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
+              Back to workspace
+            </Link>
+          </div>
         </div>
 
         {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}

@@ -8,6 +8,9 @@ export {
 	ResetPasswordPage,
 	SecuritySettingsPage,
 	OrganizationAdminPage,
+	BillingPortalPage,
+	EnterpriseSecuritySettingsPage,
+	OrganizationAuditConsolePage,
 	VerifyEmailPage,
 	WorkspaceHomePage,
 } from './pages';

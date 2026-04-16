@@ -2,6 +2,9 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
 const {
+  canAssignCollaborators,
+  canAssignSeats,
+  getOrganizationEntitlements,
   organizationInvites,
   organizationMemberships,
   organizations,
@@ -16,6 +19,7 @@ const {
   requirePermission,
   getUserOrganizations,
 } = require('../middleware/rbac');
+const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
 
@@ -103,6 +107,17 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
   if (!email) return res.status(400).json({ error: 'email is required.' });
   if (!role || !VALID_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role.' });
 
+  const seatCheck = canAssignSeats(req.organization.id, 1);
+  if (!seatCheck.allowed) {
+    return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
+  }
+  if (role !== 'viewer') {
+    const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
+    if (!collaboratorCheck.allowed) {
+      return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+    }
+  }
+
   const existingMembership = [...organizationMemberships.values()].find(
     (membership) => membership.organizationId === req.organization.id && membership.status === 'active' && users.get(membership.userId)?.email === email,
   );
@@ -132,6 +147,13 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
     acceptedAt: null,
   };
   organizationInvites.set(invite.id, invite);
+
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: req.organization.id,
+    action: 'organization.invite.create',
+    metadata: { email: invite.email, role: invite.role, billingAdmin: invite.billingAdmin },
+  });
 
   res.status(201).json({
     invite: {
@@ -172,6 +194,23 @@ router.post('/invites/accept', requireAuth, (req, res) => {
     (membership) => membership.organizationId === invite.organizationId && membership.userId === user.id,
   );
 
+  const needsSeat = !existingMembership || existingMembership.status !== 'active';
+  if (needsSeat) {
+    const seatCheck = canAssignSeats(invite.organizationId, 1);
+    if (!seatCheck.allowed) {
+      return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
+    }
+  }
+
+  const hadCollaborator = existingMembership && existingMembership.status === 'active' && existingMembership.role !== 'viewer';
+  const needsCollaborator = invite.role !== 'viewer' && !hadCollaborator;
+  if (needsCollaborator) {
+    const collaboratorCheck = canAssignCollaborators(invite.organizationId, 1);
+    if (!collaboratorCheck.allowed) {
+      return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+    }
+  }
+
   if (existingMembership) {
     existingMembership.status = 'active';
     existingMembership.role = invite.role;
@@ -200,6 +239,13 @@ router.post('/invites/accept', requireAuth, (req, res) => {
   user.currentOrganizationId = invite.organizationId;
   users.set(user.id, user);
 
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: invite.organizationId,
+    action: 'organization.invite.accept',
+    metadata: { inviteId: invite.id, role: invite.role },
+  });
+
   res.json({ message: 'Organization invite accepted.', organizationId: invite.organizationId });
 });
 
@@ -224,10 +270,29 @@ router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationC
     return res.status(403).json({ error: 'Only owner can assign owner role.' });
   }
 
+  if (targetRole === 'viewer' && nextRole !== 'viewer') {
+    const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
+    if (!collaboratorCheck.allowed) {
+      return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+    }
+  }
+
   targetMembership.role = nextRole;
   targetMembership.billingAdmin = nextBillingAdmin;
   targetMembership.updatedAt = nowIso();
   organizationMemberships.set(targetMembership.id, targetMembership);
+
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: req.organization.id,
+    action: 'organization.member.role.update',
+    metadata: {
+      membershipId: targetMembership.id,
+      targetUserId: targetMembership.userId,
+      role: nextRole,
+      billingAdmin: nextBillingAdmin,
+    },
+  });
 
   res.json({ member: mapMembership(targetMembership) });
 });
@@ -252,6 +317,13 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
   targetMembership.updatedAt = nowIso();
   organizationMemberships.set(targetMembership.id, targetMembership);
 
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: req.organization.id,
+    action: 'organization.member.remove',
+    metadata: { membershipId: targetMembership.id, targetUserId: targetMembership.userId, role: targetMembership.role },
+  });
+
   const removedUser = users.get(targetMembership.userId);
   if (removedUser && removedUser.currentOrganizationId === req.organization.id) {
     const fallback = [...organizationMemberships.values()].find(
@@ -262,6 +334,12 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
   }
 
   res.json({ message: 'Member removed.' });
+});
+
+router.get('/current/entitlements', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), (req, res) => {
+  const entitlements = getOrganizationEntitlements(req.organization.id);
+  if (!entitlements) return res.status(404).json({ error: 'Entitlements unavailable.' });
+  res.json({ entitlements });
 });
 
 module.exports = router;

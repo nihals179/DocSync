@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { attachEntitlements, requireAiQuota, consumeAiQuota } = require('../middleware/entitlements');
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ const router = express.Router();
  * Plug in OpenAI / Anthropic / Gemini SDK here.
  * Returns a placeholder response until an API key is configured.
  */
-router.post('/chat', requireAuth, resolveOrganizationContext, requirePermission('ai.use'), (req, res) => {
+router.post('/chat', requireAuth, resolveOrganizationContext, requirePermission('ai.use'), attachEntitlements, requireAiQuota, consumeAiQuota, (req, res) => {
   const { message, context } = req.body;
   if (!message || !message.trim()) {
     return res.status(400).json({ error: 'message is required.' });

@@ -12,6 +12,10 @@ const aiRoutes = require('./routes/ai.routes');
 const grammarRoutes = require('./routes/grammar.routes');
 const workspacesRoutes = require('./routes/workspaces.routes');
 const organizationsRoutes = require('./routes/organizations.routes');
+const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
+const billingRoutes = require('./routes/billing.routes');
+const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
+const { startBillingWebhookWorker } = require('./billing/service');
 
 const app = express();
 
@@ -37,6 +41,15 @@ app.use('/api/workspaces', workspacesRoutes);
 // Organizations
 app.use('/api/organizations', organizationsRoutes);
 
+// Enterprise security and audit console
+app.use('/api/organizations', enterpriseSecurityRoutes);
+
+// Billing portal and plan management
+app.use('/api/billing', billingRoutes);
+
+// Billing webhooks (provider callbacks)
+app.use('/api/billing/webhooks', billingWebhooksRoutes);
+
 // Document-scoped resources (mergeParams enabled on each router)
 app.use('/api/docs/:docId/comments', commentsRoutes);
 app.use('/api/docs/:docId/versions', versionsRoutes);
@@ -45,5 +58,7 @@ app.use('/api/docs/:docId/todos', todosRoutes);
 // AI & Grammar
 app.use('/api/ai', aiRoutes);
 app.use('/api/grammar', grammarRoutes);
+
+startBillingWebhookWorker();
 
 module.exports = app;

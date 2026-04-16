@@ -5,13 +5,16 @@ const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 
 const {
-  auditLogs,
   authSessions,
   authTokens,
   ensureTenantBootstrapForUser,
+  findOrganizationByDomain,
+  getOrganizationSecurityState,
+  organizationMemberships,
   ensureWorkspaceForUser,
   users,
 } = require('../store');
+const { writeAuditLog, listAuditLogs } = require('../lib/audit');
 const {
   CSRF_COOKIE,
   REFRESH_COOKIE,
@@ -55,18 +58,30 @@ function getUserAgent(req) {
 }
 
 function audit(req, action, status, userId = null, metadata = {}) {
-  const entry = {
-    id: uuidv4(),
+  const user = userId ? users.get(userId) : null;
+  return writeAuditLog({
     userId,
+    organizationId: user?.currentOrganizationId || metadata.organizationId || null,
     action,
     status,
     ipAddress: getRequestIp(req),
     userAgent: getUserAgent(req),
-    createdAt: nowIso(),
-    metadata,
-  };
-  auditLogs.set(entry.id, entry);
-  return entry;
+    metadata: {
+      ...metadata,
+    },
+  });
+}
+
+function getOrgSessionDurationMs(user, remember) {
+  if (!user?.currentOrganizationId) {
+    return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
+  }
+  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  if (!security) {
+    return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
+  }
+  const orgMs = Math.min(24, Math.max(1, Number(security.sessionDurationHours || 8))) * 60 * 60 * 1000;
+  return remember ? Math.min(REMEMBER_SESSION_MS, orgMs) : orgMs;
 }
 
 function ensureUserShape(user) {
@@ -133,7 +148,7 @@ function createSession(user, req, remember) {
   pruneExpiredSessions();
   const refreshToken = generateOpaqueToken();
   const csrfToken = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + (remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS)).toISOString();
+  const expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, remember)).toISOString();
   const session = {
     id: uuidv4(),
     userId: user.id,
@@ -157,7 +172,8 @@ function rotateSession(session, req) {
   session.refreshTokenHash = hashToken(refreshToken);
   session.csrfToken = csrfToken;
   session.lastUsedAt = nowIso();
-  session.expiresAt = new Date(Date.now() + (session.remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS)).toISOString();
+  const user = users.get(session.userId);
+  session.expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);
   authSessions.set(session.id, session);
@@ -294,6 +310,30 @@ router.post('/register', registerRateLimit, async (req, res) => {
   users.set(user.id, user);
   ensureTenantBootstrapForUser(user);
 
+  const mappedOrganization = findOrganizationByDomain(normalizedEmail);
+  if (mappedOrganization) {
+    const existingMembership = [...organizationMemberships.values()].find(
+      (membership) => membership.userId === user.id && membership.organizationId === mappedOrganization.id,
+    );
+    if (!existingMembership) {
+      const now = nowIso();
+      const membershipId = uuidv4();
+      organizationMemberships.set(membershipId, {
+        id: membershipId,
+        organizationId: mappedOrganization.id,
+        userId: user.id,
+        role: 'member',
+        billingAdmin: false,
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    user.currentOrganizationId = mappedOrganization.id;
+    users.set(user.id, user);
+    ensureWorkspaceForUser(user, mappedOrganization.id);
+  }
+
   const verificationToken = issueOneTimeToken(user.id, 'email-verification', EMAIL_TOKEN_TTL_MS);
   const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
   audit(req, 'register', 'success', user.id, { verificationRequired: true });
@@ -384,6 +424,15 @@ router.post('/login', loginRateLimit, async (req, res) => {
   user.lockoutUntil = null;
   users.set(user.id, user);
   ensureTenantBootstrapForUser(user);
+
+  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  if (security?.requireMfa && !user.twoFactorEnabled) {
+    audit(req, 'login-mfa-policy', 'failure', user.id, {
+      reason: 'mfa-required-by-organization',
+      organizationId: user.currentOrganizationId,
+    });
+    return res.status(403).json({ error: 'Your organization requires MFA. Enable two-factor authentication first.' });
+  }
 
   if (user.twoFactorEnabled) {
     audit(req, 'login-2fa-required', 'success', user.id);
@@ -548,10 +597,7 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
 });
 
 router.get('/audit-logs', requireAuth, (req, res) => {
-  const logs = [...auditLogs.values()]
-    .filter((entry) => entry.userId === req.user.id)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 100);
+  const logs = listAuditLogs({ userId: req.user.id, limit: 100 });
   res.json({ logs });
 });
 

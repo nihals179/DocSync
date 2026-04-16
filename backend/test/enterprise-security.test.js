@@ -1,0 +1,170 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const request = require('supertest');
+
+const app = require('../src/app');
+const {
+  auditLogs,
+  authSessions,
+  authTokens,
+  comments,
+  documents,
+  invoices,
+  organizationUsage,
+  organizationInvites,
+  organizationMemberships,
+  organizations,
+  processedWebhookEvents,
+  todos,
+  users,
+  versions,
+  webhookJobs,
+  workspaces,
+} = require('../src/store');
+
+function clearStore() {
+  auditLogs.clear();
+  authSessions.clear();
+  authTokens.clear();
+  comments.clear();
+  documents.clear();
+  invoices.clear();
+  organizationUsage.clear();
+  organizationInvites.clear();
+  organizationMemberships.clear();
+  organizations.clear();
+  processedWebhookEvents.clear();
+  todos.clear();
+  users.clear();
+  versions.clear();
+  webhookJobs.clear();
+  workspaces.clear();
+}
+
+async function registerVerifyLogin(client, { name, email, password = 'Password123!' }) {
+  const registerRes = await client
+    .post('/api/auth/register')
+    .send({ name, email, password })
+    .expect(201);
+
+  await client
+    .post('/api/auth/verify-email')
+    .send({ token: registerRes.body.verificationTokenPreview })
+    .expect(200);
+
+  const loginRes = await client
+    .post('/api/auth/login')
+    .send({ email, password, remember: false })
+    .expect(200);
+
+  return {
+    token: loginRes.body.accessToken,
+    user: loginRes.body.user,
+  };
+}
+
+function authHeader(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+test.beforeEach(() => {
+  clearStore();
+});
+
+test('enterprise security settings support SSO providers, domains, and CSV audit export', async () => {
+  const client = request(app);
+  const owner = await registerVerifyLogin(client, {
+    name: 'Security Owner',
+    email: 'owner@acme.com',
+  });
+
+  const policyRes = await client
+    .put('/api/organizations/current/security/policies')
+    .set(authHeader(owner.token))
+    .send({
+      requireMfa: true,
+      sessionDurationHours: 6,
+      ipAllowlistEnabled: true,
+      ipAllowlist: ['1.2.3.4'],
+    })
+    .expect(200);
+
+  assert.equal(policyRes.body.security.requireMfa, true);
+  assert.equal(policyRes.body.security.sessionDurationHours, 6);
+
+  await client
+    .put('/api/organizations/current/security/domains')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '1.2.3.4')
+    .send({ domains: ['acme.com', '@subsidiary.acme.com'] })
+    .expect(200);
+
+  const providerRes = await client
+    .post('/api/organizations/current/security/sso/providers')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '1.2.3.4')
+    .send({
+      type: 'oidc',
+      name: 'Okta Prod',
+      issuerUrl: 'https://id.acme.com',
+      clientId: 'acme-client-id',
+      clientSecret: 'super-secret',
+    })
+    .expect(201);
+
+  assert.equal(providerRes.body.provider.type, 'oidc');
+
+  const currentRes = await client
+    .get('/api/organizations/current/security')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '1.2.3.4')
+    .expect(200);
+
+  assert.equal(currentRes.body.security.domainMappings.includes('acme.com'), true);
+  assert.equal(currentRes.body.security.ssoProviders.length, 1);
+
+  await client
+    .post('/api/organizations/sso/simulate-login')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '1.2.3.4')
+    .send({ email: 'employee@acme.com' })
+    .expect(200);
+
+  const csvRes = await client
+    .get('/api/organizations/current/audit-logs/export.csv')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '1.2.3.4')
+    .expect(200);
+
+  assert.equal(csvRes.headers['content-type'].includes('text/csv'), true);
+  assert.equal(csvRes.text.startsWith('id,createdAt,organizationId,userId,action,status,metadata'), true);
+});
+
+test('ip allowlist blocks authenticated requests when address is not approved', async () => {
+  const client = request(app);
+  const owner = await registerVerifyLogin(client, {
+    name: 'Allowlist Owner',
+    email: 'allowlist@acme.com',
+  });
+
+  await client
+    .put('/api/organizations/current/security/policies')
+    .set(authHeader(owner.token))
+    .send({
+      ipAllowlistEnabled: true,
+      ipAllowlist: ['10.10.10.10'],
+    })
+    .expect(200);
+
+  await client
+    .get('/api/docs')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '203.0.113.10')
+    .expect(403);
+
+  await client
+    .get('/api/docs')
+    .set(authHeader(owner.token))
+    .set('x-forwarded-for', '10.10.10.10')
+    .expect(200);
+});

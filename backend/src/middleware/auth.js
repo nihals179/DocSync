@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { authSessions, ensureTenantBootstrapForUser, users } = require('../store');
+const { authSessions, ensureTenantBootstrapForUser, getOrganizationSecurityState, users } = require('../store');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
@@ -75,6 +75,18 @@ function resolveUserFromSession(sessionId) {
   return { session, user };
 }
 
+function getRequestIp(req) {
+  return req.headers['x-forwarded-for']?.toString().split(',')[0].trim() || req.ip || 'unknown';
+}
+
+function isIpAllowed(req, user) {
+  if (!user?.currentOrganizationId) return true;
+  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;
+  const requestIp = getRequestIp(req);
+  return security.ipAllowlist.includes(requestIp);
+}
+
 function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
@@ -96,6 +108,9 @@ function requireAuth(req, res, next) {
   const resolved = resolveUserFromSession(payload.sid);
   if (!resolved || resolved.user.id !== payload.sub) {
     return res.status(401).json({ error: 'Session invalid or expired.' });
+  }
+  if (!isIpAllowed(req, resolved.user)) {
+    return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
   }
 
   req.user = {

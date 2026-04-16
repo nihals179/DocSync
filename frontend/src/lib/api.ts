@@ -52,6 +52,95 @@ export type OrganizationInvite = {
   inviteToken?: string;
 };
 
+export type BillingPlan = {
+  id: 'free' | 'pro' | 'business' | 'enterprise';
+  name: string;
+  priceMonthlyCents: number;
+  limits: {
+    seats: number;
+    storageBytes: number;
+    aiRequestsPerMonth: number;
+    collaborators: number;
+  };
+};
+
+export type BillingInvoice = {
+  id: string;
+  organizationId: string;
+  provider: string;
+  status: 'draft' | 'open' | 'paid' | 'failed' | 'void';
+  amountCents: number;
+  currency: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  issuedAt: string;
+  paidAt: string | null;
+  hostedUrl: string | null;
+};
+
+export type BillingSnapshot = {
+  billing: {
+    planId: string;
+    status: string;
+    purchasedSeats: number;
+    trialEndsAt: string | null;
+    trialUsed: boolean;
+    subscriptionId: string | null;
+    customerId: string | null;
+    currentPeriodEndAt: string | null;
+    graceEndsAt: string | null;
+    updatedAt: string;
+  };
+  plan: BillingPlan;
+  limits: {
+    seatsPurchased: number;
+    storageBytes: number;
+    aiRequestsPerMonth: number;
+    collaborators: number;
+  };
+  usage: {
+    monthKey: string;
+    aiRequests: number;
+    assignedSeats: number;
+    storageUsedBytes: number;
+    collaboratorsAssigned: number;
+  };
+  invoices: BillingInvoice[];
+};
+
+export type SsoProvider = {
+  id: string;
+  type: 'oidc' | 'saml';
+  name: string;
+  issuerUrl: string | null;
+  ssoUrl: string | null;
+  clientId: string | null;
+  certificate: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrganizationSecurityState = {
+  requireMfa: boolean;
+  sessionDurationHours: number;
+  ipAllowlistEnabled: boolean;
+  ipAllowlist: string[];
+  domainMappings: string[];
+  ssoProviders: SsoProvider[];
+  updatedAt: string;
+};
+
+export type OrganizationAuditLog = {
+  id: string;
+  userId: string;
+  organizationId: string | null;
+  action: string;
+  status: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+};
+
 export type AuthSessionSummary = {
   id: string;
   createdAt: string;
@@ -128,6 +217,34 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
   const data: unknown = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
   return data as T;
+}
+
+export async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
+  const { token, headers: extraHeaders, includeCsrf = false, ...rest } = options;
+  const csrfToken = includeCsrf ? getCookie('docsync_csrf') : '';
+  const headers: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    ...(extraHeaders as Record<string, string>),
+  };
+
+  const res = await fetch(`${BASE}${path}`, {
+    ...rest,
+    headers,
+    credentials: 'include',
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    try {
+      const parsed = JSON.parse(text) as { error?: string };
+      throw new Error(parsed.error ?? `HTTP ${res.status}`);
+    } catch {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  }
+
+  return text;
 }
 
 export const authApi = {
@@ -405,4 +522,166 @@ export const organizationsApi = {
       method: 'DELETE',
       token,
     }),
+  entitlements: (token: string) =>
+    apiFetch<{ entitlements: Omit<BillingSnapshot, 'invoices'> }>('/api/organizations/current/entitlements', {
+      token,
+    }),
+  getSecurity: (token: string) =>
+    apiFetch<{ security: OrganizationSecurityState }>('/api/organizations/current/security', {
+      token,
+    }),
+  updateSecurityPolicies: (
+    token: string,
+    payload: {
+      requireMfa?: boolean;
+      sessionDurationHours?: number;
+      ipAllowlistEnabled?: boolean;
+      ipAllowlist?: string[];
+    },
+  ) =>
+    apiFetch<{ message: string; security: OrganizationSecurityState }>('/api/organizations/current/security/policies', {
+      method: 'PUT',
+      token,
+      body: JSON.stringify(payload),
+    }),
+  updateSecurityDomains: (token: string, domains: string[]) =>
+    apiFetch<{ domains: string[]; updatedAt: string }>('/api/organizations/current/security/domains', {
+      method: 'PUT',
+      token,
+      body: JSON.stringify({ domains }),
+    }),
+  createSsoProvider: (
+    token: string,
+    payload: {
+      type: 'oidc' | 'saml';
+      name: string;
+      issuerUrl?: string;
+      ssoUrl?: string;
+      clientId?: string;
+      clientSecret?: string;
+      certificate?: string;
+      enabled?: boolean;
+    },
+  ) =>
+    apiFetch<{ provider: SsoProvider }>('/api/organizations/current/security/sso/providers', {
+      method: 'POST',
+      token,
+      body: JSON.stringify(payload),
+    }),
+  updateSsoProvider: (
+    token: string,
+    providerId: string,
+    payload: Partial<{
+      type: 'oidc' | 'saml';
+      name: string;
+      issuerUrl: string;
+      ssoUrl: string;
+      clientId: string;
+      clientSecret: string;
+      certificate: string;
+      enabled: boolean;
+    }>,
+  ) =>
+    apiFetch<{ provider: SsoProvider }>(`/api/organizations/current/security/sso/providers/${providerId}`, {
+      method: 'PATCH',
+      token,
+      body: JSON.stringify(payload),
+    }),
+  removeSsoProvider: (token: string, providerId: string) =>
+    apiFetch<{ message: string }>(`/api/organizations/current/security/sso/providers/${providerId}`, {
+      method: 'DELETE',
+      token,
+    }),
+  simulateSsoLogin: (token: string, email: string) =>
+    apiFetch<{
+      organization: { id: string; name: string };
+      provider: SsoProvider;
+      user: { id: string; email: string; name: string } | null;
+      membershipStatus: string | null;
+    }>('/api/organizations/sso/simulate-login', {
+      method: 'POST',
+      token,
+      body: JSON.stringify({ email }),
+    }),
+  getOrganizationAuditLogs: (
+    token: string,
+    query: { userId?: string; action?: string; status?: string; limit?: number } = {},
+  ) => {
+    const search = new URLSearchParams();
+    if (query.userId) search.set('userId', query.userId);
+    if (query.action) search.set('action', query.action);
+    if (query.status) search.set('status', query.status);
+    if (query.limit != null) search.set('limit', String(query.limit));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiFetch<{ logs: OrganizationAuditLog[] }>(`/api/organizations/current/audit-logs${suffix}`, { token });
+  },
+  exportOrganizationAuditCsv: (
+    token: string,
+    query: { userId?: string; action?: string; status?: string; limit?: number } = {},
+  ) => {
+    const search = new URLSearchParams();
+    if (query.userId) search.set('userId', query.userId);
+    if (query.action) search.set('action', query.action);
+    if (query.status) search.set('status', query.status);
+    if (query.limit != null) search.set('limit', String(query.limit));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiFetchText(`/api/organizations/current/audit-logs/export.csv${suffix}`, { token });
+  },
+};
+
+export const billingApi = {
+  plans: (token: string) => apiFetch<{ plans: BillingPlan[] }>('/api/billing/plans', { token }),
+  current: (token: string) => apiFetch<{ snapshot: BillingSnapshot }>('/api/billing/current', { token }),
+  invoices: (token: string) => apiFetch<{ invoices: BillingInvoice[] }>('/api/billing/invoices', { token }),
+  checkout: (
+    token: string,
+    payload: {
+      planId: 'free' | 'pro' | 'business' | 'enterprise';
+      purchasedSeats?: number;
+      successUrl?: string;
+      cancelUrl?: string;
+      autoQueueCompletion?: boolean;
+    },
+  ) =>
+    apiFetch<{
+      checkoutSession: {
+        id: string;
+        provider: string;
+        checkoutUrl: string;
+        cancelUrl: string;
+      };
+      currentPlanId: string;
+      note: string;
+    }>('/api/billing/checkout', {
+      method: 'POST',
+      token,
+      body: JSON.stringify(payload),
+    }),
+  changeSubscription: (
+    token: string,
+    payload: { planId: 'free' | 'pro' | 'business' | 'enterprise'; purchasedSeats?: number },
+  ) =>
+    apiFetch<{ message: string; eventId: string }>('/api/billing/subscription/change', {
+      method: 'POST',
+      token,
+      body: JSON.stringify(payload),
+    }),
+  updateSeats: (token: string, purchasedSeats: number) =>
+    apiFetch<{ message: string; purchasedSeats: number; assignedSeats: number }>('/api/billing/seats', {
+      method: 'PATCH',
+      token,
+      body: JSON.stringify({ purchasedSeats }),
+    }),
+  webhookJobs: (token: string) =>
+    apiFetch<{
+      jobs: Array<{
+        id: string;
+        eventId: string;
+        type: string;
+        status: string;
+        attempts: number;
+        nextAttemptAt: string;
+        lastError: string | null;
+      }>;
+    }>('/api/billing/webhooks/jobs', { token }),
 };
