@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { organizationsApi, type OrganizationAuditLog } from '../../lib/api';
@@ -22,7 +22,7 @@ export default function OrganizationAuditConsolePage({ token, userName }: Organi
   const [statusFilter, setStatusFilter] = useState('');
   const [limitFilter, setLimitFilter] = useState(200);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -37,11 +37,11 @@ export default function OrganizationAuditConsolePage({ token, userName }: Organi
     } finally {
       setLoading(false);
     }
-  }
+  }, [token, actionFilter, statusFilter, limitFilter]);
 
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function exportCsv() {
     setMessage('');

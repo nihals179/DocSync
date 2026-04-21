@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 
 type ColorPickerProps = {
   textColor: string;
+  disabled?: boolean;
   onColorChange: (color: string) => void;
 };
 
@@ -9,7 +10,7 @@ type ColorPickerProps = {
  * Text color picker with a hidden input and clickable color preview.
  * Shows current color on the A glyph and as a small underline.
  */
-export const ColorPicker: React.FC<ColorPickerProps> = ({ textColor, onColorChange }) => {
+export const ColorPicker: React.FC<ColorPickerProps> = ({ textColor, disabled, onColorChange }) => {
   const textColorInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -17,11 +18,18 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({ textColor, onColorChan
       <div className="group relative inline-flex">
         <button
           type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => textColorInputRef.current?.click()}
+          disabled={disabled}
+          onMouseDown={(e) => {
+            if (!disabled) e.preventDefault();
+          }}
+          onClick={() => {
+            if (!disabled) textColorInputRef.current?.click();
+          }}
           title="Text Color"
           aria-label="Text Color"
-          className="relative flex h-7 w-7 items-center justify-center rounded transition-colors duration-100 hover:bg-slate-100"
+          className={`relative flex h-7 w-7 items-center justify-center rounded transition-colors duration-100 ${
+            disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-100'
+          }`}
         >
           <span className="text-[18px] font-normal leading-none text-slate-600">A</span>
           <span
@@ -40,6 +48,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({ textColor, onColorChan
         onChange={(e) => onColorChange(e.target.value)}
         className="invisible absolute h-0 w-0"
         tabIndex={-1}
+        disabled={disabled}
         aria-label="Text Color"
       />
     </>

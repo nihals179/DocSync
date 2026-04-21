@@ -16,7 +16,18 @@ export type CanvasMenuAction =
   | 'comments'
   | 'insert-link'
   | 'insert-image'
-  | 'spelling-check';
+  | 'spelling-check'
+  | 'table-edit-cell'
+  | 'table-add-row-above'
+  | 'table-add-row-below'
+  | 'table-delete-row'
+  | 'table-add-column-left'
+  | 'table-add-column-right'
+  | 'table-delete-column'
+  | 'table-sort-asc'
+  | 'table-sort-desc'
+  | 'table-open-options'
+  | 'table-delete';
 
 type MenuItem = {
   id: CanvasMenuAction;
@@ -77,11 +88,50 @@ const MENU_SECTIONS: MenuSection[] = [
   },
 ];
 
+const TABLE_MENU_SECTIONS: MenuSection[] = [
+  {
+    title: 'Cell',
+    items: [
+      { id: 'table-edit-cell', label: 'Edit cell', icon: 'edit', shortcut: [] },
+      {
+        id: 'table-open-options',
+        label: 'Open table options',
+        icon: 'tune',
+        shortcut: [],
+      },
+      { id: 'table-sort-asc', label: 'Sort A to Z', icon: 'sort_by_alpha', shortcut: [] },
+      { id: 'table-sort-desc', label: 'Sort Z to A', icon: 'sort_by_alpha', shortcut: [] },
+    ],
+  },
+  {
+    title: 'Rows',
+    items: [
+      { id: 'table-add-row-above', label: 'Add row above', icon: 'add', shortcut: [] },
+      { id: 'table-add-row-below', label: 'Add row below', icon: 'add', shortcut: [] },
+      { id: 'table-delete-row', label: 'Delete row', icon: 'delete', shortcut: [] },
+    ],
+  },
+  {
+    title: 'Columns',
+    items: [
+      { id: 'table-add-column-left', label: 'Add column left', icon: 'add', shortcut: [] },
+      { id: 'table-add-column-right', label: 'Add column right', icon: 'add', shortcut: [] },
+      { id: 'table-delete-column', label: 'Delete column', icon: 'delete', shortcut: [] },
+    ],
+  },
+  {
+    title: 'Table',
+    items: [{ id: 'table-delete', label: 'Delete table', icon: 'delete_forever', shortcut: [] }],
+  },
+];
+
 export function CanvasContextMenu({
   open,
   x,
   y,
   showQuickFormatting,
+  isTableContext,
+  tableContextLabel,
   quickFormattingState,
   onClose,
   onAction,
@@ -90,6 +140,8 @@ export function CanvasContextMenu({
   x: number;
   y: number;
   showQuickFormatting: boolean;
+  isTableContext?: boolean;
+  tableContextLabel?: string;
   quickFormattingState: {
     bold: boolean;
     italic: boolean;
@@ -146,6 +198,12 @@ export function CanvasContextMenu({
   }, [open, onClose]);
 
   const style = useMemo(() => ({ left: x, top: y }), [x, y]);
+  const activeSections = isTableContext ? TABLE_MENU_SECTIONS : MENU_SECTIONS;
+  const destructiveActions = new Set<CanvasMenuAction>([
+    'table-delete-row',
+    'table-delete-column',
+    'table-delete',
+  ]);
 
   if (!open) return null;
 
@@ -181,37 +239,34 @@ export function CanvasContextMenu({
     <div ref={menuRef} className="absolute z-50" style={style}>
       {showQuickFormatting && (
         <div
-          className="relative z-20 mb-2 w-fit max-w-[92vw] overflow-visible rounded-2xl bg-white/98 p-2 shadow-[0_12px_26px_rgba(15,23,42,0.14)] backdrop-blur"
+          className="relative z-20 mb-1.5 w-fit max-w-[92vw] overflow-visible rounded-lg border border-slate-200 bg-white px-1.5 py-1 shadow-sm"
           role="group"
           aria-label="Quick formatting"
         >
-          <div className="pb-0.5">
-            <div className="flex max-w-[90vw] flex-wrap items-center gap-1.5">
-            <section className="flex items-center gap-1 rounded-xl bg-slate-50/85 p-1.5">
+          <div>
+            <div className="flex max-w-[90vw] flex-wrap items-center gap-1">
+            <section className="flex items-center gap-1">
               {quickActions.map((action) => (
                 <button
                   key={action.id}
                   type="button"
                   onClick={() => onAction(action.id)}
-                  className={`group relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${action.active ? 'bg-cyan-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-200/80 hover:text-slate-800'}`}
+                  className={`flex h-7 w-7 items-center justify-center rounded border transition-colors ${action.active ? 'border-cyan-600 bg-cyan-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-800'}`}
                   aria-label={action.label}
                   title={action.label}
                 >
-                  <span className="material-icons text-[18px]">{action.icon}</span>
-                  <span className="pointer-events-none absolute left-1/2 top-full z-90 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                    {action.label}
-                  </span>
+                  <span className="material-icons text-[16px]">{action.icon}</span>
                 </button>
               ))}
             </section>
 
-            <div className="h-7 w-px bg-slate-200" />
+            <div className="h-6 w-px bg-slate-200" />
 
-            <section className="flex items-center gap-1 rounded-xl bg-slate-50/85 p-1.5">
+            <section className="flex items-center gap-1">
               <select
                 value={quickFormattingState.fontFamily}
                 onChange={(event) => onAction('set-font-family', event.target.value)}
-                className="h-8 w-28 rounded-lg bg-white px-2 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-cyan-200"
+                className="h-7 w-24 rounded border border-slate-200 bg-white px-2 text-[11px] text-slate-700 outline-none focus:border-cyan-300"
                 aria-label="Font family"
                 title="Font family"
               >
@@ -227,30 +282,27 @@ export function CanvasContextMenu({
                 max={72}
                 value={quickFormattingState.fontSize}
                 onChange={(event) => onAction('set-font-size', Number(event.target.value))}
-                className="h-8 w-14 rounded-lg bg-white px-2 text-xs text-slate-700 outline-none focus:ring-2 focus:ring-cyan-200"
+                className="h-7 w-12 rounded border border-slate-200 bg-white px-2 text-[11px] text-slate-700 outline-none focus:border-cyan-300"
                 aria-label="Font size"
                 title="Font size"
               />
             </section>
 
-            <div className="h-7 w-px bg-slate-200" />
+            <div className="h-6 w-px bg-slate-200" />
 
-            <section className="flex items-center gap-1 rounded-xl bg-slate-50/85 p-1.5">
+            <section className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => textColorInputRef.current?.click()}
-                className="group relative flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 transition-colors hover:bg-slate-200/80"
+                className="relative flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100"
                 aria-label="Text color"
                 title="Text color"
               >
-                <span className="text-[16px] font-semibold leading-none">A</span>
+                <span className="text-[14px] font-semibold leading-none">A</span>
                 <span
-                  className="absolute bottom-1 h-1 w-5 rounded-full"
+                  className="absolute bottom-1 h-1 w-4 rounded-full"
                   style={{ backgroundColor: quickFormattingState.color }}
                 />
-                <span className="pointer-events-none absolute left-1/2 top-full z-90 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                  Text color
-                </span>
               </button>
               <input
                 ref={textColorInputRef}
@@ -265,18 +317,15 @@ export function CanvasContextMenu({
               <button
                 type="button"
                 onClick={() => highlightColorInputRef.current?.click()}
-                className="group relative flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 transition-colors hover:bg-slate-200/80"
+                className="relative flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100"
                 aria-label="Highlight color"
                 title="Highlight color"
               >
-                <span className="material-icons text-[18px]">highlight</span>
+                <span className="material-icons text-[16px]">highlight</span>
                 <span
-                  className="absolute bottom-1 h-1 w-5 rounded-full"
+                  className="absolute bottom-1 h-1 w-4 rounded-full"
                   style={{ backgroundColor: quickFormattingState.highlightColor ?? '#fde047' }}
                 />
-                <span className="pointer-events-none absolute left-1/2 top-full z-90 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                  Highlight color
-                </span>
               </button>
               <input
                 ref={highlightColorInputRef}
@@ -291,44 +340,35 @@ export function CanvasContextMenu({
               <button
                 type="button"
                 onClick={() => onAction('set-highlight-color', null)}
-                className="group relative flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 transition-colors hover:bg-slate-200/80"
+                className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100"
                 aria-label="Clear highlight"
                 title="Clear highlight"
               >
-                <span className="material-icons text-[18px]">format_color_reset</span>
-                <span className="pointer-events-none absolute left-1/2 top-full z-90 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                  Clear highlight
-                </span>
+                <span className="material-icons text-[16px]">format_color_reset</span>
               </button>
             </section>
 
-            <div className="h-7 w-px bg-slate-200" />
+            <div className="h-6 w-px bg-slate-200" />
 
-            <section className="flex items-center gap-1 rounded-xl bg-slate-50/85 p-1.5">
+            <section className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => onAction('insert-link')}
-                className="group relative flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 transition-colors hover:bg-slate-200/80"
+                className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100"
                 aria-label="Insert link"
                 title="Insert link"
               >
-                <span className="material-icons text-[17px]">link</span>
-                <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                  Insert link
-                </span>
+                <span className="material-icons text-[15px]">link</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => onAction('insert-image')}
-                className="group relative flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-700 transition-colors hover:bg-slate-200/80"
+                className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100"
                 aria-label="Insert image"
                 title="Insert image"
               >
-                <span className="material-icons text-[17px]">image</span>
-                <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity duration-100 group-hover:opacity-100">
-                  Insert image
-                </span>
+                <span className="material-icons text-[15px]">image</span>
               </button>
             </section>
             </div>
@@ -341,24 +381,38 @@ export function CanvasContextMenu({
         role="menu"
         aria-label="Canvas context menu"
       >
-        {MENU_SECTIONS.map((section, sectionIndex) => (
+        {isTableContext && tableContextLabel ? (
+          <div className="px-2.5 py-1 text-[11px] font-medium text-slate-500">{tableContextLabel}</div>
+        ) : null}
+        {activeSections.map((section, sectionIndex) => (
           <div key={section.title}>
             {sectionIndex > 0 && <div className="my-1 h-px bg-slate-200" />}
             <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
               {section.title}
             </div>
             {section.items.map((item) => (
+              (() => {
+                const isDestructive = destructiveActions.has(item.id);
+                return (
               <button
                 key={item.id}
                 type="button"
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100"
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium transition-colors ${
+                  isDestructive
+                    ? 'text-rose-700 hover:bg-rose-50/80'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
                 onClick={() => {
                   onAction(item.id);
                   onClose();
                 }}
                 role="menuitem"
               >
-                <span className="material-icons text-[16px] text-slate-500">{item.icon}</span>
+                <span
+                  className={`material-icons text-[16px] ${isDestructive ? 'text-rose-600' : 'text-slate-500'}`}
+                >
+                  {item.icon}
+                </span>
                 <span className="flex-1">{item.label}</span>
                 <span className="flex items-center gap-1">
                   {item.shortcut.map((part) => (
@@ -371,6 +425,8 @@ export function CanvasContextMenu({
                   ))}
                 </span>
               </button>
+                );
+              })()
             ))}
           </div>
         ))}

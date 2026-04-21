@@ -112,8 +112,6 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
   return (
     <div className="w-full select-none" ref={ref}>
       <div className="relative h-10">
-        <div className="absolute left-0 right-0 bottom-4 h-px bg-slate-200" />
-
         <div className="absolute left-0 right-0 top-0 h-full">
           {paperWidthMm ? (
             // ── CM ruler (Word / Google Docs style) with uniform larger ticks and even cm labels
@@ -126,7 +124,6 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
                     style={{
                       left: `${pageBox.left}px`,
                       width: `${(left / 100) * pageBox.width}px`,
-                      borderRight: '1px solid #cbd5e1',
                     }}
                   />
                   <div
@@ -134,7 +131,6 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
                     style={{
                       left: `${pageBox.left + (right / 100) * pageBox.width}px`,
                       width: `${((100 - right) / 100) * pageBox.width}px`,
-                      borderLeft: '1px solid #cbd5e1',
                     }}
                   />
                 </>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { organizationsApi, type OrganizationSecurityState, type SsoProvider } from '../../lib/api';
@@ -45,7 +45,7 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
   const [simulateEmail, setSimulateEmail] = useState('');
   const [simulateResult, setSimulateResult] = useState('');
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -61,11 +61,11 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function savePolicies() {
     setMessage('');

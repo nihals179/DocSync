@@ -192,6 +192,34 @@ type FetchOptions = RequestInit & {
   includeCsrf?: boolean;
 };
 
+const CSRF_STORAGE_KEY = 'docsync.csrfToken';
+
+function getStoredCsrfToken() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.sessionStorage.getItem(CSRF_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function persistCsrfToken(token: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      window.sessionStorage.setItem(CSRF_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(CSRF_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
+export function clearPersistedCsrfToken() {
+  persistCsrfToken('');
+}
+
 function getCookie(name: string) {
   const match = document.cookie
     .split('; ')
@@ -201,7 +229,7 @@ function getCookie(name: string) {
 
 export async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
   const { token, headers: extraHeaders, includeCsrf = false, ...rest } = options;
-  const csrfToken = includeCsrf ? getCookie('docsync_csrf') : '';
+  const csrfToken = includeCsrf ? getCookie('docsync_csrf') || getStoredCsrfToken() : '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -221,7 +249,7 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
 
 export async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
   const { token, headers: extraHeaders, includeCsrf = false, ...rest } = options;
-  const csrfToken = includeCsrf ? getCookie('docsync_csrf') : '';
+  const csrfToken = includeCsrf ? getCookie('docsync_csrf') || getStoredCsrfToken() : '';
   const headers: Record<string, string> = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),

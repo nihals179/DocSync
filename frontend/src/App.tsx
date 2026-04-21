@@ -1,29 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 
-import {
-  AiTool,
-  AuthPage,
-  BillingPortalPage,
-  Comments,
-  EnterpriseSecuritySettingsPage,
-  GrammarChecker,
-  Header,
-  LandingPage,
-  OrganizationAuditConsolePage,
-  OrganizationAdminPage,
-  ResetPasswordPage,
-  RichEditor,
-  SavedDocuments,
-  SecuritySettingsPage,
-  TodoList,
-  Toolbar,
-  VerifyEmailPage,
-  WorkspaceHomePage,
-} from './components';
-import type { CursorFormat, RichEditorHandle } from './components/editor';
-import { authApi, docsApi, versionsApi, workspaceApi } from './lib/api';
-import { canvasTextToHtml, htmlToCanvasText } from './lib/contentAdapter';
+import Header from './components/features/layout/Header';
+import RichEditor from './components/editor/RichEditor';
+import Toolbar from './components/toolbar/Toolbar';
+import type { CursorFormat, RichEditorHandle, Run } from './components/editor';
+import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, versionsApi, workspaceApi } from './lib/api';
+import { canvasRunsToHtml, canvasTextToHtml, htmlToCanvasText, htmlToRuns } from './lib/contentAdapter';
 import { buildDocumentTree } from './lib/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from './lib/workspaceSelection';
 import type { AuthSuccess, AuthUser } from './lib/api';
@@ -67,7 +50,7 @@ type EditorWorkspaceModalState =
   }
   | { type: 'info'; title: string; message: string };
 
-type RightTool = 'comments' | 'versions' | 'todo' | 'grammar' | 'ai';
+type RightTool = 'comments' | 'versions' | 'todo' | 'grammar' | 'ai' | 'html';
 
 const RIGHT_TOOLS: { id: RightTool; icon: string; label: string }[] = [
   { id: 'comments', icon: 'comment', label: 'Comments' },
@@ -75,9 +58,108 @@ const RIGHT_TOOLS: { id: RightTool; icon: string; label: string }[] = [
   { id: 'todo', icon: 'checklist', label: 'To-Do List' },
   { id: 'grammar', icon: 'spellcheck', label: 'Grammar Checker' },
   { id: 'ai', icon: 'smart_toy', label: 'AI Assistant' },
+  { id: 'html', icon: 'code', label: 'HTML Renderer' },
 ];
 
 type Session = AuthSuccess;
+
+const WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.workspacePanelCollapsed';
+const VIEWER_WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.viewerWorkspacePanelCollapsed';
+const SESSION_STORAGE_KEY = 'docsync.session';
+
+const AiTool = lazy(() => import('./components/features/panels/AiTool'));
+const Comments = lazy(() => import('./components/features/panels/Comments'));
+const GrammarChecker = lazy(() => import('./components/features/panels/GrammarChecker'));
+const SavedDocuments = lazy(() => import('./components/features/panels/SavedDocuments'));
+const TodoList = lazy(() => import('./components/features/panels/TodoList'));
+
+const AuthPage = lazy(() => import('./components/pages/AuthPage'));
+const BillingPortalPage = lazy(() => import('./components/pages/BillingPortalPage'));
+const EnterpriseSecuritySettingsPage = lazy(() => import('./components/pages/EnterpriseSecuritySettingsPage'));
+const LandingPage = lazy(() => import('./components/pages/LandingPage'));
+const OrganizationAdminPage = lazy(() => import('./components/pages/OrganizationAdminPage'));
+const OrganizationAuditConsolePage = lazy(() => import('./components/pages/OrganizationAuditConsolePage'));
+const ResetPasswordPage = lazy(() => import('./components/pages/ResetPasswordPage'));
+const SecuritySettingsPage = lazy(() => import('./components/pages/SecuritySettingsPage'));
+const VerifyEmailPage = lazy(() => import('./components/pages/VerifyEmailPage'));
+const WorkspaceHomePage = lazy(() => import('./components/pages/WorkspaceHomePage'));
+
+// ── HTML syntax highlighting helpers ─────────────────────────────────────────
+const VOID_TAGS = new Set(['br','hr','img','input','meta','link','area','base','col','embed','param','source','track','wbr']);
+
+function prettyPrintHtml(html: string): string {
+  const parts: string[] = [];
+  let depth = 0;
+  const ind = () => '  '.repeat(depth);
+  const re = /<(!--[\s\S]*?--|[^>]+)>|([^<]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    if (m[2] !== undefined) {
+      const text = m[2].trim();
+      if (text) parts.push(ind() + text);
+    } else {
+      const inner = m[1];
+      if (inner.startsWith('/')) {
+        depth = Math.max(0, depth - 1);
+        parts.push(ind() + `<${inner}>`);
+      } else if (inner.startsWith('!--')) {
+        parts.push(ind() + `<${inner}>`);
+      } else {
+        const tagName = inner.match(/^([a-zA-Z][a-zA-Z0-9]*)/)?.[1]?.toLowerCase() ?? '';
+        const isSelfClose = inner.endsWith('/') || VOID_TAGS.has(tagName);
+        parts.push(ind() + `<${inner}>`);
+        if (!isSelfClose) depth++;
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function colorizeHtml(html: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  let result = '';
+  let i = 0;
+  while (i < html.length) {
+    if (html[i] !== '<') {
+      const next = html.indexOf('<', i);
+      const slice = next === -1 ? html.slice(i) : html.slice(i, next);
+      const trimmed = slice.trim();
+      result += trimmed
+        ? `<span style="color:#e2e8f0">${esc(slice)}</span>`
+        : esc(slice);
+      i = next === -1 ? html.length : next;
+      continue;
+    }
+    const close = html.indexOf('>', i);
+    if (close === -1) { result += esc(html.slice(i)); break; }
+    const inner = html.slice(i + 1, close);
+    const isClosing = inner.startsWith('/');
+    const tagContent = isClosing ? inner.slice(1) : inner;
+    const nm = tagContent.match(/^([a-zA-Z][a-zA-Z0-9]*)([\s\S]*)/);
+    if (!nm) {
+      result += `<span style="color:#94a3b8">&lt;${esc(inner)}&gt;</span>`;
+      i = close + 1;
+      continue;
+    }
+    const tagName = nm[1];
+    const rest = nm[2];
+    const coloredAttrs = rest.replace(
+      /(\s+)([a-zA-Z][a-zA-Z0-9\-:_]*)(?:="([^"]*)")?(\s*\/)?/g,
+      (_full, space, name, val) => {
+        if (val !== undefined)
+          return `${space}<span style="color:#7dd3fc">${esc(name)}</span>=<span style="color:#fbbf24">"${esc(val)}"</span>`;
+        return `${space}<span style="color:#7dd3fc">${esc(name)}</span>`;
+      },
+    );
+    const lt = `<span style="color:#475569">&lt;</span>`;
+    const gt = `<span style="color:#475569">&gt;</span>`;
+    const tagColor = isClosing ? '#fb7185' : '#34d399';
+    result += `${lt}<span style="color:${tagColor}">${isClosing ? '/' : ''}${esc(tagName)}</span>${coloredAttrs}${gt}`;
+    i = close + 1;
+  }
+  return result;
+}
 
 // ─── Editor view (all hooks live here, never behind a conditional) ────────────
 function EditorView({ token, docId, userName }: { token: string; docId: string; userName: string }) {
@@ -86,11 +168,14 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
 
   const editorRef = useRef<RichEditorHandle | null>(null);
   const savePopupRef = useRef<HTMLDivElement | null>(null);
+  const editorShellRef = useRef<HTMLDivElement | null>(null);
   const [currentText, setCurrentText] = useState('');
+  const [currentRuns, setCurrentRuns] = useState<Run[]>([]);
   const [, setSavedVersions] = useState<SavedVersion[]>([]);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocument[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => getInitialWorkspaceSelectionId());
+  const selectedWorkspaceIdRef = useRef<string>(selectedWorkspaceId);
   const [navSearchQuery, setNavSearchQuery] = useState('');
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ docId: string; x: number; y: number } | null>(null);
@@ -100,7 +185,13 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
   const [title, setTitle] = useState<string>('');
   const [showSavePopup, setShowSavePopup] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
-  const [isWorkspacePanelCollapsed, setIsWorkspacePanelCollapsed] = useState(false);
+  const [isWorkspacePanelCollapsed, setIsWorkspacePanelCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(WORKSPACE_PANEL_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [isFullscreenEditor, setIsFullscreenEditor] = useState(false);
   const [pageSize, setPageSize] = useState<'responsive' | 'A3' | 'A4' | 'A5'>('responsive');
   const [cursorFormat, setCursorFormat] = useState<CursorFormat>({
@@ -120,6 +211,9 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     imagePanelOpen: false,
     imageAlign: 'center',
     imageWidthPct: 100,
+    tableSelected: false,
+    tablePanelOpen: false,
+    tablePartialTextSelection: false,
   });
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -138,7 +232,9 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
         setCurrentText(canvasText);
         editorRef.current?.setContent?.(canvasText);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        console.error('Failed to load document.', error);
+      });
   }, [token, docId]);
 
   useEffect(() => {
@@ -146,14 +242,18 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     versionsApi
       .list(token, docId)
       .then(({ versions }) => setSavedVersions(versions))
-      .catch(() => {});
+      .catch((error: unknown) => {
+        console.error('Failed to load versions.', error);
+      });
   }, [token, docId]);
 
   useEffect(() => {
     docsApi
       .list(token)
       .then(({ docs }) => setSavedDocuments(docs))
-      .catch(() => {});
+      .catch((error: unknown) => {
+        console.error('Failed to load documents.', error);
+      });
   }, [token]);
 
   const saveVersion = useCallback(
@@ -163,24 +263,41 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
       const preview = (previewText ?? plainText).slice(0, 90);
       if (!preview) return;
       try {
-        const { version } = await versionsApi.save(token, docId, canvasTextToHtml(currentText), preview);
+        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+        const { version } = await versionsApi.save(token, docId, html, preview);
         setSavedVersions((prev) => [version, ...prev].slice(0, 20));
-      } catch {
-        // silent
+      } catch (error: unknown) {
+        console.error('Failed to save version.', error);
       }
     },
-    [token, docId, currentText],
+    [token, docId, currentText, currentRuns],
   );
 
   const handleEditorChange = useCallback((text: string) => {
     setCurrentText(text);
   }, []);
 
+  const handleRunsChange = useCallback((runs: Run[]) => {
+    setCurrentRuns(runs);
+  }, []);
+
   const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
 
   useEffect(() => {
+    selectedWorkspaceIdRef.current = selectedWorkspaceId;
     persistWorkspaceSelectionId(selectedWorkspaceId);
   }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        WORKSPACE_PANEL_COLLAPSED_KEY,
+        isWorkspacePanelCollapsed ? '1' : '0',
+      );
+    } catch {
+      // no-op
+    }
+  }, [isWorkspacePanelCollapsed]);
 
   useEffect(() => {
     workspaceApi
@@ -188,12 +305,15 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
       .then(({ workspaces: available }) => {
         const visible = available.filter((w) => w.name.trim().toLowerCase() !== personalWorkspaceName);
         setWorkspaces(visible);
-        if (selectedWorkspaceId !== 'all' && !visible.some((w) => w.id === selectedWorkspaceId)) {
+        const currentWorkspaceId = selectedWorkspaceIdRef.current;
+        if (currentWorkspaceId !== 'all' && !visible.some((w) => w.id === currentWorkspaceId)) {
           setSelectedWorkspaceId('all');
         }
       })
-      .catch(() => {});
-  }, [token, personalWorkspaceName, selectedWorkspaceId]);
+      .catch((error: unknown) => {
+        console.error('Failed to load workspaces.', error);
+      });
+  }, [token, personalWorkspaceName]);
 
   const filteredLeftDocs = useMemo(() => {
     let result = savedDocuments;
@@ -555,6 +675,39 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
 
   const handleTitleChange = useCallback((t: string) => setTitle(t), []);
   const [activeTool, setActiveTool] = useState<RightTool | null>(null);
+  const [htmlDock, setHtmlDock] = useState<'right' | 'bottom'>('right');
+  const [htmlPanelSize, setHtmlPanelSize] = useState<number>(500); // px — width (right) or height (bottom)
+  const [htmlEditMode, setHtmlEditMode] = useState(false);
+  const [htmlSourceText, setHtmlSourceText] = useState('');
+  const htmlResizingRef = useRef(false);
+  const htmlResizeStartRef = useRef(0);
+  const htmlResizeStartSizeRef = useRef(0);
+
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const startHtmlResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    htmlResizingRef.current = true;
+    htmlResizeStartRef.current = htmlDock === 'right' ? e.clientX : e.clientY;
+    htmlResizeStartSizeRef.current = htmlPanelSize;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!htmlResizingRef.current) return;
+      if (htmlDock === 'right') {
+        const delta = htmlResizeStartRef.current - ev.clientX;
+        setHtmlPanelSize(() => Math.max(280, Math.min(900, htmlResizeStartSizeRef.current + delta)));
+      } else {
+        const delta = htmlResizeStartRef.current - ev.clientY;
+        setHtmlPanelSize(() => Math.max(150, Math.min(600, htmlResizeStartSizeRef.current + delta)));
+      }
+    };
+    const onUp = () => {
+      htmlResizingRef.current = false;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [htmlDock, htmlPanelSize]);
 
   useEffect(() => {
     const openComments = () => setActiveTool('comments');
@@ -573,7 +726,8 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     const trimmed = saveMessage.trim();
     if (docId) {
       try {
-        await docsApi.update(token, docId, { title, content: canvasTextToHtml(currentText) });
+        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+        await docsApi.update(token, docId, { title, content: html });
         const { docs } = await docsApi.list(token);
         setSavedDocuments(docs);
       } catch {
@@ -583,12 +737,13 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     await saveVersion(trimmed.length > 0 ? trimmed : undefined);
     setShowSavePopup(false);
     setSaveMessage('');
-  }, [saveMessage, saveVersion, token, docId, title, currentText]);
+  }, [saveMessage, saveVersion, token, docId, title, currentText, currentRuns]);
 
   const handlePublishDocument = useCallback(async () => {
     if (docId) {
       try {
-        await docsApi.update(token, docId, { title, content: canvasTextToHtml(currentText) });
+        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+        await docsApi.update(token, docId, { title, content: html });
         const { docs } = await docsApi.list(token);
         setSavedDocuments(docs);
       } catch {
@@ -597,12 +752,60 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     }
     await saveVersion();
     window.alert('Document published successfully.');
-  }, [saveVersion, token, docId, title, currentText]);
+  }, [saveVersion, token, docId, title, currentText, currentRuns]);
 
   const docText = currentText;
+  const renderedHtml = useMemo(
+    () => (currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText)),
+    [currentRuns, currentText],
+  );
+  const prettyRenderedHtml = useMemo(
+    () => prettyPrintHtml(renderedHtml || '<p></p>'),
+    [renderedHtml],
+  );
+  const showFullscreenEditor = isFullscreenEditor || (activeTool === 'html' && htmlDock === 'bottom');
+
+  useEffect(() => {
+    const shell = editorShellRef.current;
+    if (!shell) return;
+
+    if (isFullscreenEditor) {
+      if (document.fullscreenElement !== shell && shell.requestFullscreen) {
+        shell.requestFullscreen().catch(() => {
+          // Keep CSS fullscreen fallback even when native fullscreen is denied.
+        });
+      }
+    } else if (document.fullscreenElement === shell && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {
+        // Ignore exit failures and keep layout fallback.
+      });
+    }
+  }, [isFullscreenEditor]);
+
+  useEffect(() => {
+    const shell = editorShellRef.current;
+    if (!shell) return;
+
+    const onFullscreenChange = () => {
+      if (document.fullscreenElement !== shell) {
+        setIsFullscreenEditor(false);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden font-sans bg-linear-to-br from-slate-100 via-white to-cyan-50">
+    <div
+      ref={editorShellRef}
+      className={`relative flex h-screen overflow-hidden font-sans ${
+        showFullscreenEditor
+          ? 'bg-white'
+          : 'bg-linear-to-br from-slate-100 via-white to-cyan-50'
+      }`}
+    >
+      {!showFullscreenEditor && (
       <aside
         className={`hidden border-r border-slate-200 bg-white transition-all duration-300 lg:flex lg:flex-col ${
           isWorkspacePanelCollapsed ? 'lg:w-14 lg:shrink-0' : 'lg:w-80 lg:shrink-0'
@@ -711,12 +914,17 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
           </div>
         )}
       </aside>
+      )}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {!isFullscreenEditor && <Header />}
+        {!showFullscreenEditor && <Header />}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          <main className="flex min-h-0 flex-1 overflow-hidden px-4 py-1 sm:px-6 lg:px-8 lg:py-3">
+          <main
+            className={`flex min-h-0 flex-1 overflow-hidden ${
+              showFullscreenEditor ? 'px-0 py-0' : 'px-4 py-1 sm:px-6 lg:px-8 lg:py-3'
+            }`}
+          >
             <div className="flex min-h-0 w-full flex-col">
-              {!isFullscreenEditor && (
+              {!showFullscreenEditor && (
                 <div className="mb-1 flex items-center gap-2 border-b border-slate-200 px-1 pb-1">
                   <input
                     value={title}
@@ -783,43 +991,49 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                 editorRef={editorRef}
                 pageSize={pageSize}
                 onPageSizeChange={setPageSize}
-                isFullscreen={isFullscreenEditor}
+                isFullscreen={showFullscreenEditor}
                 onToggleFullscreen={() => setIsFullscreenEditor((p) => !p)}
                 cursorFormat={cursorFormat}
               />
-              <RichEditor
-                ref={editorRef}
-                onContentChange={handleEditorChange}
-                onCursorFormatChange={setCursorFormat}
-                pageSize={pageSize}
-              />
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <RichEditor
+                  ref={editorRef}
+                  onContentChange={handleEditorChange}
+                  onRunsChange={handleRunsChange}
+                  onCursorFormatChange={setCursorFormat}
+                  pageSize={pageSize}
+                />
+              </div>
             </div>
           </main>
+          {!showFullscreenEditor && (
           <div className="flex shrink-0 items-stretch">
             <div
-              className={`flex flex-col border-l border-slate-200/70 bg-white/90 backdrop-blur-sm shadow-xl transition-all duration-300 overflow-hidden ${activeTool ? 'w-80' : 'w-0'}`}
+              className={`flex flex-col border-l border-slate-200/70 bg-white/90 backdrop-blur-sm shadow-xl transition-all duration-300 overflow-hidden ${activeTool && activeTool !== 'html' ? 'w-80' : 'w-0'}`}
             >
               <div className="h-full w-80 overflow-auto p-4">
-                {activeTool === 'comments' && (
-                  <Comments
-                    docId={docId}
-                    token={token}
-                    onCommentAdded={() => {
-                      void saveVersion();
-                    }}
-                  />
-                )}
-                {activeTool === 'versions' && (
-                  <SavedDocuments
-                    documents={savedDocuments}
-                    onOpen={(id) => {
-                      navigate(`/editor/${id}`);
-                    }}
-                  />
-                )}
-                {activeTool === 'todo' && <TodoList docId={docId} token={token} />}
-                {activeTool === 'grammar' && <GrammarChecker token={token} docText={docText} />}
-                {activeTool === 'ai' && <AiTool token={token} />}
+                <Suspense fallback={<div className="text-xs text-slate-500">Loading panel...</div>}>
+                  {activeTool === 'comments' && (
+                    <Comments
+                      docId={docId}
+                      token={token}
+                      onCommentAdded={() => {
+                        void saveVersion();
+                      }}
+                    />
+                  )}
+                  {activeTool === 'versions' && (
+                    <SavedDocuments
+                      documents={savedDocuments}
+                      onOpen={(id) => {
+                        navigate(`/editor/${id}`);
+                      }}
+                    />
+                  )}
+                  {activeTool === 'todo' && <TodoList docId={docId} token={token} />}
+                  {activeTool === 'grammar' && <GrammarChecker token={token} docText={docText} />}
+                  {activeTool === 'ai' && <AiTool token={token} />}
+                </Suspense>
               </div>
             </div>
 
@@ -828,7 +1042,13 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
               {RIGHT_TOOLS.map((tool) => (
                 <button
                   key={tool.id}
-                  onClick={() => setActiveTool((prev) => (prev === tool.id ? null : tool.id))}
+                  onClick={() => {
+                    setActiveTool((prev) => {
+                      const next = prev === tool.id ? null : tool.id;
+                      if (next !== 'html') setHtmlEditMode(false);
+                      return next;
+                    });
+                  }}
                   title={tool.label}
                   className={`flex h-10 w-10 flex-col items-center justify-center rounded-lg transition-colors ${
                     activeTool === tool.id
@@ -843,6 +1063,205 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
               ))}
             </div>
           </div>
+          )}
+
+          {/* HTML panel — floats over canvas, dockable right or bottom */}
+          {activeTool === 'html' && (
+            <div
+              className={`pointer-events-none absolute z-50 ${
+                htmlDock === 'right'
+                  ? 'inset-y-0 right-0 flex items-stretch justify-end'
+                  : 'inset-x-0 bottom-0 flex items-end justify-stretch'
+              }`}
+            >
+              <div className={`relative flex ${htmlDock === 'bottom' ? 'w-full' : ''}`}>
+              <div
+                className={`pointer-events-auto flex flex-col shadow-2xl ${
+                  htmlDock === 'right'
+                    ? 'h-full'
+                    : 'w-full'
+                }`}
+                style={{
+                  width: htmlDock === 'right' ? `${htmlPanelSize}px` : undefined,
+                  height: htmlDock === 'bottom' ? `${htmlPanelSize}px` : undefined,
+                  background: 'rgba(10, 14, 26, 0.82)',
+                  backdropFilter: 'blur(18px) saturate(1.4)',
+                  borderLeft: htmlDock === 'right' ? '1px solid rgba(99,120,180,0.18)' : 'none',
+                  borderTop: htmlDock === 'bottom' ? '1px solid rgba(99,120,180,0.18)' : 'none',
+                }}
+              >
+                {/* Resize handle */}
+                {htmlDock === 'right' && (
+                  <div
+                    onMouseDown={startHtmlResize}
+                    className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-cyan-500/30 transition-colors"
+                    style={{ zIndex: 1 }}
+                  />
+                )}
+                {htmlDock === 'bottom' && (
+                  <div
+                    onMouseDown={startHtmlResize}
+                    className="absolute top-0 left-0 w-full h-1.5 cursor-row-resize hover:bg-cyan-500/30 transition-colors"
+                    style={{ zIndex: 1 }}
+                  />
+                )}
+                {/* Header */}
+                <div
+                  className="flex shrink-0 items-center justify-between px-4 py-2.5"
+                  style={{ borderBottom: '1px solid rgba(99,120,180,0.15)' }}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="material-icons text-cyan-400" style={{ fontSize: '1rem' }}>code</span>
+                    <div>
+                      <h3 className="text-[13px] font-semibold tracking-wide text-slate-100">HTML Source</h3>
+                      <p className="text-[10px] text-slate-500">{htmlEditMode ? 'Editing · apply to sync canvas' : 'Live · updates as you type'}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {/* Edit / View toggle */}
+                    <button
+                      type="button"
+                      title={htmlEditMode ? 'Switch to view mode' : 'Edit HTML source'}
+                      onClick={() => {
+                        if (!htmlEditMode) {
+                          setHtmlSourceText(prettyRenderedHtml);
+                        }
+                        setHtmlEditMode((v) => !v);
+                      }}
+                      className={`flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors ${
+                        htmlEditMode
+                          ? 'bg-cyan-500/20 text-cyan-300'
+                          : 'text-slate-400 hover:bg-white/10 hover:text-slate-100'
+                      }`}
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.8rem' }}>{htmlEditMode ? 'visibility' : 'edit'}</span>
+                      {htmlEditMode ? 'View' : 'Edit'}
+                    </button>
+                    {/* Dock: right */}
+                    <button
+                      type="button"
+                      title="Dock right"
+                      onClick={() => {
+                        setHtmlDock('right');
+                        setHtmlPanelSize(500);
+                      }}
+                      className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                        htmlDock === 'right'
+                          ? 'text-cyan-400'
+                          : 'text-slate-600 hover:text-slate-300'
+                      }`}
+                    >
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>border_right</span>
+                    </button>
+                    {/* Dock: bottom */}
+                    <button
+                      type="button"
+                      title="Dock bottom"
+                      onClick={() => {
+                        setHtmlDock('bottom');
+                        setHtmlPanelSize(200);
+                      }}
+                      className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                        htmlDock === 'bottom'
+                          ? 'text-cyan-400'
+                          : 'text-slate-600 hover:text-slate-300'
+                      }`}
+                    >
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>border_bottom</span>
+                    </button>
+                    {/* Divider */}
+                    <span className="mx-1 h-4 w-px bg-slate-700" />
+                    {/* Copy */}
+                    <button
+                      type="button"
+                      title="Copy HTML"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(prettyRenderedHtml);
+                      }}
+                      className="flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-100"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.8rem' }}>content_copy</span>
+                      Copy
+                    </button>
+                    {/* Close */}
+                    <button
+                      type="button"
+                      title="Close"
+                      onClick={() => {
+                        setActiveTool(null);
+                        setHtmlEditMode(false);
+                      }}
+                      className="ml-1 flex h-6 w-6 items-center justify-center rounded text-slate-600 transition-colors hover:bg-white/10 hover:text-slate-200"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>close</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Line-number gutter + code */}
+                <div className="flex min-h-0 flex-1 overflow-auto">
+                  {htmlEditMode ? (
+                    /* ── Edit mode: raw textarea ── */
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <textarea
+                        className="flex-1 resize-none bg-transparent font-mono text-[12.5px] leading-6 text-slate-100 outline-none px-4 py-3 placeholder-slate-600"
+                        style={{ tabSize: 2 }}
+                        value={htmlSourceText}
+                        onChange={(e) => setHtmlSourceText(e.target.value)}
+                        spellCheck={false}
+                        placeholder="<p>Paste or type HTML here…</p>"
+                      />
+                      <div
+                        className="flex shrink-0 items-center justify-end gap-2 px-4 py-2"
+                        style={{ borderTop: '1px solid rgba(99,120,180,0.15)' }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHtmlSourceText(prettyRenderedHtml);
+                            setHtmlEditMode(false);
+                          }}
+                          className="rounded px-3 py-1 text-[12px] font-medium text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                        >Cancel</button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const runs = htmlToRuns(htmlSourceText);
+                            editorRef.current?.setRuns(runs);
+                            setHtmlEditMode(false);
+                          }}
+                          className="rounded bg-cyan-500 px-3 py-1 text-[12px] font-medium text-white hover:bg-cyan-400"
+                        >Apply to Canvas</button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* ── View mode: syntax-highlighted ── */
+                    <>
+                  <div
+                    className="shrink-0 select-none px-3 py-3 text-right font-mono text-[12px] leading-6 text-slate-700"
+                    style={{ borderRight: '1px solid rgba(99,120,180,0.1)', minWidth: '2.8rem' }}
+                    aria-hidden="true"
+                  >
+                    {prettyRenderedHtml.split('\n').map((line, i) => (
+                      <div key={`${i + 1}-${line.length}`}>{i + 1}</div>
+                    ))}
+                  </div>
+                  <div className="min-w-0 flex-1 overflow-auto px-4 py-3">
+                    <pre className="w-full font-mono text-[12.5px] leading-6" style={{ tabSize: 2 }}>
+                      <code
+                        dangerouslySetInnerHTML={{
+                          __html: colorizeHtml(prettyRenderedHtml),
+                        }}
+                      />
+                    </pre>
+                  </div>
+                    </>
+                  )}
+                </div>
+              </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -967,6 +1386,13 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
   const [currentDoc, setCurrentDoc] = useState<{ id: string; title: string; content: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isViewerWorkspacePanelCollapsed, setIsViewerWorkspacePanelCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(VIEWER_WORKSPACE_PANEL_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
 
   const viewerPlainText = useMemo(() => {
@@ -1063,6 +1489,17 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
   useEffect(() => {
     persistWorkspaceSelectionId(selectedWorkspaceId);
   }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        VIEWER_WORKSPACE_PANEL_COLLAPSED_KEY,
+        isViewerWorkspacePanelCollapsed ? '1' : '0',
+      );
+    } catch {
+      // no-op
+    }
+  }, [isViewerWorkspacePanelCollapsed]);
 
   useEffect(() => {
     let ignore = false;
@@ -1208,63 +1645,103 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
 
   return (
     <div className="flex h-screen overflow-hidden bg-linear-to-br from-slate-100 via-white to-cyan-50">
-      <aside className="hidden w-80 shrink-0 border-r border-slate-200 bg-white lg:flex lg:flex-col">
-        <div className="flex flex-1 flex-col overflow-hidden p-5">
-          <div className="mb-4 shrink-0 border-b border-slate-200/60 pb-4">
-            <div className="mb-2 flex items-center gap-2">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-100">
-                <span className="material-icons text-cyan-700" style={{ fontSize: '1rem' }}>menu_book</span>
-              </div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Book</p>
-            </div>
-            <p className="truncate text-base font-black text-slate-800">{activeWorkspaceName}</p>
-            <p className="mt-1 text-[10px] text-slate-400">Table of Contents</p>
-          </div>
-
-          <div className="mb-3 shrink-0 space-y-2">
-            <div className="relative">
-              <span className="material-icons absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>search</span>
-              <input
-                value={navSearchQuery}
-                onChange={(e) => setNavSearchQuery(e.target.value)}
-                placeholder="Find chapter..."
-                className="w-full rounded-lg bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
-              />
-            </div>
-            <div className="relative">
-              <select
-                value={selectedWorkspaceId}
-                onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                className="w-full cursor-pointer appearance-none rounded-lg bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
+      <aside
+        className={`hidden border-r border-slate-200 bg-white transition-all duration-300 lg:flex lg:flex-col ${
+          isViewerWorkspacePanelCollapsed ? 'lg:w-14 lg:shrink-0' : 'lg:w-80 lg:shrink-0'
+        }`}
+      >
+        {isViewerWorkspacePanelCollapsed ? (
+          <div className="flex h-full flex-col items-center px-2 py-2">
+            <button
+              type="button"
+              onClick={() => setIsViewerWorkspacePanelCollapsed(false)}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition-colors hover:bg-slate-100"
+              title="Show workspace panel"
+              aria-label="Show workspace panel"
+            >
+              <span className="material-icons" style={{ fontSize: '1rem' }}>keyboard_double_arrow_right</span>
+            </button>
+            <div className="flex min-h-0 flex-1 items-center justify-center py-2">
+              <p
+                className="max-h-full overflow-hidden text-sm font-semibold text-slate-700"
+                style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', whiteSpace: 'nowrap', transform: 'rotate(180deg)', transformOrigin: 'center' }}
+                title={`${activeWorkspaceName} | ${currentDoc?.title?.trim() || 'Untitled'}`}
               >
-                <option value="all">My Workspace</option>
-                {workspaces.map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                ))}
-              </select>
-              <span className="material-icons pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>expand_more</span>
+                <span className="text-cyan-700">{activeWorkspaceName}</span>
+                <span className="text-slate-400"> | </span>
+                <span className="text-slate-700">{currentDoc?.title?.trim() || 'Untitled'}</span>
+              </p>
             </div>
           </div>
-
-          <p className="mb-1 shrink-0 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-            Chapters ({filteredLeftDocs.length})
-          </p>
-
-          <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
-            {leftDocTree.length === 0 ? (
-              <div className="p-4 text-center">
-                <span className="material-icons mx-auto mb-2 block text-2xl text-slate-300">article</span>
-                <p className="text-xs text-slate-500">No chapters yet</p>
+        ) : (
+          <div className="flex flex-1 flex-col overflow-hidden p-5">
+            <div className="mb-4 shrink-0 border-b border-slate-200/60 pb-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-100">
+                    <span className="material-icons text-cyan-700" style={{ fontSize: '1rem' }}>menu_book</span>
+                  </div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Book</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsViewerWorkspacePanelCollapsed(true)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition-colors hover:bg-slate-100"
+                  title="Hide workspace panel"
+                  aria-label="Hide workspace panel"
+                >
+                  <span className="material-icons" style={{ fontSize: '0.9rem' }}>keyboard_double_arrow_left</span>
+                </button>
               </div>
-            ) : (
-              leftDocTree.map((node, i) => renderReadOnlyNode(node, `${i + 1}`, 0))
-            )}
-          </div>
+              <p className="truncate text-base font-black text-slate-800">{activeWorkspaceName}</p>
+              <p className="mt-1 text-[10px] text-slate-400">Table of Contents</p>
+            </div>
 
-          <div className="mt-3 shrink-0 border-t border-slate-200/60 pt-3 text-[10px] text-slate-400">
-            {filteredLeftDocs.length} chapter{filteredLeftDocs.length !== 1 ? 's' : ''}
+            <div className="mb-3 shrink-0 space-y-2">
+              <div className="relative">
+                <span className="material-icons absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>search</span>
+                <input
+                  value={navSearchQuery}
+                  onChange={(e) => setNavSearchQuery(e.target.value)}
+                  placeholder="Find chapter..."
+                  className="w-full rounded-lg bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
+                />
+              </div>
+              <div className="relative">
+                <select
+                  value={selectedWorkspaceId}
+                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                  className="w-full cursor-pointer appearance-none rounded-lg bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
+                >
+                  <option value="all">My Workspace</option>
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+                  ))}
+                </select>
+                <span className="material-icons pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>expand_more</span>
+              </div>
+            </div>
+
+            <p className="mb-1 shrink-0 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+              Chapters ({filteredLeftDocs.length})
+            </p>
+
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
+              {leftDocTree.length === 0 ? (
+                <div className="p-4 text-center">
+                  <span className="material-icons mx-auto mb-2 block text-2xl text-slate-300">article</span>
+                  <p className="text-xs text-slate-500">No chapters yet</p>
+                </div>
+              ) : (
+                leftDocTree.map((node, i) => renderReadOnlyNode(node, `${i + 1}`, 0))
+              )}
+            </div>
+
+            <div className="mt-3 shrink-0 border-t border-slate-200/60 pt-3 text-[10px] text-slate-400">
+              {filteredLeftDocs.length} chapter{filteredLeftDocs.length !== 1 ? 's' : ''}
+            </div>
           </div>
-        </div>
+        )}
       </aside>
 
       <main className="min-h-0 flex-1 overflow-y-auto bg-white">
@@ -1310,40 +1787,90 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
+  const readPersistedSession = useCallback((): Session | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Session;
+      if (!parsed?.accessToken || !parsed.accessTokenExpiresAt || !parsed.user) {
+        window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
+      if (new Date(parsed.accessTokenExpiresAt).getTime() <= Date.now()) {
+        window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const applySession = useCallback((auth: Session | null) => {
+    setSession(auth);
+    if (typeof window !== 'undefined') {
+      try {
+        if (auth) {
+          window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(auth));
+        } else {
+          window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        }
+      } catch {
+        // Ignore storage failures in restricted environments.
+      }
+    }
+    if (auth?.csrfToken) {
+      persistCsrfToken(auth.csrfToken);
+    } else {
+      clearPersistedCsrfToken();
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
+    const restoredSession = readPersistedSession();
+
+    if (restoredSession) {
+      applySession(restoredSession);
+      setAuthReady(true);
+    }
 
     authApi
       .refresh()
       .then((auth) => {
         if (cancelled) return;
-        setSession(auth);
+        applySession(auth);
+        if (!restoredSession) setAuthReady(true);
       })
       .catch(() => {
         if (cancelled) return;
-        setSession(null);
+        const current = readPersistedSession();
+        if (!current) {
+          applySession(null);
+        }
       })
       .finally(() => {
-        if (!cancelled) setAuthReady(true);
+        if (!cancelled && !restoredSession) setAuthReady(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applySession, readPersistedSession]);
 
   const refreshSession = useCallback(async () => {
     const auth = await authApi.refresh();
-    setSession(auth);
+    applySession(auth);
     return auth;
-  }, []);
+  }, [applySession]);
 
   useEffect(() => {
     if (!session) return;
     const refreshAt = new Date(session.accessTokenExpiresAt).getTime() - Date.now() - 60_000;
     const timeout = window.setTimeout(() => {
       void refreshSession().catch(() => {
-        setSession(null);
+        applySession(null);
         navigate('/auth', { replace: true });
       });
     }, Math.max(refreshAt, 5_000));
@@ -1353,14 +1880,23 @@ function App() {
 
   const handleAuthSuccess = useCallback(
     async (auth: AuthSuccess) => {
-      setSession(auth);
+      applySession(auth);
       navigate('/workspace', { replace: true });
     },
-    [navigate],
+    [applySession, navigate],
   );
 
   const handleUserUpdate = useCallback((user: AuthUser) => {
-    setSession((current) => (current ? { ...current, user } : current));
+    setSession((current) => {
+      if (!current) return current;
+      const next = { ...current, user };
+      try {
+        window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage failures in restricted environments.
+      }
+      return next;
+    });
   }, []);
 
   const handleOpenDocument = useCallback((docId: string) => {
@@ -1386,10 +1922,10 @@ function App() {
     } catch {
       // Logout still clears local auth state.
     } finally {
-      setSession(null);
+      applySession(null);
       navigate('/auth', { replace: true });
     }
-  }, [navigate, session]);
+  }, [applySession, navigate, session]);
 
   const handleOpenSecuritySettings = useCallback(() => {
     navigate('/security');
@@ -1408,7 +1944,14 @@ function App() {
   }
 
   return (
-    <Routes>
+    <Suspense
+      fallback={(
+        <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-600">
+          Loading...
+        </div>
+      )}
+    >
+      <Routes>
       <Route
         path="/"
         element={
@@ -1437,7 +1980,7 @@ function App() {
               user={session.user}
               onUserUpdate={handleUserUpdate}
               onLoggedOut={() => {
-                setSession(null);
+                applySession(null);
                 navigate('/auth', { replace: true });
               }}
             />
@@ -1517,8 +2060,9 @@ function App() {
           session ? <ReadOnlyDocumentRoute token={session.accessToken} userName={session.user.name} /> : <Navigate to="/auth" replace />
         }
       />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
 

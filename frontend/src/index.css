@@ -29,6 +29,42 @@ body {
   display: inline-block;
   vertical-align: middle;
 }
+
+.docsync-table-cell-editor--image::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.docsync-table-cell-editor--image::-moz-selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: transparent;
+}
+
+.docsync-editor-scrollbars {
+  scrollbar-width: auto;
+  scrollbar-color: #94a3b8 #e2e8f0;
+}
+
+.docsync-editor-scrollbars::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.docsync-editor-scrollbars::-webkit-scrollbar-track {
+  background: #e2e8f0;
+}
+
+.docsync-editor-scrollbars::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+  border: 2px solid #e2e8f0;
+}
+
+.docsync-editor-scrollbars::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
 @font-face {
   font-family: 'RalewayItalic';
   src: url('/fonts/Raleway-Italic-VariableFont_wght.ttf') format('truetype');

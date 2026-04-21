@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
@@ -44,7 +44,7 @@ export default function OrganizationAdminPage({ token, userName }: OrganizationA
     return role === 'owner' || role === 'admin';
   }, [membership]);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
 
@@ -72,11 +72,11 @@ export default function OrganizationAdminPage({ token, userName }: OrganizationA
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function handleSwitchOrganization(nextOrganizationId: string) {
     setMessage('');

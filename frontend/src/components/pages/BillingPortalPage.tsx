@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { billingApi, type BillingInvoice, type BillingPlan, type BillingSnapshot } from '../../lib/api';
@@ -51,7 +51,7 @@ export default function BillingPortalPage({ token, userName }: BillingPortalPage
     };
   }, [snapshot]);
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -71,11 +71,11 @@ export default function BillingPortalPage({ token, userName }: BillingPortalPage
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function handleCheckout(planId: 'free' | 'pro' | 'business' | 'enterprise') {
     setBusyPlanId(planId);

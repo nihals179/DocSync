@@ -25,7 +25,14 @@ import { BreakLayoutControls, WrapModeControls } from './image/imageWrapControls
 import { CanvasContextMenu, type CanvasMenuAction } from './CanvasContextMenu';
 import { getWrapAnchorOffset, resolveImageClickOffsetByWrap } from './image/imageWrapMode';
 import { DEFAULT_MARGINS, PAGE_DIMENSIONS, type PageSize } from './pageConfig';
-import { useEditorDraw, type ImageBox } from './useEditorDraw';
+import {
+  useEditorDraw,
+  type ImageBox,
+  type TableHit,
+  type TableLineHover,
+  type TableLineSelectionRange,
+  type TableSelectionRange,
+} from './useEditorDraw';
 import { useEditorInput } from './useEditorInput';
 
 export type { CursorFormat, RichEditorHandle } from './types';
@@ -33,6 +40,7 @@ export type { CursorFormat, RichEditorHandle } from './types';
 type RichEditorProps = {
   initialContent?: string;
   onContentChange?: (html: string) => void;
+  onRunsChange?: (runs: Run[]) => void;
   /** Called whenever the cursor position or formatting changes */
   onCursorFormatChange?: (fmt: CursorFormat) => void;
   pageSize: PageSize;
@@ -40,7 +48,7 @@ type RichEditorProps = {
 
 // ── Component ────────────────────────────────────────────────────────────────
 const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
-  ({ initialContent, onContentChange, onCursorFormatChange, pageSize }, ref) => {
+  ({ initialContent, onContentChange, onRunsChange, onCursorFormatChange, pageSize }, ref) => {
     const IMAGE_ALIGN_OPTIONS: Array<{
       key: 'left' | 'center' | 'right';
       icon: 'format_align_left' | 'format_align_center' | 'format_align_right';
@@ -102,6 +110,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     });
     const prevPageSize = useRef(pageSize);
     const isPaperMode = pageSize !== 'responsive';
+    const paperSize = isPaperMode
+      ? PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>]
+      : null;
+    const paperHeightRatio = paperSize ? paperSize.heightMm / paperSize.widthMm : null;
+    const paperWidthMm = paperSize?.widthMm ?? null;
 
     // ── Document refs ─────────────────────────────────────────────────────────
     const runsRef = useRef<Run[]>([makeRun(initialContent ?? '', { ...DEFAULT_RUN_FMT })]);
@@ -113,13 +126,40 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const selStartRef = useRef<number | null>(null);
     const curFmtRef = useRef<RunFmt>({ ...DEFAULT_RUN_FMT });
     const isDraggingRef = useRef(false);
+    const tableInputRef = useRef<HTMLTextAreaElement | null>(null);
+    const selectedTableHitRef = useRef<TableHit | null>(null);
+    const tableSelectionRangeRef = useRef<TableSelectionRange | null>(null);
+    const hoveredTableLineRef = useRef<TableLineHover | null>(null);
+    const selectedTableLineRef = useRef<TableLineHover | null>(null);
+    const selectedTableLineRangeRef = useRef<TableLineSelectionRange | null>(null);
+    const isTableCellEditingRef = useRef(false);
+    const activeTableEditingCellRef = useRef<{
+      tableStart: number;
+      row: number;
+      column: number;
+    } | null>(null);
+    const tableCellCursorRef = useRef<{
+      tableStart: number;
+      row: number;
+      column: number;
+      offset: number;
+    } | null>(null);
+    const tableTextSelectionRef = useRef<{
+      tableStart: number;
+      row: number;
+      column: number;
+      start: number;
+      end: number;
+    } | null>(null);
+    const autoScrollCursorIntoViewRef = useRef(false);
     const undoStackRef = useRef<Array<{ runs: Run[]; cursor: number }>>([]);
     const redoStackRef = useRef<Array<{ runs: Run[]; cursor: number }>>([]);
 
     const emitChange = useCallback(() => {
       onContentChange?.(runsToText(runsRef.current));
+      onRunsChange?.(runsRef.current.map((run) => ({ ...run })));
       setContentVersion((value) => value + 1);
-    }, [onContentChange]);
+    }, [onContentChange, onRunsChange]);
     const notifyFmt = useCallback(() => {
       const text = runsToText(runsRef.current);
       const bullet = isBulletAtOffset(text, cursorRef.current);
@@ -134,14 +174,18 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         hasSpaceAfterLine,
         imageSelected: Boolean(selectedImage),
         imagePanelOpen: Boolean(selectedImage) && isImagePanelOpen,
-        imageAlign: selectedImage?.meta.align ?? 'center',
+        imageAlign: (selectedImage?.meta.align as 'left' | 'center' | 'right') ?? 'center',
         imageWidthPct: selectedImage?.meta.widthPct ?? 100,
+        tableSelected: false,
+        tablePanelOpen: false,
+        tablePartialTextSelection: false,
       });
     }, [onCursorFormatChange, selectedImage, isImagePanelOpen]);
 
     // ── Drawing hook ──────────────────────────────────────────────────────────
     const drawRefs = {
       canvasRef,
+      tableInputRef,
       runsRef,
       cursorRef,
       selStartRef,
@@ -149,6 +193,16 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       blinkRef,
       blinkTimerRef,
       curFmtRef,
+      selectedTableHitRef,
+      tableSelectionRangeRef,
+      hoveredTableLineRef,
+      selectedTableLineRef,
+      selectedTableLineRangeRef,
+      isTableCellEditingRef,
+      activeTableEditingCellRef,
+      tableCellCursorRef,
+      tableTextSelectionRef,
+      autoScrollCursorIntoViewRef,
     };
     const {
       draw,
@@ -157,7 +211,14 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       getImageBoxAtClientXY,
       getImageBoxAtOffset,
       getResolvedImageBox,
-    } = useEditorDraw(drawRefs, leftMargin, rightMargin, isPaperMode);
+    } = useEditorDraw(
+      drawRefs,
+      leftMargin,
+      rightMargin,
+      isPaperMode,
+      paperHeightRatio,
+      paperWidthMm,
+    );
 
     // ── History ───────────────────────────────────────────────────────────────
     const pushHistory = useCallback(() => {
@@ -247,11 +308,14 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       toggleSpaceAfterLine,
       insertLink,
       insertImage,
+      insertTable,
+      insertPageBreak,
       setImageAlign,
       setImageWidthPct,
       setImageRotationDeg,
       setImageWrap,
       setImageAltText,
+      setImageFrontOpacityPct,
       setCursorOffset,
     } = useEditorInput(inputRefs, {
       ...inputCbs,
@@ -612,7 +676,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         }
         if (action === 'insert-link') {
           const url = window.prompt('Enter link URL');
-          if (url && url.trim()) insertLink(url.trim());
+          if (url && url.trim()) insertLink(url.trim(), url.trim());
           return;
         }
         if (action === 'insert-image') {
@@ -856,18 +920,38 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setHighlightColor,
       insertLink,
       insertImage,
+      insertTable,
+      insertPageBreak,
       setImageAlign,
       setImageWidthPct,
       setImageRotationDeg,
       setImageWrap,
       setImageAltText,
+      setImageFrontOpacityPct,
       formatPainter: runFormattingPainter,
       clearFormatting: runClearFormatting,
       toggleImagePanel: () => setIsImagePanelOpen((prev) => !prev),
       openImagePanel: () => setIsImagePanelOpen(true),
       closeImagePanel: () => setIsImagePanelOpen(false),
+      toggleTablePanel: () => {
+        // Table panel UI is not mounted in this legacy editor shell.
+      },
+      openTablePanel: () => {
+        // Table panel UI is not mounted in this legacy editor shell.
+      },
+      closeTablePanel: () => {
+        // Table panel UI is not mounted in this legacy editor shell.
+      },
       toggleSpaceBeforeLine,
       toggleSpaceAfterLine,
+      setRuns: (runs: Run[]) => {
+        runsRef.current = runs.map((run) => ({ ...run }));
+        cursorRef.current = runsToText(runsRef.current).length;
+        selStartRef.current = null;
+        emitChange();
+        notifyFmt();
+        draw();
+      },
       undo: undoFn,
       redo: redoFn,
     }));
@@ -1286,9 +1370,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     return (
       <div
         ref={rootRef}
-        className={`relative min-h-0 flex-1 ${isPaperMode ? 'overflow-auto' : 'overflow-hidden'} rounded-xl border border-slate-200/80 bg-white shadow-sm`}
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm"
       >
-        <div className="sticky top-0 z-30 w-full px-3 py-1">
+        <div className="z-30 w-full shrink-0 px-3 py-1">
           <MarginRuler
             left={leftMargin}
             right={rightMargin}
@@ -1307,20 +1391,44 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         </div>
 
         {isPaperMode ? (
-          <div className="flex min-h-full items-start justify-center p-6">
+          <div className="docsync-editor-scrollbars min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+            <div className="flex min-h-full items-start justify-center p-6">
+              <div
+                ref={pageElRef}
+                className="relative shrink-0 bg-white"
+                style={{
+                  width: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].width,
+                  height: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].height,
+                  boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)',
+                  borderRadius: 6,
+                }}
+              >
+                <canvas
+                  ref={canvasRef}
+                  className="w-full h-full cursor-text"
+                  tabIndex={0}
+                  onKeyDown={handleCanvasKeyDown}
+                  onPaste={handlePaste}
+                  onMouseDown={handleCanvasMouseDown}
+                  onDoubleClick={handleCanvasDoubleClick}
+                  onMouseMove={handleCanvasMouseMove}
+                  onWheel={handleWheel}
+                  onContextMenu={handleCanvasContextMenu}
+                  aria-label="Document editor"
+                  style={{ display: 'block', outline: 'none' }}
+                />
+                {renderImageOverlay(visibleImage)}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="relative min-h-0 flex-1">
             <div
-              ref={pageElRef}
-              className="relative shrink-0 bg-white"
-              style={{
-                width: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].width,
-                height: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].height,
-                boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)',
-                borderRadius: 6,
-              }}
+              className="relative h-full w-full"
             >
               <canvas
                 ref={canvasRef}
-                className="w-full h-full cursor-text"
+                className="h-full w-full cursor-text"
                 tabIndex={0}
                 onKeyDown={handleCanvasKeyDown}
                 onPaste={handlePaste}
@@ -1334,24 +1442,6 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               />
               {renderImageOverlay(visibleImage)}
             </div>
-          </div>
-        ) : (
-          <div className="relative" style={{ height: 'calc(100% - 48px)' }}>
-            <canvas
-              ref={canvasRef}
-              className="h-full w-full cursor-text"
-              tabIndex={0}
-              onKeyDown={handleCanvasKeyDown}
-              onPaste={handlePaste}
-              onMouseDown={handleCanvasMouseDown}
-              onDoubleClick={handleCanvasDoubleClick}
-              onMouseMove={handleCanvasMouseMove}
-              onWheel={handleWheel}
-              onContextMenu={handleCanvasContextMenu}
-              aria-label="Document editor"
-              style={{ display: 'block', outline: 'none' }}
-            />
-            {renderImageOverlay(visibleImage)}
           </div>
         )}
         <CanvasContextMenu

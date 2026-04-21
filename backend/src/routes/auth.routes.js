@@ -1,6 +1,24 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { authenticator } = require('otplib');
+const { generateSync: _totpGenerateSync, verifySync: _totpVerifySync } = require('@otplib/totp');
+const { NobleCryptoPlugin: _NobleCryptoPlugin } = require('@otplib/plugin-crypto-noble');
+const { ScureBase32Plugin: _ScureBase32Plugin } = require('@otplib/plugin-base32-scure');
+const { generateSecret: _otpGenerateSecret } = require('otplib');
+const { generateTOTP: _generateTOTP } = require('@otplib/uri');
+
+// Compatibility shim for otplib v13 (v11 authenticator API no longer exported)
+const _totpPlugins = {
+  crypto: new _NobleCryptoPlugin(),
+  base32: new _ScureBase32Plugin(),
+};
+const authenticator = {
+  generateSecret: () => _otpGenerateSecret(_totpPlugins),
+  keyuri: (email, appName, secret) => _generateTOTP({ label: email, issuer: appName, secret }),
+  check: (token, secret) => {
+    const result = _totpVerifySync({ token: String(token), secret, ..._totpPlugins });
+    return !!(result && result.valid);
+  },
+};
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 
@@ -238,39 +256,6 @@ function findUserByIdentifier(identifier) {
   return ensureUserShape(user || null);
 }
 
-function ensureDummyAdminUser() {
-  const existingAdmin = [...users.values()].find((u) => u.username === 'admin');
-  if (existingAdmin) {
-    ensureUserShape(existingAdmin);
-    if (!existingAdmin.role) existingAdmin.role = 'admin';
-    if (!existingAdmin.emailVerified) existingAdmin.emailVerified = true;
-    users.set(existingAdmin.id, existingAdmin);
-    return;
-  }
-
-  const id = 'seed-admin';
-  const passwordHash = bcrypt.hashSync('admin', 10);
-  const admin = {
-    id,
-    name: 'Admin',
-    username: 'admin',
-    email: 'admin@docsync.local',
-    passwordHash,
-    createdAt: nowIso(),
-    emailVerified: true,
-    failedLoginAttempts: 0,
-    lockoutUntil: null,
-    role: 'admin',
-    twoFactorEnabled: false,
-    twoFactorSecret: null,
-    twoFactorTempSecret: null,
-  };
-  users.set(id, admin);
-  ensureTenantBootstrapForUser(admin);
-}
-
-ensureDummyAdminUser();
-
 router.post('/register', registerRateLimit, async (req, res) => {
   const { name, email, password } = req.body ?? {};
   if (!name || !email || !password) {
@@ -468,7 +453,7 @@ router.post('/login/2fa', loginRateLimit, (req, res) => {
     return res.status(400).json({ error: 'Two-factor authentication is not configured.' });
   }
 
-  const valid = authenticator.check(String(code), user.twoFactorSecret);
+  const valid = authenticator.check(code, user.twoFactorSecret);
   if (!valid) {
     audit(req, 'login-2fa', 'failure', user.id);
     return res.status(401).json({ error: 'Invalid authentication code.' });

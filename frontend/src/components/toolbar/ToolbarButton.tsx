@@ -4,6 +4,7 @@ type ToolbarButtonProps = {
   title: string;
   icon: string;
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   label?: string;
 };
@@ -16,17 +17,27 @@ export const ToolbarButton: React.FC<ToolbarButtonProps> = ({
   title,
   icon,
   active,
+  disabled,
   onClick,
   label,
 }) => (
   <div className="group relative inline-flex">
     <button
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
+      disabled={disabled}
+      onMouseDown={(e) => {
+        if (!disabled) e.preventDefault();
+      }}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
       title={title}
       aria-label={title}
       className={`flex h-7 items-center justify-center gap-1 rounded px-2 transition-colors duration-100 ${
-        active ? 'bg-cyan-50 text-cyan-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-800'
+        disabled
+          ? 'cursor-not-allowed text-slate-300'
+          : active
+            ? 'bg-cyan-50 text-cyan-700'
+            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-800'
       }`}
     >
       <span className="material-icons" style={{ fontSize: 18 }}>

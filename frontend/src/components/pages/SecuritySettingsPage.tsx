@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { authApi, type AuthSessionSummary, type AuthUser } from '../../lib/api';
@@ -34,7 +34,7 @@ export default function SecuritySettingsPage({ token, user, onUserUpdate, onLogg
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -49,11 +49,11 @@ export default function SecuritySettingsPage({ token, user, onUserUpdate, onLogg
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function handleRevoke(sessionId: string) {
     setMessage('');

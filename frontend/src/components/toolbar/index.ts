@@ -10,3 +10,4 @@ export { HistoryControls } from './HistoryControls';
 export { FontControls } from './FontControls';
 export { TextFormatting } from './TextFormatting';
 export { ColorPicker } from './ColorPicker';
+export { TableInsertMenu } from './TableInsertMenu';

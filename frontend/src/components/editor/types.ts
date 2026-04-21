@@ -1,4 +1,4 @@
-import type { ImageWrap, RunFmt } from './textModel';
+import type { ImageWrap, Run, RunFmt } from './textModel';
 
 export type CursorFormat = RunFmt & {
   bullet: boolean;
@@ -9,11 +9,15 @@ export type CursorFormat = RunFmt & {
   imagePanelOpen: boolean;
   imageAlign: 'left' | 'center' | 'right';
   imageWidthPct: number;
+  tableSelected: boolean;
+  tablePanelOpen: boolean;
+  tablePartialTextSelection: boolean;
 };
 
 export type RichEditorHandle = {
   getContent: () => string;
   setContent: (html: string) => void;
+  setRuns: (runs: Run[]) => void;
   getFontSize: () => number;
   setFontSize: (n: number) => void;
   toggleBold: () => void;
@@ -34,18 +38,24 @@ export type RichEditorHandle = {
   setLineSpacing: (n: number) => void;
   toggleHighlight: () => void;
   setHighlightColor: (color: string | null) => void;
-  insertLink: (url: string) => void;
+  insertLink: (label: string, url: string) => void;
   insertImage: (url: string) => void;
+  insertTable: (rows: number, columns: number) => void;
+  insertPageBreak: () => void;
   setImageAlign: (align: 'left' | 'center' | 'right') => void;
   setImageWidthPct: (widthPct: number) => void;
   setImageRotationDeg: (rotationDeg: number) => void;
   setImageWrap: (wrap: ImageWrap) => void;
   setImageAltText: (alt: string) => void;
+  setImageFrontOpacityPct: (frontOpacityPct: number) => void;
   formatPainter: () => void;
   clearFormatting: () => void;
   toggleImagePanel: () => void;
   openImagePanel: () => void;
   closeImagePanel: () => void;
+  toggleTablePanel: () => void;
+  openTablePanel: () => void;
+  closeTablePanel: () => void;
   toggleSpaceBeforeLine: () => void;
   toggleSpaceAfterLine: () => void;
   undo: () => void;

@@ -17,6 +17,7 @@ type FontControlsProps = {
   selectedTextType: TextTypeOption;
   selectedFont: string;
   fontSize: number;
+  disabled?: boolean;
   onTextTypeChange: (textType: TextTypeOption) => void;
   onFontChange: (fontName: string) => void;
   onFontSizeDecrease: () => void;
@@ -32,6 +33,7 @@ export const FontControls: React.FC<FontControlsProps> = ({
   selectedTextType,
   selectedFont,
   fontSize,
+  disabled,
   onTextTypeChange,
   onFontChange,
   onFontSizeDecrease,
@@ -43,8 +45,11 @@ export const FontControls: React.FC<FontControlsProps> = ({
     {/* Text type */}
     <select
       value={selectedTextType}
+      disabled={disabled}
       onChange={(e) => onTextTypeChange(e.target.value as TextTypeOption)}
-      className="h-7 max-w-28 truncate rounded-md border-none bg-transparent pl-2 pr-5 text-xs font-medium text-slate-600 outline-none hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300"
+      className={`h-7 max-w-28 truncate rounded-md border-none bg-transparent pl-2 pr-5 text-xs font-medium outline-none ${
+        disabled ? 'cursor-not-allowed text-slate-300' : 'text-slate-600 hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300'
+      }`}
       aria-label="Text Type"
     >
       {TEXT_TYPE_OPTIONS.map((option) => (
@@ -57,8 +62,11 @@ export const FontControls: React.FC<FontControlsProps> = ({
     {/* Font family */}
     <select
       value={selectedFont}
+      disabled={disabled}
       onChange={(e) => onFontChange(e.target.value)}
-      className="h-7 max-w-28 truncate rounded-md border-none bg-transparent pl-2 pr-5 text-xs font-medium text-slate-600 outline-none hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300"
+      className={`h-7 max-w-28 truncate rounded-md border-none bg-transparent pl-2 pr-5 text-xs font-medium outline-none ${
+        disabled ? 'cursor-not-allowed text-slate-300' : 'text-slate-600 hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300'
+      }`}
       aria-label="Font Family"
     >
       {FONT_OPTIONS.map((font) => (
@@ -70,18 +78,23 @@ export const FontControls: React.FC<FontControlsProps> = ({
 
     {/* Font size */}
     <div className="flex items-center gap-0.5">
-      <ToolbarButton title="Decrease font size" icon="remove" onClick={onFontSizeDecrease} />
+      <ToolbarButton title="Decrease font size" icon="remove" disabled={disabled} onClick={onFontSizeDecrease} />
       <input
         type="number"
         value={fontSize}
         min={8}
         max={72}
+        disabled={disabled}
         onChange={(e) => onFontSizeInput(e.target.value)}
         onBlur={onFontSizeBlur}
-        className="h-6 w-8 rounded border border-slate-200 bg-white text-center text-xs font-medium text-slate-700 outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-200 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className={`h-6 w-8 rounded border bg-white text-center text-xs font-medium outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
+          disabled
+            ? 'cursor-not-allowed border-slate-100 text-slate-300'
+            : 'border-slate-200 text-slate-700 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-200'
+        }`}
         aria-label="Font Size"
       />
-      <ToolbarButton title="Increase font size" icon="add" onClick={onFontSizeIncrease} />
+      <ToolbarButton title="Increase font size" icon="add" disabled={disabled} onClick={onFontSizeIncrease} />
     </div>
   </>
 );

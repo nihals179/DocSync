@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { CursorFormat, RichEditorHandle } from '../editor';
 import { ToolbarDivider } from './ToolbarDivider';
 import { PageSizeSelector } from './PageSizeSelector';
@@ -45,88 +45,66 @@ const Toolbar: React.FC<ToolbarProps> = ({
     paragraph: { fontSize: 16, bold: false },
   };
 
-  // Local display state — mirrored from cursorFormat prop
-  const [bold, setBold] = useState(cursorFormat?.bold ?? false);
-  const [italic, setItalic] = useState(cursorFormat?.italic ?? false);
-  const [underline, setUnderline] = useState(cursorFormat?.underline ?? false);
-  const [highlightColor, setHighlightColor] = useState<string | null>(
-    cursorFormat?.highlightColor ?? null,
-  );
-  const [isBullet, setIsBullet] = useState(cursorFormat?.bullet ?? false);
-  const [isNumberList, setIsNumberList] = useState(cursorFormat?.numberList ?? false);
-  const [hasSpaceBeforeLine, setHasSpaceBeforeLine] = useState(
-    cursorFormat?.hasSpaceBeforeLine ?? false,
-  );
-  const [hasSpaceAfterLine, setHasSpaceAfterLine] = useState(
-    cursorFormat?.hasSpaceAfterLine ?? false,
-  );
-  const [selectedFont, setSelectedFont] = useState(cursorFormat?.fontFamily ?? 'Raleway');
-  const [selectedTextType, setSelectedTextType] = useState<TextTypeOption>(
-    getTextTypeFromFormat(cursorFormat?.fontSize ?? 16, cursorFormat?.bold ?? false),
-  );
-  const [textColor, setTextColor] = useState(cursorFormat?.color ?? '#1e293b');
-  const [fontSize, setFontSize] = useState(cursorFormat?.fontSize ?? 16);
-  const [lineSpacing, setLineSpacing] = useState(cursorFormat?.lineSpacing ?? 1.5);
+  const bold = cursorFormat?.bold ?? false;
+  const italic = cursorFormat?.italic ?? false;
+  const underline = cursorFormat?.underline ?? false;
+  const highlightColor = cursorFormat?.highlightColor ?? null;
+  const isBullet = cursorFormat?.bullet ?? false;
+  const isNumberList = cursorFormat?.numberList ?? false;
+  const hasSpaceBeforeLine = cursorFormat?.hasSpaceBeforeLine ?? false;
+  const hasSpaceAfterLine = cursorFormat?.hasSpaceAfterLine ?? false;
+  const selectedFont = cursorFormat?.fontFamily ?? 'Raleway';
+  const selectedTextType = getTextTypeFromFormat(cursorFormat?.fontSize ?? 16, cursorFormat?.bold ?? false);
+  const textColor = cursorFormat?.color ?? '#1e293b';
+  const fontSize = cursorFormat?.fontSize ?? 16;
+  const lineSpacing = cursorFormat?.lineSpacing ?? 1.5;
+  const shouldRefocusCanvas = !cursorFormat?.tableSelected;
+  const liveFontSizeRef = useRef(fontSize);
 
-  // Keep local state in sync whenever the editor reports a cursor change
   useEffect(() => {
-    if (!cursorFormat) return;
-    setBold(cursorFormat.bold);
-    setItalic(cursorFormat.italic);
-    setUnderline(cursorFormat.underline);
-    setHighlightColor(cursorFormat.highlightColor ?? null);
-    setIsBullet(cursorFormat.bullet ?? false);
-    setIsNumberList(cursorFormat.numberList ?? false);
-    setHasSpaceBeforeLine(cursorFormat.hasSpaceBeforeLine ?? false);
-    setHasSpaceAfterLine(cursorFormat.hasSpaceAfterLine ?? false);
-    setSelectedFont(cursorFormat.fontFamily);
-    setSelectedTextType(getTextTypeFromFormat(cursorFormat.fontSize, cursorFormat.bold));
-    setTextColor(cursorFormat.color);
-    setFontSize(cursorFormat.fontSize);
-    setLineSpacing(cursorFormat.lineSpacing ?? 1.5);
-  }, [cursorFormat]);
+    liveFontSizeRef.current = fontSize;
+  }, [fontSize]);
 
   /** Return keyboard focus to the editor canvas */
-  const refocus = () => editorRef.current?.focus();
+  const refocus = () => {
+    if (!shouldRefocusCanvas) return;
+    editorRef.current?.focus();
+  };
 
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleFontChange = (fontName: string) => {
-    setSelectedFont(fontName);
     editorRef.current?.setFontFamily(fontName);
     refocus();
   };
 
   const handleTextTypeChange = (textType: TextTypeOption) => {
-    setSelectedTextType(textType);
     const preset = TEXT_TYPE_PRESETS[textType];
-    setFontSize(preset.fontSize);
     editorRef.current?.setFontSize(preset.fontSize);
 
     const currentBold = editorRef.current?.getBold();
     if (typeof currentBold === 'boolean' && currentBold !== preset.bold) {
       editorRef.current?.toggleBold();
-      setBold(preset.bold);
     }
 
     refocus();
   };
 
   const handleFontSizeDecrease = () => {
-    const next = Math.max(8, fontSize - 1);
-    setFontSize(next);
+    const next = Math.max(8, liveFontSizeRef.current - 1);
+    liveFontSizeRef.current = next;
     editorRef.current?.setFontSize(next);
   };
 
   const handleFontSizeIncrease = () => {
-    const next = Math.min(72, fontSize + 1);
-    setFontSize(next);
+    const next = Math.min(72, liveFontSizeRef.current + 1);
+    liveFontSizeRef.current = next;
     editorRef.current?.setFontSize(next);
   };
 
   const handleFontSizeInput = (val: string) => {
     const n = parseInt(val, 10);
     if (!isNaN(n) && n >= 8 && n <= 72) {
-      setFontSize(n);
+      liveFontSizeRef.current = n;
       editorRef.current?.setFontSize(n);
     }
   };
@@ -134,7 +112,6 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const handleFontSizeBlur = () => refocus();
 
   const handleColorChange = (color: string) => {
-    setTextColor(color);
     editorRef.current?.setTextColor(color);
     refocus();
   };
@@ -143,7 +120,6 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const handleToggleItalic = () => editorRef.current?.toggleItalic();
   const handleToggleUnderline = () => editorRef.current?.toggleUnderline();
   const handleSetHighlightColor = (color: string | null) => {
-    setHighlightColor(color);
     editorRef.current?.setHighlightColor(color);
     refocus();
   };
@@ -152,16 +128,37 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const handleIndentLeft = () => editorRef.current?.indentLeft();
   const handleIndentRight = () => editorRef.current?.indentRight();
   const handleLineSpacingChange = (value: number) => {
-    setLineSpacing(value);
     editorRef.current?.setLineSpacing(value);
     refocus();
   };
   const handleToggleSpaceBeforeLine = () => editorRef.current?.toggleSpaceBeforeLine();
   const handleToggleSpaceAfterLine = () => editorRef.current?.toggleSpaceAfterLine();
+  const [linkPopupOpen, setLinkPopupOpen] = useState(false);
+  const [linkLabel, setLinkLabel] = useState('');
+  const [linkUrl, setLinkUrl] = useState('');
+  const linkLabelRef = useRef<HTMLInputElement>(null);
+
   const handleInsertLink = () => {
-    const url = window.prompt('Enter link URL');
-    if (!url?.trim()) return;
-    editorRef.current?.insertLink(url.trim());
+    setLinkLabel('');
+    setLinkUrl('');
+    setLinkPopupOpen(true);
+    // Focus the label field after render
+    setTimeout(() => linkLabelRef.current?.focus(), 50);
+  };
+
+  const handleLinkConfirm = () => {
+    if (!linkUrl.trim()) return;
+    editorRef.current?.insertLink(linkLabel.trim(), linkUrl.trim());
+    setLinkPopupOpen(false);
+    setLinkLabel('');
+    setLinkUrl('');
+    refocus();
+  };
+
+  const handleLinkCancel = () => {
+    setLinkPopupOpen(false);
+    setLinkLabel('');
+    setLinkUrl('');
     refocus();
   };
   const handleInsertImage = () => {
@@ -187,11 +184,23 @@ const Toolbar: React.FC<ToolbarProps> = ({
     };
     picker.click();
   };
+  const handleInsertTable = (rows: number, columns: number) => {
+    editorRef.current?.insertTable(rows, columns);
+    refocus();
+  };
+  const handleInsertPageBreak = () => {
+    editorRef.current?.insertPageBreak();
+    refocus();
+  };
 
   const handleUndo = () => editorRef.current?.undo();
   const handleRedo = () => editorRef.current?.redo();
   const handleToggleImagePanel = () => {
     editorRef.current?.toggleImagePanel();
+    refocus();
+  };
+  const handleToggleTablePanel = () => {
+    editorRef.current?.toggleTablePanel();
     refocus();
   };
 
@@ -206,7 +215,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
   };
 
   return (
-    <div className="sticky top-0 z-40 mt-2 mb-2 rounded-full border border-slate-200/80 bg-slate-50/90 px-3 py-1 shadow-sm backdrop-blur-md">
+    <>
+    <div
+      data-docsync-toolbar="true"
+      className="sticky top-0 z-40 mt-2 mb-2 rounded-full border border-slate-200/80 bg-slate-50/90 px-3 py-1 shadow-sm backdrop-blur-md"
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 flex-wrap">
           {/* Page Size */}
@@ -265,6 +278,9 @@ const Toolbar: React.FC<ToolbarProps> = ({
             onSetHighlightColor={handleSetHighlightColor}
             onInsertLink={handleInsertLink}
             onInsertImage={handleInsertImage}
+            onInsertTable={handleInsertTable}
+            onInsertPageBreak={handleInsertPageBreak}
+            showPageBreakAction={pageSize !== 'responsive'}
             onToggleBullet={handleToggleBullet}
             onToggleNumberList={handleToggleNumberList}
           />
@@ -277,6 +293,18 @@ const Toolbar: React.FC<ToolbarProps> = ({
                 label="Image Options"
                 active={cursorFormat.imagePanelOpen}
                 onClick={handleToggleImagePanel}
+              />
+            </>
+          )}
+          {cursorFormat?.tableSelected && (
+            <>
+              <ToolbarDivider />
+              <ToolbarButton
+                title="Table Options"
+                icon="table_rows"
+                label="Table Options"
+                active={cursorFormat.tablePanelOpen}
+                onClick={handleToggleTablePanel}
               />
             </>
           )}
@@ -301,6 +329,83 @@ const Toolbar: React.FC<ToolbarProps> = ({
         </div>
       </div>
     </div>
+
+    {/* Insert Link popup */}
+    {linkPopupOpen && (
+      <div
+        className="fixed inset-0 z-200 flex items-center justify-center"
+        onMouseDown={(e) => { if (e.target === e.currentTarget) handleLinkCancel(); }}
+      >
+        <div
+          className="w-90 rounded-xl border border-slate-200 bg-white shadow-2xl"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5">
+            <span className="material-icons text-blue-500" style={{ fontSize: 20 }}>link</span>
+            <span className="text-[14px] font-semibold text-slate-800">Insert Link</span>
+          </div>
+          {/* Body */}
+          <div className="flex flex-col gap-3.5 px-5 py-4">
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Label</label>
+              <input
+                ref={linkLabelRef}
+                type="text"
+                placeholder="Display text (optional)"
+                value={linkLabel}
+                onChange={(e) => setLinkLabel(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleLinkConfirm(); } if (e.key === 'Escape') handleLinkCancel(); }}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-[13px] text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">URL <span className="text-red-400">*</span></label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="url"
+                  placeholder="https://example.com"
+                  value={linkUrl}
+                  onChange={(e) => setLinkUrl(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleLinkConfirm(); } if (e.key === 'Escape') handleLinkCancel(); }}
+                  className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-[13px] text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+                <button
+                  type="button"
+                  title="Paste from clipboard"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text) setLinkUrl(text.trim());
+                    } catch {
+                      // clipboard access denied — ignore silently
+                    }
+                  }}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                >
+                  <span className="material-icons" style={{ fontSize: 18 }}>content_paste</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+            <button
+              type="button"
+              onClick={handleLinkCancel}
+              className="rounded-lg px-4 py-1.5 text-[13px] font-medium text-slate-500 hover:bg-slate-50"
+            >Cancel</button>
+            <button
+              type="button"
+              onClick={handleLinkConfirm}
+              disabled={!linkUrl.trim()}
+              className="rounded-lg bg-blue-500 px-4 py-1.5 text-[13px] font-medium text-white hover:bg-blue-600 disabled:opacity-40"
+            >Insert</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

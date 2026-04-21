@@ -242,7 +242,7 @@ export default function WorkspaceHomePage({
     }
     
     return result;
-  }, [versions, searchQuery, selectedWorkspaceId]);
+  }, [versions, searchQuery]);
 
   const hasDocs = useMemo(() => filteredDocs.length > 0, [filteredDocs]);
 

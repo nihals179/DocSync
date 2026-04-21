@@ -45,8 +45,7 @@ export const resolveImageClickOffsetByWrap = ({
     return resolveWrapTextClickOffset(imageEnd);
   }
   if (isTextInFrontWrap(wrap)) {
-    // Keep writing after the token so text renders over the image layer.
-    return imageEnd;
+    return resolveInlineTextClickOffset(imageStart, imageEnd, clickX, imageMidX);
   }
   return resolveInlineTextClickOffset(imageStart, imageEnd, clickX, imageMidX);
 };
@@ -59,6 +58,14 @@ export function resolveInsertOffsetForWrapMode(
   if (!image) return offset;
   if (isBreakLineWrap(image.wrap)) return resolveBreakLineInsertOffset(text, image, offset);
   if (isWrapTextWrap(image.wrap)) return resolveWrapTextInsertOffset(image);
-  if (isTextInFrontWrap(image.wrap)) return image.end;
+  if (isTextInFrontWrap(image.wrap)) {
+    // Keep typing anchored to the visible caret position for front mode.
+    // Only snap when an offset somehow lands inside the atomic image token.
+    if (offset > image.start && offset < image.end) {
+      const mid = image.start + (image.end - image.start) / 2;
+      return offset < mid ? image.start : image.end;
+    }
+    return offset;
+  }
   return offset;
 }

@@ -1,5 +1,17 @@
 const { ipKeyGenerator, rateLimit } = require('express-rate-limit');
 
+// Skip all rate limiting in test environment so tests can exercise failure paths
+// without the limiter's in-memory counters bleeding across test cases.
+if (process.env.NODE_ENV === 'test') {
+  const noop = (req, res, next) => next();
+  module.exports = {
+    authRateLimit: noop,
+    loginRateLimit: noop,
+    registerRateLimit: noop,
+    passwordResetRateLimit: noop,
+  };
+} else {
+
 const standardConfig = {
   standardHeaders: true,
   legacyHeaders: false,
@@ -42,3 +54,5 @@ module.exports = {
   registerRateLimit,
   passwordResetRateLimit,
 };
+
+} // end non-test block
