@@ -46,6 +46,11 @@ type RichEditorProps = {
   pageSize: PageSize;
 };
 
+const PAPER_MODE_DEFAULT_FONT_SIZE = 11;
+const PAPER_MODE_PAGE_GAP_PX = 44;
+const getDefaultFontSizeForPageSize = (size: PageSize) =>
+  size === 'responsive' ? DEFAULT_RUN_FMT.fontSize : PAPER_MODE_DEFAULT_FONT_SIZE;
+
 // ── Component ────────────────────────────────────────────────────────────────
 const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
   ({ initialContent, onContentChange, onRunsChange, onCursorFormatChange, pageSize }, ref) => {
@@ -99,12 +104,18 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [showQuickFormatting, setShowQuickFormatting] = useState(false);
+    const [paperPagination, setPaperPagination] = useState<{ pageCount: number; pageHeightPx: number }>(
+      {
+        pageCount: 1,
+        pageHeightPx: 0,
+      },
+    );
     const [quickFormattingState, setQuickFormattingState] = useState({
       bold: false,
       italic: false,
       underline: false,
       fontFamily: DEFAULT_RUN_FMT.fontFamily,
-      fontSize: DEFAULT_RUN_FMT.fontSize,
+      fontSize: getDefaultFontSizeForPageSize(pageSize),
       color: DEFAULT_RUN_FMT.color,
       highlightColor: DEFAULT_RUN_FMT.highlightColor as string | null,
     });
@@ -115,16 +126,31 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       : null;
     const paperHeightRatio = paperSize ? paperSize.heightMm / paperSize.widthMm : null;
     const paperWidthMm = paperSize?.widthMm ?? null;
+    const paperCanvasHeight =
+      isPaperMode && paperSize
+        ? paperPagination.pageHeightPx > 0
+          ? paperPagination.pageCount * paperPagination.pageHeightPx +
+            Math.max(0, paperPagination.pageCount - 1) * PAPER_MODE_PAGE_GAP_PX
+          : paperSize.height
+        : '100%';
 
     // ── Document refs ─────────────────────────────────────────────────────────
-    const runsRef = useRef<Run[]>([makeRun(initialContent ?? '', { ...DEFAULT_RUN_FMT })]);
+    const runsRef = useRef<Run[]>([
+      makeRun(initialContent ?? '', {
+        ...DEFAULT_RUN_FMT,
+        fontSize: getDefaultFontSizeForPageSize(pageSize),
+      }),
+    ]);
     const cursorRef = useRef(initialContent?.length ?? 0);
     const scrollYRef = useRef(0);
     const blinkRef = useRef(true);
     const blinkTimerRef = useRef<number | null>(null);
     const formatPainterRef = useRef<RunFmt | null>(null);
     const selStartRef = useRef<number | null>(null);
-    const curFmtRef = useRef<RunFmt>({ ...DEFAULT_RUN_FMT });
+    const curFmtRef = useRef<RunFmt>({
+      ...DEFAULT_RUN_FMT,
+      fontSize: getDefaultFontSizeForPageSize(pageSize),
+    });
     const isDraggingRef = useRef(false);
     const tableInputRef = useRef<HTMLTextAreaElement | null>(null);
     const selectedTableHitRef = useRef<TableHit | null>(null);
@@ -218,6 +244,12 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       isPaperMode,
       paperHeightRatio,
       paperWidthMm,
+      (pageCount, pageHeightPx) => {
+        setPaperPagination((prev) => {
+          if (prev.pageCount === pageCount && prev.pageHeightPx === pageHeightPx) return prev;
+          return { pageCount, pageHeightPx };
+        });
+      },
     );
 
     // ── History ───────────────────────────────────────────────────────────────
@@ -959,19 +991,65 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     // ── Effects ───────────────────────────────────────────────────────────────
     useEffect(() => {
       if (initialContent !== undefined) {
-        runsRef.current = [makeRun(initialContent, { ...DEFAULT_RUN_FMT })];
+        const nextDefaultFontSize = getDefaultFontSizeForPageSize(pageSize);
+        runsRef.current = [
+          makeRun(initialContent, {
+            ...DEFAULT_RUN_FMT,
+            fontSize: nextDefaultFontSize,
+          }),
+        ];
+        curFmtRef.current = {
+          ...DEFAULT_RUN_FMT,
+          fontSize: nextDefaultFontSize,
+        };
         cursorRef.current = initialContent.length;
         selStartRef.current = null;
         onContentChange?.(initialContent);
       }
-    }, [initialContent]);
+    }, [initialContent, pageSize, onContentChange]);
 
     useEffect(() => {
       if (prevPageSize.current === pageSize) return;
+      const prevSize = prevPageSize.current;
+      const prevDefaultFontSize = getDefaultFontSizeForPageSize(prevSize);
+      const nextDefaultFontSize = getDefaultFontSizeForPageSize(pageSize);
       prevPageSize.current = pageSize;
       setLeftMargin(DEFAULT_MARGINS[pageSize].left);
       setRightMargin(DEFAULT_MARGINS[pageSize].right);
+
+      if (curFmtRef.current.fontSize === prevDefaultFontSize) {
+        curFmtRef.current = { ...curFmtRef.current, fontSize: nextDefaultFontSize };
+      }
+      const currentText = runsToText(runsRef.current);
+      if (
+        currentText.length === 0 &&
+        runsRef.current.length === 1 &&
+        runsRef.current[0].fontSize === prevDefaultFontSize
+      ) {
+        runsRef.current = [{ ...runsRef.current[0], fontSize: nextDefaultFontSize }];
+      }
+      setQuickFormattingState((prev) =>
+        prev.fontSize === prevDefaultFontSize
+          ? { ...prev, fontSize: nextDefaultFontSize }
+          : prev,
+      );
+
+      // Keep external toolbar state in sync immediately after mode/page-size switch.
+      notifyFmt();
     }, [pageSize]);
+
+    useEffect(() => {
+      if (!isPaperMode) {
+        setPaperPagination((prev) =>
+          prev.pageCount === 1 && prev.pageHeightPx === 0
+            ? prev
+            : {
+                pageCount: 1,
+                pageHeightPx: 0,
+              },
+        );
+      }
+    }, [isPaperMode]);
 
     useEffect(() => {
       canvasRef.current?.focus();
@@ -1398,7 +1476,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 className="relative shrink-0 bg-white"
                 style={{
                   width: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].width,
-                  height: PAGE_DIMENSIONS[pageSize as Exclude<PageSize, 'responsive'>].height,
+                  height: paperCanvasHeight,
                   boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)',
                   borderRadius: 6,
                 }}

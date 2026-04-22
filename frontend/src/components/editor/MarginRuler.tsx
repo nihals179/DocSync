@@ -135,24 +135,32 @@ const MarginRuler: React.FC<MarginRulerProps> = ({
                   />
                 </>
               )}
-              {/* Fixed scale: 0 at left edge, labels increase left to right */}
+              {/* Scale origin at left margin: labels grow on both sides from margin start */}
               {(() => {
                 const mmToPx = (mm: number) =>
                   pageBox
                     ? `${Math.round(pageBox.left + (mm / paperWidthMm) * pageBox.width)}px`
                     : `${(mm / paperWidthMm) * 100}%`;
 
-                const totalCm = Math.floor(paperWidthMm / 10);
+                const leftMarginMm = (left / 100) * paperWidthMm;
 
                 const cmTicks: { mm: number; cm: number }[] = [];
                 const mmTicks: number[] = [];
 
-                for (let cm = 0; cm <= totalCm; cm++) {
-                  cmTicks.push({ mm: cm * 10, cm });
-                  for (let sub = 2; sub < 10; sub += 2) {
-                    const subMm = cm * 10 + sub;
-                    if (subMm < paperWidthMm) mmTicks.push(subMm);
-                  }
+                const minCmStep = Math.ceil((0 - leftMarginMm) / 10);
+                const maxCmStep = Math.floor((paperWidthMm - leftMarginMm) / 10);
+                for (let cmStep = minCmStep; cmStep <= maxCmStep; cmStep++) {
+                  const tickMm = leftMarginMm + cmStep * 10;
+                  cmTicks.push({ mm: tickMm, cm: Math.abs(cmStep) });
+                }
+
+                const minSubStep = Math.ceil((0 - leftMarginMm) / 2);
+                const maxSubStep = Math.floor((paperWidthMm - leftMarginMm) / 2);
+                for (let subStep = minSubStep; subStep <= maxSubStep; subStep++) {
+                  // Skip positions that already have a cm tick (every 10mm)
+                  if (subStep % 5 === 0) continue;
+                  const tickMm = leftMarginMm + subStep * 2;
+                  mmTicks.push(tickMm);
                 }
 
                 return (
