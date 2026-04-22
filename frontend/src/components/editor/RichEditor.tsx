@@ -1481,6 +1481,23 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   borderRadius: 6,
                 }}
               >
+                {paperPagination.pageHeightPx > 0 && paperPagination.pageCount > 1
+                  ? Array.from({ length: paperPagination.pageCount - 1 }).map((_, idx) => {
+                      const gapTop =
+                        (idx + 1) * paperPagination.pageHeightPx + idx * PAPER_MODE_PAGE_GAP_PX;
+                      return (
+                        <div
+                          key={`page-break-${idx}`}
+                          className="pointer-events-none absolute inset-x-0 z-10"
+                          style={{ top: gapTop, height: PAPER_MODE_PAGE_GAP_PX }}
+                        >
+                          <div className="h-full w-full bg-slate-100/80" />
+                          <div className="absolute inset-x-0 top-0 border-t border-slate-300/90" />
+                          <div className="absolute inset-x-0 bottom-0 border-b border-slate-300/90" />
+                        </div>
+                      );
+                    })
+                  : null}
                 <canvas
                   ref={canvasRef}
                   className="w-full h-full cursor-text"

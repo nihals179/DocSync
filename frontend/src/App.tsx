@@ -66,6 +66,7 @@ type Session = AuthSuccess;
 const WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.workspacePanelCollapsed';
 const VIEWER_WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.viewerWorkspacePanelCollapsed';
 const SESSION_STORAGE_KEY = 'docsync.session';
+const PAGE_SIZE_STORAGE_KEY = 'docsync.pageSize';
 
 const AiTool = lazy(() => import('./components/features/panels/AiTool'));
 const Comments = lazy(() => import('./components/features/panels/Comments'));
@@ -193,7 +194,17 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     }
   });
   const [isFullscreenEditor, setIsFullscreenEditor] = useState(false);
-  const [pageSize, setPageSize] = useState<'responsive' | 'A3' | 'A4' | 'A5'>('responsive');
+  const [pageSize, setPageSize] = useState<'responsive' | 'A3' | 'A4' | 'A5'>(() => {
+    try {
+      const saved = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+      if (saved === 'A3' || saved === 'A4' || saved === 'A5' || saved === 'responsive') {
+        return saved;
+      }
+    } catch {
+      // Ignore storage access issues and fallback to default.
+    }
+    return 'responsive';
+  });
   const [cursorFormat, setCursorFormat] = useState<CursorFormat>({
     bold: false,
     italic: false,
@@ -236,6 +247,14 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
         console.error('Failed to load document.', error);
       });
   }, [token, docId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, pageSize);
+    } catch {
+      // Ignore storage access issues.
+    }
+  }, [pageSize]);
 
   useEffect(() => {
     if (!docId) return;

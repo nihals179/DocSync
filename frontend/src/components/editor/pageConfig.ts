@@ -17,5 +17,5 @@ export const DEFAULT_MARGINS: Record<PageSize, { left: number; right: number }> 
 };
 
 // Standard document margins used for paper page layouts.
-export const STANDARD_PAPER_TOP_MARGIN_MM = 18;
-export const STANDARD_PAPER_BOTTOM_MARGIN_MM = 25.4;
+export const STANDARD_PAPER_TOP_MARGIN_MM = 22;
+export const STANDARD_PAPER_BOTTOM_MARGIN_MM = 48;

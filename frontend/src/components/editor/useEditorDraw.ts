@@ -151,6 +151,7 @@ export function useEditorDraw(
   const imagePendingRef = useRef<Set<string>>(new Set());
   const imageBoxesRef = useRef<ImageBox[]>([]);
   const tableBoxesRef = useRef<TableBox[]>([]);
+  const lastCursorPageIndexRef = useRef(0);
   const drawRef = useRef<() => void>(() => {});
 
   const {
@@ -394,6 +395,29 @@ export function useEditorDraw(
         const cursorLine =
           vls.find((line) => cursor >= line.startOffset && cursor <= line.endOffset) ??
           vls[vls.length - 1];
+
+        if (isPaperMode && paperPageHeightPx) {
+          const pageStride = paperPageHeightPx + paperPageGapPx;
+          const cursorTopAbs = cursorLine.y + scrollYRef.current;
+          const cursorPageIndex = Math.max(
+            0,
+            Math.floor((cursorTopAbs - padTop) / Math.max(1, pageStride)),
+          );
+          const prevCursorPageIndex = lastCursorPageIndexRef.current;
+          lastCursorPageIndexRef.current = cursorPageIndex;
+
+          if (cursorPageIndex > prevCursorPageIndex) {
+            const pageTopAbs = padTop + cursorPageIndex * pageStride;
+            const targetScroll = Math.max(0, pageTopAbs - Math.max(12, Math.round(baseLineH * 0.6)));
+            if (Math.abs(targetScroll - scrollYRef.current) > 0.5) {
+              scrollYRef.current = targetScroll;
+              ctx.restore();
+              drawRef.current();
+              return;
+            }
+          }
+        }
+
         const viewportTopPad = Math.max(14, Math.round(baseLineH * 0.8));
         const viewportBottomPad = Math.max(18, Math.round(baseLineH * 1.1));
         const cursorTop = cursorLine.y;
@@ -2294,8 +2318,8 @@ export function useEditorDraw(
 
     ctx.restore();
 
-    // Draw right-side scrollbar overlay for custom canvas scrolling.
-    if (vls.length > 0) {
+    // Draw right-side scrollbar overlay only in responsive mode.
+    if (!isPaperMode && vls.length > 0) {
       const last = vls[vls.length - 1];
       const contentBottomAbs = last.y + last.lineH + scrollYRef.current;
       const trailingSafeSpacePx = Math.max(56, Math.round(baseLineH * 4));

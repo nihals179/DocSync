@@ -642,8 +642,9 @@ export function buildVisualLines(
     rightStartPx: number;
     remainingLines: number;
   } | null = null;
-  // Keep a small breathing room at the bottom so Enter/new lines do not hug page edge.
-  const linePaginationReservePx = Math.max(8, Math.round(baseLineH * 0.55));
+  // Reserve at least one full baseline near the page bottom so caret/new lines
+  // move to the next page before entering the standard bottom margin area.
+  const linePaginationReservePx = Math.max(12, Math.round(baseLineH * 1.1));
 
   for (let pi = 0; pi < paragraphs.length; pi++) {
     const paraLen = paragraphs[pi].length;
