@@ -2454,7 +2454,12 @@ export function useEditorDraw(
       const lastLine = vls[vls.length - 1];
       const contentTop = firstLine.y;
       const contentBottom = lastLine.y + lastLine.lineH;
-      if (clickY < contentTop || clickY > contentBottom) return null;
+      if (clickY < contentTop) {
+        return firstLine.startOffset;
+      }
+      if (clickY > contentBottom) {
+        return lastLine.endOffset;
+      }
 
       const best = getClosestVisualLine(vls, clickY);
 

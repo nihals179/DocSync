@@ -80,12 +80,16 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
   const handleTextTypeChange = (textType: TextTypeOption) => {
     const preset = TEXT_TYPE_PRESETS[textType];
+    const currentLineSpacing = cursorFormat?.lineSpacing ?? 1.5;
     editorRef.current?.setFontSize(preset.fontSize);
 
     const currentBold = editorRef.current?.getBold();
     if (typeof currentBold === 'boolean' && currentBold !== preset.bold) {
       editorRef.current?.toggleBold();
     }
+
+    // Keep line spacing stable when changing text type presets.
+    editorRef.current?.setLineSpacing(currentLineSpacing);
 
     refocus();
   };

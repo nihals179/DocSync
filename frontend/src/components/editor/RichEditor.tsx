@@ -47,9 +47,12 @@ type RichEditorProps = {
 };
 
 const PAPER_MODE_DEFAULT_FONT_SIZE = 11;
+const PAPER_MODE_DEFAULT_LINE_SPACING = 1;
 const PAPER_MODE_PAGE_GAP_PX = 44;
 const getDefaultFontSizeForPageSize = (size: PageSize) =>
   size === 'responsive' ? DEFAULT_RUN_FMT.fontSize : PAPER_MODE_DEFAULT_FONT_SIZE;
+const getDefaultLineSpacingForPageSize = (size: PageSize) =>
+  size === 'responsive' ? DEFAULT_RUN_FMT.lineSpacing : PAPER_MODE_DEFAULT_LINE_SPACING;
 
 // ── Component ────────────────────────────────────────────────────────────────
 const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
@@ -139,6 +142,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       makeRun(initialContent ?? '', {
         ...DEFAULT_RUN_FMT,
         fontSize: getDefaultFontSizeForPageSize(pageSize),
+        lineSpacing: getDefaultLineSpacingForPageSize(pageSize),
       }),
     ]);
     const cursorRef = useRef(initialContent?.length ?? 0);
@@ -150,6 +154,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const curFmtRef = useRef<RunFmt>({
       ...DEFAULT_RUN_FMT,
       fontSize: getDefaultFontSizeForPageSize(pageSize),
+      lineSpacing: getDefaultLineSpacingForPageSize(pageSize),
     });
     const isDraggingRef = useRef(false);
     const tableInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -188,12 +193,48 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     }, [onContentChange, onRunsChange]);
     const notifyFmt = useCallback(() => {
       const text = runsToText(runsRef.current);
+      const hasSel =
+        selStartRef.current !== null && selStartRef.current !== cursorRef.current;
+      const selF = hasSel ? Math.min(selStartRef.current!, cursorRef.current) : cursorRef.current;
+      const selT = hasSel ? Math.max(selStartRef.current!, cursorRef.current) : cursorRef.current;
+
+      const getUniformField = <K extends keyof RunFmt>(key: K): RunFmt[K] | null => {
+        if (!hasSel || selF >= selT) return null;
+        let pos = 0;
+        let value: RunFmt[K] | null = null;
+        for (const run of runsRef.current) {
+          const end = pos + run.text.length;
+          if (end > selF && pos < selT) {
+            const runValue = run[key] as RunFmt[K];
+            if (value === null) value = runValue;
+            else if (value !== runValue) return null;
+          }
+          pos = end;
+        }
+        return value;
+      };
+
+      const anchorOffset = Math.max(0, Math.min(selF, Math.max(0, text.length - 1)));
+      const anchorFmt = text.length > 0 ? getFormatAt(runsRef.current, anchorOffset) : curFmtRef.current;
+      const effectiveFmt: RunFmt = hasSel
+        ? {
+            ...anchorFmt,
+            bold: isFormatUniform(runsRef.current, selF, selT, 'bold', true),
+            italic: isFormatUniform(runsRef.current, selF, selT, 'italic', true),
+            underline: isFormatUniform(runsRef.current, selF, selT, 'underline', true),
+            fontFamily: getUniformField('fontFamily') ?? anchorFmt.fontFamily,
+            fontSize: getUniformField('fontSize') ?? anchorFmt.fontSize,
+            color: getUniformField('color') ?? anchorFmt.color,
+            highlightColor: getUniformField('highlightColor') ?? anchorFmt.highlightColor,
+          }
+        : curFmtRef.current;
+
       const bullet = isBulletAtOffset(text, cursorRef.current);
       const numberList = isNumberListAtOffset(text, cursorRef.current);
       const hasSpaceBeforeLine = isSpaceBeforeLineAtOffset(text, cursorRef.current);
       const hasSpaceAfterLine = isSpaceAfterLineAtOffset(text, cursorRef.current);
       onCursorFormatChange?.({
-        ...curFmtRef.current,
+        ...effectiveFmt,
         bullet,
         numberList,
         hasSpaceBeforeLine,
@@ -637,8 +678,12 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     ]);
 
     const runClearFormatting = useCallback(() => {
-      applyOrSetFmt({ ...DEFAULT_RUN_FMT });
-    }, [applyOrSetFmt]);
+      applyOrSetFmt({
+        ...DEFAULT_RUN_FMT,
+        fontSize: getDefaultFontSizeForPageSize(pageSize),
+        lineSpacing: getDefaultLineSpacingForPageSize(pageSize),
+      });
+    }, [applyOrSetFmt, pageSize]);
 
     const handleContextMenuAction = useCallback(
       async (action: CanvasMenuAction, value?: string | number | null) => {
@@ -992,15 +1037,18 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     useEffect(() => {
       if (initialContent !== undefined) {
         const nextDefaultFontSize = getDefaultFontSizeForPageSize(pageSize);
+        const nextDefaultLineSpacing = getDefaultLineSpacingForPageSize(pageSize);
         runsRef.current = [
           makeRun(initialContent, {
             ...DEFAULT_RUN_FMT,
             fontSize: nextDefaultFontSize,
+            lineSpacing: nextDefaultLineSpacing,
           }),
         ];
         curFmtRef.current = {
           ...DEFAULT_RUN_FMT,
           fontSize: nextDefaultFontSize,
+          lineSpacing: nextDefaultLineSpacing,
         };
         cursorRef.current = initialContent.length;
         selStartRef.current = null;
@@ -1012,7 +1060,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       if (prevPageSize.current === pageSize) return;
       const prevSize = prevPageSize.current;
       const prevDefaultFontSize = getDefaultFontSizeForPageSize(prevSize);
+      const prevDefaultLineSpacing = getDefaultLineSpacingForPageSize(prevSize);
       const nextDefaultFontSize = getDefaultFontSizeForPageSize(pageSize);
+      const nextDefaultLineSpacing = getDefaultLineSpacingForPageSize(pageSize);
       prevPageSize.current = pageSize;
       setLeftMargin(DEFAULT_MARGINS[pageSize].left);
       setRightMargin(DEFAULT_MARGINS[pageSize].right);
@@ -1020,13 +1070,23 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       if (curFmtRef.current.fontSize === prevDefaultFontSize) {
         curFmtRef.current = { ...curFmtRef.current, fontSize: nextDefaultFontSize };
       }
+      if (curFmtRef.current.lineSpacing === prevDefaultLineSpacing) {
+        curFmtRef.current = { ...curFmtRef.current, lineSpacing: nextDefaultLineSpacing };
+      }
       const currentText = runsToText(runsRef.current);
       if (
         currentText.length === 0 &&
         runsRef.current.length === 1 &&
         runsRef.current[0].fontSize === prevDefaultFontSize
       ) {
-        runsRef.current = [{ ...runsRef.current[0], fontSize: nextDefaultFontSize }];
+        runsRef.current = [{
+          ...runsRef.current[0],
+          fontSize: nextDefaultFontSize,
+          lineSpacing:
+            runsRef.current[0].lineSpacing === prevDefaultLineSpacing
+              ? nextDefaultLineSpacing
+              : runsRef.current[0].lineSpacing,
+        }];
       }
       setQuickFormattingState((prev) =>
         prev.fontSize === prevDefaultFontSize

@@ -702,16 +702,14 @@ export function useEditorInput(
       isDraggingRef.current = true;
       cursorRef.current = snappedOffset;
       selStartRef.current = snappedOffset;
-      if (resetFmtOnNextCursorMoveRef.current) {
-        const nextText = runsToText(runsRef.current);
-        if (nextText.length > 0) {
-          curFmtRef.current = getFormatAt(
-            runsRef.current,
-            Math.min(snappedOffset, nextText.length - 1),
-          );
-        }
-        resetFmtOnNextCursorMoveRef.current = false;
+      const nextText = runsToText(runsRef.current);
+      if (nextText.length > 0) {
+        curFmtRef.current = getFormatAt(
+          runsRef.current,
+          Math.min(snappedOffset, nextText.length - 1),
+        );
       }
+      resetFmtOnNextCursorMoveRef.current = false;
       notifyFmt();
       resetBlink();
       draw();
@@ -731,12 +729,16 @@ export function useEditorInput(
           }
         }
         cursorRef.current = nextOffset;
+        notifyFmt();
         resetBlink();
         draw();
       };
       const onUp = () => {
         isDraggingRef.current = false;
         if (selStartRef.current === cursorRef.current) selStartRef.current = null;
+        notifyFmt();
+        resetBlink();
+        draw();
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       };
@@ -2304,16 +2306,14 @@ export function useEditorInput(
     (offset: number) => {
       cursorRef.current = Math.max(0, offset);
       selStartRef.current = null;
-      if (resetFmtOnNextCursorMoveRef.current) {
-        const text = runsToText(runsRef.current);
-        if (text.length > 0) {
-          curFmtRef.current = getFormatAt(
-            runsRef.current,
-            Math.min(cursorRef.current, text.length - 1),
-          );
-        }
-        resetFmtOnNextCursorMoveRef.current = false;
+      const text = runsToText(runsRef.current);
+      if (text.length > 0) {
+        curFmtRef.current = getFormatAt(
+          runsRef.current,
+          Math.min(cursorRef.current, text.length - 1),
+        );
       }
+      resetFmtOnNextCursorMoveRef.current = false;
       notifyFmt();
       resetBlink();
       draw();
