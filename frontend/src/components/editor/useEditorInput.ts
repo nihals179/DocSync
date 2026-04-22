@@ -1448,7 +1448,7 @@ export function useEditorInput(
           const safeFrom = Math.max(0, from ?? 0);
           const safeTo = Math.min(cellText.length, to ?? cellText.length);
           const newRuns = applyFormatToRange(
-            currentRuns.length > 0 ? currentRuns : [makeRun('', { bold: false, italic: false, underline: false, textAlign: 'left', fontSize: 16, lineSpacing: 1.5, fontFamily: 'Raleway', color: '#1e293b', highlightColor: null })],
+            currentRuns.length > 0 ? currentRuns : [makeRun('', { ...DEFAULT_RUN_FMT })],
             safeFrom,
             safeTo,
             patch,

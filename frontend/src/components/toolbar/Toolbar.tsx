@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import type { CursorFormat, RichEditorHandle } from '../editor';
+import type { PageSize } from '../editor/pageConfig';
 import { ToolbarDivider } from './ToolbarDivider';
 import { PageSizeSelector } from './PageSizeSelector';
 import { HistoryControls } from './HistoryControls';
@@ -9,8 +10,8 @@ import { ToolbarButton } from './ToolbarButton';
 
 type ToolbarProps = {
   editorRef: React.RefObject<RichEditorHandle | null>;
-  pageSize: 'responsive' | 'A3' | 'A4' | 'A5';
-  onPageSizeChange: (size: 'responsive' | 'A3' | 'A4' | 'A5') => void;
+  pageSize: PageSize;
+  onPageSizeChange: (size: PageSize) => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
   /** Current cursor/selection format from the editor — keeps toolbar in sync */

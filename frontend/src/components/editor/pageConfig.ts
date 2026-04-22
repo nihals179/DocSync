@@ -1,5 +1,11 @@
 export type PageSize = 'responsive' | 'A3' | 'A4' | 'A5';
 
+export const PAGE_SIZE_OPTIONS: readonly PageSize[] = ['responsive', 'A3', 'A4', 'A5'] as const;
+
+export function isPageSize(value: string): value is PageSize {
+  return PAGE_SIZE_OPTIONS.includes(value as PageSize);
+}
+
 export const PAGE_DIMENSIONS: Record<
   Exclude<PageSize, 'responsive'>,
   { width: string; height: string; widthMm: number; heightMm: number }

@@ -5,6 +5,7 @@ import Header from './components/features/layout/Header';
 import RichEditor from './components/editor/RichEditor';
 import Toolbar from './components/toolbar/Toolbar';
 import type { CursorFormat, RichEditorHandle, Run } from './components/editor';
+import { isPageSize, type PageSize } from './components/editor/pageConfig';
 import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, versionsApi, workspaceApi } from './lib/api';
 import { canvasRunsToHtml, canvasTextToHtml, htmlToCanvasText, htmlToRuns } from './lib/contentAdapter';
 import { buildDocumentTree } from './lib/documentTree';
@@ -194,10 +195,10 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     }
   });
   const [isFullscreenEditor, setIsFullscreenEditor] = useState(false);
-  const [pageSize, setPageSize] = useState<'responsive' | 'A3' | 'A4' | 'A5'>(() => {
+  const [pageSize, setPageSize] = useState<PageSize>(() => {
     try {
       const saved = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
-      if (saved === 'A3' || saved === 'A4' || saved === 'A5' || saved === 'responsive') {
+      if (saved && isPageSize(saved)) {
         return saved;
       }
     } catch {

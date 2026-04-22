@@ -1,8 +1,9 @@
 import React from 'react';
+import { isPageSize, type PageSize } from '../editor/pageConfig';
 
 type PageSizeSelectorProps = {
-  pageSize: 'responsive' | 'A3' | 'A4' | 'A5';
-  onPageSizeChange: (size: 'responsive' | 'A3' | 'A4' | 'A5') => void;
+  pageSize: PageSize;
+  onPageSizeChange: (size: PageSize) => void;
 };
 
 /**
@@ -16,8 +17,7 @@ export const PageSizeSelector: React.FC<PageSizeSelectorProps> = ({
     value={pageSize}
     onChange={(e) => {
       const v = e.target.value;
-      if (v === 'A3' || v === 'A4' || v === 'A5') onPageSizeChange(v as 'A3' | 'A4' | 'A5');
-      else onPageSizeChange('responsive');
+      onPageSizeChange(isPageSize(v) ? v : 'responsive');
     }}
     className="h-7 rounded-md border-none bg-transparent pl-2 pr-6 text-xs font-medium text-slate-600 outline-none hover:bg-slate-100 focus:ring-1 focus:ring-cyan-300"
     aria-label="Page size"
