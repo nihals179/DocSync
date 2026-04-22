@@ -1370,7 +1370,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     return (
       <div
         ref={rootRef}
-        className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm"
+        className="relative flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm"
       >
         <div className="z-30 w-full shrink-0 px-3 py-1">
           <MarginRuler
@@ -1391,7 +1391,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         </div>
 
         {isPaperMode ? (
-          <div className="docsync-editor-scrollbars min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+          <div className="docsync-editor-scrollbars relative min-h-0 h-full flex-1 overflow-x-auto overflow-y-auto">
             <div className="flex min-h-full items-start justify-center p-6">
               <div
                 ref={pageElRef}
@@ -1422,7 +1422,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             </div>
           </div>
         ) : (
-          <div className="relative min-h-0 flex-1">
+          <div className="relative min-h-0 h-full flex-1 overflow-hidden">
             <div
               className="relative h-full w-full"
             >

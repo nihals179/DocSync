@@ -373,7 +373,11 @@ export function useEditorDraw(
     if (vls.length > 0) {
       const last = vls[vls.length - 1];
       const contentBottomY = last.y + last.lineH;
-      const maxScroll = Math.max(0, contentBottomY + scrollYRef.current - h + 8);
+      const trailingSafeSpacePx = Math.max(56, Math.round(baseLineH * 4));
+      const maxScroll = Math.max(
+        0,
+        contentBottomY + scrollYRef.current - h + trailingSafeSpacePx,
+      );
       if (scrollYRef.current > maxScroll) {
         scrollYRef.current = maxScroll;
         ctx.restore();
@@ -2294,9 +2298,10 @@ export function useEditorDraw(
     if (vls.length > 0) {
       const last = vls[vls.length - 1];
       const contentBottomAbs = last.y + last.lineH + scrollYRef.current;
+      const trailingSafeSpacePx = Math.max(56, Math.round(baseLineH * 4));
       const viewportTop = padTop;
       const viewportH = Math.max(1, h - viewportTop - 4);
-      const contentH = Math.max(viewportH, contentBottomAbs - padTop + 8);
+      const contentH = Math.max(viewportH, contentBottomAbs - padTop + trailingSafeSpacePx);
       const maxScroll = Math.max(0, contentH - viewportH);
 
       if (maxScroll > 0) {
