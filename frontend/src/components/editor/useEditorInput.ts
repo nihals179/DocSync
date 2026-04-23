@@ -583,64 +583,108 @@ export function useEditorInput(
     ],
   );
 
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent<HTMLCanvasElement>) => {
-      e.preventDefault();
-      const paste = e.clipboardData?.getData('text') || '';
-      if (!paste) return;
-      const pasteHtml = e.clipboardData?.getData('text/html') || '';
-      pushHistory();
+  const sanitizePastedRuns = useCallback(
+    (runs: Run[]) => {
+      return runs
+        .filter((run) => run.text.length > 0)
+        .map((run) => ({
+          text: run.text,
+          bold: Boolean(run.bold),
+          italic: Boolean(run.italic),
+          underline: Boolean(run.underline),
+          textAlign: run.textAlign ?? 'left',
+          fontSize: Number.isFinite(run.fontSize) ? run.fontSize : DEFAULT_RUN_FMT.fontSize,
+          lineSpacing: Number.isFinite(run.lineSpacing)
+            ? run.lineSpacing
+            : DEFAULT_RUN_FMT.lineSpacing,
+          fontFamily: run.fontFamily || DEFAULT_RUN_FMT.fontFamily,
+          color: run.color || DEFAULT_RUN_FMT.color,
+          // Highlight is intentionally removed from pasted source formatting.
+          highlightColor: null,
+          href: run.href,
+        }));
+    },
+    [],
+  );
+
+  const pasteRunsAtSelection = useCallback(
+    (incomingRuns: Run[]) => {
+      const inserts = sanitizePastedRuns(incomingRuns);
+      if (inserts.length === 0) return false;
+
       const { selF, selT, hasSel } = getSelRange();
       const insertPos = hasSel ? selF : resolveInsertOffset(selF);
-
-      const htmlRuns = clipboardHtmlToRuns(pasteHtml, curFmtRef.current);
-      if (htmlRuns && htmlRuns.length > 0) {
-        runsRef.current = replaceRangeWithRuns(
+      pushHistory();
+      runsRef.current = replaceRangeWithRuns(
+        runsRef.current,
+        insertPos,
+        hasSel ? selT : insertPos,
+        inserts,
+      );
+      cursorRef.current = insertPos + runsToText(inserts).length;
+      selStartRef.current = null;
+      const nextText = runsToText(runsRef.current);
+      if (nextText.length > 0) {
+        curFmtRef.current = getFormatAt(
           runsRef.current,
-          insertPos,
-          hasSel ? selT : insertPos,
-          htmlRuns,
+          Math.max(0, Math.min(cursorRef.current - 1, nextText.length - 1)),
         );
-        cursorRef.current = insertPos + runsToText(htmlRuns).length;
-        selStartRef.current = null;
-        emitChange();
-        resetBlink();
-        draw();
-        return;
       }
+      emitChange();
+      notifyFmt();
+      resetBlink();
+      draw();
+      return true;
+    },
+    [
+      sanitizePastedRuns,
+      getSelRange,
+      resolveInsertOffset,
+      pushHistory,
+      runsRef,
+      cursorRef,
+      selStartRef,
+      curFmtRef,
+      emitChange,
+      notifyFmt,
+      resetBlink,
+      draw,
+    ],
+  );
 
-      if (hasSel) runsRef.current = deleteRange(runsRef.current, selF, selT);
+  const pastePlainText = useCallback(
+    (paste: string) => {
+      if (!paste) return false;
 
-      // Auto-detect URLs and paste them as links (blue + underlined)
+      // Auto-detect URLs and paste them as links (blue + underlined).
       const isUrl = /^https?:\/\/[^\s]+$/.test(paste.trim());
       const pasteFmt = isUrl
         ? { ...curFmtRef.current, color: '#2563eb', underline: true, href: paste.trim() }
         : { ...curFmtRef.current };
-
-      // Inline paste should preserve token flow so images move with surrounding edits.
-      runsRef.current = insertRun(
-        runsRef.current,
-        insertPos,
-        makeRun(paste, pasteFmt),
-      );
-      cursorRef.current = insertPos + paste.length;
-      selStartRef.current = null;
-      emitChange();
-      resetBlink();
-      draw();
+      return pasteRunsAtSelection([makeRun(paste, pasteFmt)]);
     },
-    [
-      getSelRange,
-      runsRef,
-      curFmtRef,
-      cursorRef,
-      selStartRef,
-      emitChange,
-      resetBlink,
-      draw,
-      pushHistory,
-      resolveInsertOffset,
-    ],
+    [curFmtRef, pasteRunsAtSelection],
+  );
+
+  const pasteWithSourceFormat = useCallback(
+    (pasteText: string, pasteHtml = '') => {
+      const htmlRuns = clipboardHtmlToRuns(pasteHtml, curFmtRef.current);
+      if (htmlRuns && htmlRuns.length > 0) {
+        return pasteRunsAtSelection(htmlRuns);
+      }
+      return pastePlainText(pasteText);
+    },
+    [curFmtRef, pasteRunsAtSelection, pastePlainText],
+  );
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const pasteText = e.clipboardData?.getData('text') || '';
+      const pasteHtml = e.clipboardData?.getData('text/html') || '';
+      pasteWithSourceFormat(pasteText, pasteHtml);
+    },
+    [pasteWithSourceFormat],
   );
 
   const patchImageAtCursor = useCallback(
@@ -2354,6 +2398,8 @@ export function useEditorInput(
   return {
     handleKeyDown,
     handlePaste,
+    pastePlainText,
+    pasteWithSourceFormat,
     handleMouseDown,
     handleMouseMove,
     handleWheel,

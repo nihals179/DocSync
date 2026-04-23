@@ -1,7 +1,25 @@
 import React from 'react';
 import { ToolbarButton } from './ToolbarButton';
 
-const FONT_OPTIONS = ['Raleway', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana'];
+const FONT_OPTIONS = [
+  'Raleway',
+  'Arial',
+  'Helvetica',
+  'Verdana',
+  'Tahoma',
+  'Trebuchet MS',
+  'Times New Roman',
+  'Georgia',
+  'Garamond',
+  'Palatino',
+  'Cambria',
+  'Courier New',
+  'Consolas',
+  'Monaco',
+  'Lucida Console',
+  'Comic Sans MS',
+  'Impact',
+];
 
 const TEXT_TYPE_OPTIONS = [
   { value: 'title', label: 'Title' },

@@ -3,10 +3,13 @@ import { useRef, useImperativeHandle, forwardRef, useState, useEffect, useCallba
 import MarginRuler from './MarginRuler';
 import {
   applyFormatToRange,
+  buildImageToken,
+  clipboardHtmlToRuns,
   DEFAULT_RUN_FMT,
   deleteRange,
   getFormatAt,
   getImageTokenRanges,
+  parseImageToken,
   getTableTokenAtOffset,
   isBulletAtOffset,
   isFormatUniform,
@@ -15,7 +18,9 @@ import {
   isSpaceBeforeLineAtOffset,
   insertRun,
   makeRun,
+  replaceRangeWithRuns,
   runsToText,
+  type ImageTokenMeta,
   type ImageWrap,
   type Run,
   type RunFmt,
@@ -372,6 +377,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       getTableHitAtClientXY,
       getTableTextHitAtClientXY,
       getTableBorderLineAtClientXY,
+      getTableCellImageBox,
     } = useEditorDraw(
       drawRefs,
       leftMargin,
@@ -459,6 +465,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const {
       handleKeyDown,
       handlePaste,
+      pastePlainText,
+      pasteWithSourceFormat,
       handleMouseDown,
       handleMouseMove,
       handleWheel: _handleWheel,
@@ -485,6 +493,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setImageAltText,
       setImageFrontOpacityPct,
       setTableCell,
+      setTableCellRuns,
       setTableTrackSize,
       addTableRowAbove,
       addTableRowBelow,
@@ -508,7 +517,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     });
 
     const syncImageOverlay = useCallback(
-      (image: Pick<ImageBox, 'start' | 'end' | 'meta'> | null) => {
+      (image: Pick<ImageBox, 'start' | 'end' | 'meta' | 'tableImage'> | null) => {
         window.requestAnimationFrame(() => {
           if (image === null) {
             setSelectedImage(null);
@@ -551,14 +560,31 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               anchor.row === hit.row &&
               anchor.column === hit.column;
             if (sameCell) {
+              const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), hit.box.start);
+              const cellText = tableMeta
+                ? runsToText(tableMeta.cells?.[hit.row]?.[hit.column] ?? [])
+                : '';
+              const ranges = getImageTokenRanges(cellText);
+              const snapOffset = (offset: number) => {
+                for (const range of ranges) {
+                  if (offset > range.start && offset < range.end) {
+                    return Math.abs(offset - range.start) <= Math.abs(range.end - offset)
+                      ? range.start
+                      : range.end;
+                  }
+                }
+                return offset;
+              };
+              const hitOffset = snapOffset(hit.offset);
+              const anchorOffset = snapOffset(anchor.offset);
               tableCellCursorRef.current = {
                 tableStart: hit.box.start,
                 row: hit.row,
                 column: hit.column,
-                offset: hit.offset,
+                offset: hitOffset,
               };
-              const from = Math.min(anchor.offset, hit.offset);
-              const to = Math.max(anchor.offset, hit.offset);
+              const from = Math.min(anchorOffset, hitOffset);
+              const to = Math.max(anchorOffset, hitOffset);
               tableTextSelectionRef.current =
                 to > from
                   ? {
@@ -648,9 +674,113 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         if (e.button !== 0) return;
         if (isMenuOpen) setIsMenuOpen(false);
 
+        const imageHit = getImageBoxAtClientXY(e.clientX, e.clientY);
+        if (!imageHit && (selectedImage || hoveredImage || isImagePanelOpen)) {
+          setSelectedImage(null);
+          setHoveredImage(null);
+          setIsImagePanelOpen(false);
+        }
+        if (imageHit) {
+          e.preventDefault();
+
+          if (imageHit.tableImage) {
+            const tableStart = imageHit.tableImage.tableStart;
+            const row = imageHit.tableImage.row;
+            const column = imageHit.tableImage.column;
+
+            const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), tableStart);
+            const cellText = tableMeta
+              ? runsToText(tableMeta.cells?.[row]?.[column] ?? [])
+              : '';
+            const ranges = getImageTokenRanges(cellText);
+            const tokenRange = ranges[imageHit.tableImage.tokenRangeIndex] ?? null;
+
+            const canvasRect = canvasRef.current?.getBoundingClientRect();
+            const clickX = canvasRect ? e.clientX - canvasRect.left : imageHit.x;
+            // Deterministic placement: left half => before image, right half => after image.
+            const clickBeforeImage = clickX < imageHit.x + imageHit.width / 2;
+            const nextOffset = tokenRange
+              ? clickBeforeImage
+                ? tokenRange.start
+                : tokenRange.end
+              : cellText.length;
+
+            const tableHit = getTableHitAtClientXY(e.clientX, e.clientY);
+            selectedTableHitRef.current =
+              tableHit ?? {
+                box: {
+                  start: tableStart,
+                  end: tableStart,
+                  x: imageHit.x,
+                  y: imageHit.y,
+                  width: imageHit.width,
+                  height: imageHit.height,
+                  rows: tableMeta?.rows ?? 1,
+                  columns: tableMeta?.columns ?? 1,
+                  rowHeight: imageHit.height,
+                  cellWidth: imageHit.width,
+                  rowHeights: tableMeta ? new Array(tableMeta.rows).fill(0) : [imageHit.height],
+                  columnWidths: tableMeta ? new Array(tableMeta.columns).fill(0) : [imageHit.width],
+                  rowOffsets: tableMeta ? new Array(tableMeta.rows + 1).fill(0) : [0, imageHit.height],
+                  columnOffsets: tableMeta ? new Array(tableMeta.columns + 1).fill(0) : [0, imageHit.width],
+                },
+                row,
+                column,
+              };
+            tableSelectionRangeRef.current = {
+              rowStart: row,
+              rowEnd: row,
+              columnStart: column,
+              columnEnd: column,
+            };
+            isTableCellEditingRef.current = true;
+            activeTableEditingCellRef.current = {
+              tableStart,
+              row,
+              column,
+            };
+            tableCellCursorRef.current = {
+              tableStart,
+              row,
+              column,
+              offset: nextOffset,
+            };
+            tableTextSelectionRef.current = null;
+            tableTextSelectionAnchorRef.current = null;
+            isTableTextSelectingRef.current = false;
+            setSelectedImage(imageHit);
+            setAltDraft(imageHit.meta.alt);
+            setCursorOffset(tableStart);
+            notifyFmt();
+            resetBlink();
+            draw();
+            return;
+          }
+
+          const canvasRect = canvasRef.current?.getBoundingClientRect();
+          const clickX = canvasRect ? e.clientX - canvasRect.left : imageHit.x;
+          const midX = imageHit.x + imageHit.width / 2;
+          const text = runsToText(runsRef.current);
+          const nextOffset = resolveImageClickOffsetByWrap({
+            wrap: imageHit.meta.wrap,
+            text,
+            imageStart: imageHit.start,
+            imageEnd: imageHit.end,
+            clickX,
+            imageMidX: midX,
+          });
+          setCursorOffset(nextOffset);
+          setSelectedImage(imageHit);
+          setAltDraft(imageHit.meta.alt);
+          return;
+        }
+
         const tableBorderLine = getTableBorderLineAtClientXY(e.clientX, e.clientY);
         if (tableBorderLine) {
           e.preventDefault();
+          setSelectedImage(null);
+          setHoveredImage(null);
+          setIsImagePanelOpen(false);
           const tableHitForBorder = getTableHitAtClientXY(e.clientX, e.clientY);
           if (tableHitForBorder) {
             selectedTableHitRef.current = tableHitForBorder;
@@ -744,6 +874,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         const tableHit = getTableHitAtClientXY(e.clientX, e.clientY);
         if (tableHit) {
           e.preventDefault();
+          setSelectedImage(null);
+          setHoveredImage(null);
+          setIsImagePanelOpen(false);
           selectedTableHitRef.current = tableHit;
           tableSelectionRangeRef.current = {
             rowStart: tableHit.row,
@@ -766,7 +899,46 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             ? runsToText(tableMeta.cells?.[tableHit.row]?.[tableHit.column] ?? [])
             : '';
           const textHit = getTableTextHitAtClientXY(e.clientX, e.clientY);
-          const initialOffset = textHit ? textHit.offset : cellText.length;
+          const canvasRect = canvasRef.current?.getBoundingClientRect();
+          const clickX = canvasRect ? e.clientX - canvasRect.left : 0;
+          const clickY = canvasRect ? e.clientY - canvasRect.top : 0;
+          const ranges = getImageTokenRanges(cellText);
+          const snapOffset = (offset: number) => {
+            for (const range of ranges) {
+              if (offset > range.start && offset < range.end) {
+                return Math.abs(offset - range.start) <= Math.abs(range.end - offset)
+                  ? range.start
+                  : range.end;
+              }
+            }
+            return offset;
+          };
+          const resolveOffsetFromImageGeometry = (candidateOffset: number) => {
+            for (let tokenRangeIndex = 0; tokenRangeIndex < ranges.length; tokenRangeIndex += 1) {
+              const range = ranges[tokenRangeIndex];
+              const imageBox = getTableCellImageBox(
+                tableHit.box.start,
+                tableHit.row,
+                tableHit.column,
+                tokenRangeIndex,
+              );
+              if (!imageBox) continue;
+
+              const clickedInsideImage =
+                clickX >= imageBox.x - 1 &&
+                clickX <= imageBox.x + imageBox.width + 1 &&
+                clickY >= imageBox.y - 1 &&
+                clickY <= imageBox.y + imageBox.height + 1;
+
+              if (clickedInsideImage) {
+                const isBefore = clickX < imageBox.x + imageBox.width / 2;
+                return isBefore ? range.start : range.end;
+              }
+            }
+
+            return snapOffset(candidateOffset);
+          };
+          const initialOffset = resolveOffsetFromImageGeometry(textHit ? textHit.offset : cellText.length);
           tableCellCursorRef.current = {
             tableStart: tableHit.box.start,
             row: tableHit.row,
@@ -789,27 +961,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           return;
         }
 
-        const hit = getImageBoxAtClientXY(e.clientX, e.clientY);
-        if (hit) {
-          e.preventDefault();
-          const canvasRect = canvasRef.current?.getBoundingClientRect();
-          const clickX = canvasRect ? e.clientX - canvasRect.left : hit.x;
-          const midX = hit.x + hit.width / 2;
-          const text = runsToText(runsRef.current);
-          const nextOffset = resolveImageClickOffsetByWrap({
-            wrap: hit.meta.wrap,
-            text,
-            imageStart: hit.start,
-            imageEnd: hit.end,
-            clickX,
-            imageMidX: midX,
-          });
-          setCursorOffset(nextOffset);
-          setSelectedImage(hit);
-          setAltDraft(hit.meta.alt);
-          return;
-        }
         setSelectedImage(null);
+        setHoveredImage(null);
         setIsImagePanelOpen(false);
         selectedTableHitRef.current = null;
         tableSelectionRangeRef.current = null;
@@ -829,6 +982,10 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         getTableBorderLineAtClientXY,
         getTableTextHitAtClientXY,
         getImageBoxAtClientXY,
+        getTableCellImageBox,
+        selectedImage,
+        hoveredImage,
+        isImagePanelOpen,
         setCursorOffset,
         handleMouseDown,
         runsRef,
@@ -880,6 +1037,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         selStartRef.current = start;
         cursorRef.current = end;
         setSelectedImage(null);
+        setHoveredImage(null);
+        setIsImagePanelOpen(false);
         notifyFmt();
         resetBlink();
         draw();
@@ -937,40 +1096,230 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       draw,
     ]);
 
-    const pasteFromClipboard = useCallback(async () => {
-      let pasteText = '';
-      try {
-        pasteText = await navigator.clipboard.readText();
-      } catch {
-        return;
-      }
-      if (!pasteText) return;
+    const sanitizePastedRuns = useCallback(
+      (inputRuns: Run[]) => {
+        return inputRuns
+          .filter((run) => run.text.length > 0)
+          .map((run) => ({
+            text: run.text,
+            bold: Boolean(run.bold),
+            italic: Boolean(run.italic),
+            underline: Boolean(run.underline),
+            textAlign: run.textAlign ?? 'left',
+            fontSize: Number.isFinite(run.fontSize) ? run.fontSize : DEFAULT_RUN_FMT.fontSize,
+            lineSpacing: Number.isFinite(run.lineSpacing)
+              ? run.lineSpacing
+              : DEFAULT_RUN_FMT.lineSpacing,
+            fontFamily: run.fontFamily || DEFAULT_RUN_FMT.fontFamily,
+            color: run.color || DEFAULT_RUN_FMT.color,
+            highlightColor: null,
+            href: run.href,
+          }));
+      },
+      [],
+    );
 
-      const { selF, selT, hasSel } = getSelRange();
-      pushHistory();
-      if (hasSel) {
-        runsRef.current = deleteRange(runsRef.current, selF, selT);
+    const getActiveTablePasteTarget = useCallback(() => {
+      const activeCell = activeTableEditingCellRef.current;
+      const selectedCell = selectedTableHitRef.current;
+      const target = activeCell
+        ? { tableStart: activeCell.tableStart, row: activeCell.row, column: activeCell.column }
+        : selectedCell
+          ? {
+              tableStart: selectedCell.box.start,
+              row: selectedCell.row,
+              column: selectedCell.column,
+            }
+          : null;
+      if (!target) return null;
+
+      const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), target.tableStart);
+      if (!tableMeta) return null;
+
+      const currentRuns = tableMeta.cells?.[target.row]?.[target.column] ?? [];
+      const currentText = runsToText(currentRuns);
+      const currentOffset =
+        tableCellCursorRef.current?.tableStart === target.tableStart &&
+        tableCellCursorRef.current?.row === target.row &&
+        tableCellCursorRef.current?.column === target.column
+          ? tableCellCursorRef.current.offset
+          : currentText.length;
+      const safeOffset = Math.max(0, Math.min(currentText.length, currentOffset));
+
+      const tableSelection = tableTextSelectionRef.current;
+      const hasTableSelection =
+        Boolean(tableSelection) &&
+        tableSelection?.tableStart === target.tableStart &&
+        tableSelection?.row === target.row &&
+        tableSelection?.column === target.column &&
+        tableSelection.end > tableSelection.start;
+      const from = hasTableSelection ? tableSelection!.start : safeOffset;
+      const to = hasTableSelection ? tableSelection!.end : safeOffset;
+
+      return {
+        ...target,
+        currentRuns,
+        from,
+        to,
+      };
+    }, [runsRef]);
+
+    const applyRunsToActiveTableTarget = useCallback(
+      (incomingRuns: Run[]) => {
+        const target = getActiveTablePasteTarget();
+        if (!target) return false;
+
+        const inserts = sanitizePastedRuns(incomingRuns);
+        if (inserts.length === 0) return false;
+
+        const nextRuns = replaceRangeWithRuns(target.currentRuns, target.from, target.to, inserts);
+        const nextOffset = target.from + runsToText(inserts).length;
+
+        isTableCellEditingRef.current = true;
+        activeTableEditingCellRef.current = {
+          tableStart: target.tableStart,
+          row: target.row,
+          column: target.column,
+        };
+        tableSelectionRangeRef.current = {
+          rowStart: target.row,
+          rowEnd: target.row,
+          columnStart: target.column,
+          columnEnd: target.column,
+        };
+        tableTextSelectionRef.current = null;
+        tableTextSelectionAnchorRef.current = null;
+        tableCellCursorRef.current = {
+          tableStart: target.tableStart,
+          row: target.row,
+          column: target.column,
+          offset: nextOffset,
+        };
+        setCursorOffset(target.tableStart);
+        setTableCellRuns(target.row, target.column, nextRuns, target.tableStart, true);
+        notifyFmt();
+        resetBlink();
+        draw();
+        return true;
+      },
+      [
+        getActiveTablePasteTarget,
+        sanitizePastedRuns,
+        setCursorOffset,
+        setTableCellRuns,
+        notifyFmt,
+        resetBlink,
+        draw,
+      ],
+    );
+
+    const pastePlainTextIntoTable = useCallback(
+      (pasteText: string) => {
+        if (!pasteText) return false;
+        const target = getActiveTablePasteTarget();
+        if (!target) return false;
+
+        const targetText = runsToText(target.currentRuns);
+        const anchorOffset = targetText.length > 0
+          ? Math.max(0, Math.min(target.from > 0 ? target.from - 1 : target.from, targetText.length - 1))
+          : 0;
+        const tableTypingFmt = targetText.length > 0
+          ? getFormatAt(target.currentRuns, anchorOffset)
+          : curFmtRef.current;
+
+        const isUrl = /^https?:\/\/[^\s]+$/.test(pasteText.trim());
+        const pasteFmt = isUrl
+          ? { ...tableTypingFmt, color: '#2563eb', underline: true, href: pasteText.trim() }
+          : { ...tableTypingFmt };
+        return applyRunsToActiveTableTarget([makeRun(pasteText, pasteFmt)]);
+      },
+      [getActiveTablePasteTarget, curFmtRef, applyRunsToActiveTableTarget],
+    );
+
+    const pasteWithFormatIntoTable = useCallback(
+      (pasteText: string, pasteHtml = '') => {
+        const htmlRuns = clipboardHtmlToRuns(pasteHtml, curFmtRef.current);
+        if (htmlRuns && htmlRuns.length > 0) {
+          return applyRunsToActiveTableTarget(htmlRuns);
+        }
+        return pastePlainTextIntoTable(pasteText);
+      },
+      [curFmtRef, applyRunsToActiveTableTarget, pastePlainTextIntoTable],
+    );
+
+    const readClipboardPayload = useCallback(async () => {
+      let text = '';
+      let html = '';
+      if (typeof navigator === 'undefined' || !navigator.clipboard) {
+        return { text, html };
       }
 
-      runsRef.current = insertRun(runsRef.current, selF, makeRun(pasteText, { ...curFmtRef.current }));
-      cursorRef.current = selF + pasteText.length;
-      selStartRef.current = null;
-      emitChange();
-      notifyFmt();
-      resetBlink();
-      draw();
-    }, [
-      getSelRange,
-      pushHistory,
-      runsRef,
-      curFmtRef,
-      cursorRef,
-      selStartRef,
-      emitChange,
-      notifyFmt,
-      resetBlink,
-      draw,
-    ]);
+      if (typeof navigator.clipboard.read === 'function') {
+        try {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            if (!html && item.types.includes('text/html')) {
+              const htmlBlob = await item.getType('text/html');
+              html = await htmlBlob.text();
+            }
+            if (!text && item.types.includes('text/plain')) {
+              const textBlob = await item.getType('text/plain');
+              text = await textBlob.text();
+            }
+            if (text && html) break;
+          }
+        } catch {
+          // Ignore and fall back to readText.
+        }
+      }
+
+      if (!text) {
+        try {
+          text = await navigator.clipboard.readText();
+        } catch {
+          // Ignore clipboard read failures.
+        }
+      }
+
+      return { text, html };
+    }, []);
+
+    const pasteFromClipboard = useCallback(
+      async (mode: 'plain' | 'with-format') => {
+        const { text, html } = await readClipboardPayload();
+        if (!text && !html) return;
+
+        if (mode === 'with-format') {
+          if (pasteWithFormatIntoTable(text, html)) return;
+          pasteWithSourceFormat(text, html);
+          return;
+        }
+
+        if (pastePlainTextIntoTable(text)) return;
+        pastePlainText(text);
+      },
+      [
+        readClipboardPayload,
+        pasteWithFormatIntoTable,
+        pasteWithSourceFormat,
+        pastePlainTextIntoTable,
+        pastePlainText,
+      ],
+    );
+
+    const handleCanvasPaste = useCallback(
+      (e: React.ClipboardEvent<HTMLCanvasElement>) => {
+        if (getActiveTablePasteTarget()) {
+          e.preventDefault();
+          const pasteText = e.clipboardData?.getData('text') || '';
+          const pasteHtml = e.clipboardData?.getData('text/html') || '';
+          pasteWithFormatIntoTable(pasteText, pasteHtml);
+          return;
+        }
+        handlePaste(e);
+      },
+      [getActiveTablePasteTarget, pasteWithFormatIntoTable, handlePaste],
+    );
 
     const handleCanvasContextMenu = useCallback(
       (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1067,7 +1416,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           return;
         }
         if (action === 'paste') {
-          await pasteFromClipboard();
+          await pasteFromClipboard('plain');
+          return;
+        }
+        if (action === 'paste-with-format') {
+          await pasteFromClipboard('with-format');
           return;
         }
         if (action === 'format-painter') {
@@ -1163,13 +1516,28 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeTable.tableStart);
           if (tableMeta) {
             const currentText = runsToText(tableMeta.cells?.[activeTable.row]?.[activeTable.column] ?? []);
+            const imageRanges = getImageTokenRanges(currentText);
+            const snapOffsetInsideImageToken = (offset: number, direction?: 'left' | 'right') => {
+              for (const range of imageRanges) {
+                if (offset > range.start && offset < range.end) {
+                  if (direction === 'left') return range.start;
+                  if (direction === 'right') return range.end;
+                  return Math.abs(offset - range.start) <= Math.abs(range.end - offset)
+                    ? range.start
+                    : range.end;
+                }
+              }
+              return offset;
+            };
             const currentOffset =
               tableCellCursorRef.current?.tableStart === activeTable.tableStart &&
               tableCellCursorRef.current?.row === activeTable.row &&
               tableCellCursorRef.current?.column === activeTable.column
                 ? tableCellCursorRef.current.offset
                 : currentText.length;
-            const safeOffset = Math.max(0, Math.min(currentText.length, currentOffset));
+            const safeOffset = snapOffsetInsideImageToken(
+              Math.max(0, Math.min(currentText.length, currentOffset)),
+            );
             const tableSelection = tableTextSelectionRef.current;
             const hasTableSelection =
               Boolean(tableSelection) &&
@@ -1225,8 +1593,12 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   e.key === 'ArrowLeft'
                     ? Math.max(0, safeOffset - 1)
                     : Math.min(currentText.length, safeOffset + 1);
-                const start = Math.min(anchorOffset, nextOffset);
-                const end = Math.max(anchorOffset, nextOffset);
+                const snappedNextOffset = snapOffsetInsideImageToken(
+                  nextOffset,
+                  e.key === 'ArrowLeft' ? 'left' : 'right',
+                );
+                const start = Math.min(anchorOffset, snappedNextOffset);
+                const end = Math.max(anchorOffset, snappedNextOffset);
                 tableTextSelectionRef.current =
                   end > start
                     ? {
@@ -1241,7 +1613,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   tableStart: activeTable.tableStart,
                   row: activeTable.row,
                   column: activeTable.column,
-                  offset: nextOffset,
+                  offset: snappedNextOffset,
                 };
                 notifyFmt();
                 resetBlink();
@@ -1256,12 +1628,16 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 : e.key === 'ArrowLeft'
                   ? Math.max(0, safeOffset - 1)
                   : Math.min(currentText.length, safeOffset + 1);
+              const snappedNextOffset = snapOffsetInsideImageToken(
+                nextOffset,
+                e.key === 'ArrowLeft' ? 'left' : 'right',
+              );
               tableTextSelectionRef.current = null;
               tableCellCursorRef.current = {
                 tableStart: activeTable.tableStart,
                 row: activeTable.row,
                 column: activeTable.column,
-                offset: nextOffset,
+                offset: snappedNextOffset,
               };
               notifyFmt();
               resetBlink();
@@ -1276,15 +1652,27 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 nextText = currentText.slice(0, selectedFrom) + currentText.slice(selectedTo);
                 nextOffset = selectedFrom;
               } else if (safeOffset > 0) {
-                nextText = currentText.slice(0, safeOffset - 1) + currentText.slice(safeOffset);
-                nextOffset = safeOffset - 1;
+                const imageAtLeft = imageRanges.find((range) => range.end === safeOffset);
+                if (imageAtLeft) {
+                  nextText = currentText.slice(0, imageAtLeft.start) + currentText.slice(imageAtLeft.end);
+                  nextOffset = imageAtLeft.start;
+                } else {
+                  nextText = currentText.slice(0, safeOffset - 1) + currentText.slice(safeOffset);
+                  nextOffset = safeOffset - 1;
+                }
               }
             } else if (e.key === 'Delete') {
               if (hasTableSelection) {
                 nextText = currentText.slice(0, selectedFrom) + currentText.slice(selectedTo);
                 nextOffset = selectedFrom;
               } else if (safeOffset < currentText.length) {
-                nextText = currentText.slice(0, safeOffset) + currentText.slice(safeOffset + 1);
+                const imageAtRight = imageRanges.find((range) => range.start === safeOffset);
+                if (imageAtRight) {
+                  nextText = currentText.slice(0, imageAtRight.start) + currentText.slice(imageAtRight.end);
+                  nextOffset = imageAtRight.start;
+                } else {
+                  nextText = currentText.slice(0, safeOffset) + currentText.slice(safeOffset + 1);
+                }
               }
             } else if (e.key === 'Enter') {
               nextText = currentText.slice(0, selectedFrom) + '\n' + currentText.slice(selectedTo);
@@ -1296,6 +1684,10 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
             if (nextText !== null) {
               e.preventDefault();
+              if (selectedImage) {
+                setSelectedImage(null);
+                setHoveredImage(null);
+              }
               tableTextSelectionRef.current = null;
               tableCellCursorRef.current = {
                 tableStart: activeTable.tableStart,
@@ -1315,9 +1707,26 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           void cutSelectionToClipboard();
           return;
         }
+
+        const isTextEditingKey =
+          e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'Enter';
+        if (isTextEditingKey && !isMod && !e.altKey && selectedImage) {
+          setSelectedImage(null);
+          setHoveredImage(null);
+        }
+
         handleKeyDown(e);
       },
-      [cutSelectionToClipboard, handleKeyDown, runsRef, setTableCell, notifyFmt, resetBlink, draw],
+      [
+        cutSelectionToClipboard,
+        handleKeyDown,
+        runsRef,
+        selectedImage,
+        setTableCell,
+        notifyFmt,
+        resetBlink,
+        draw,
+      ],
     );
 
     const applyImageMutation = useCallback(
@@ -1330,22 +1739,129 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       [setCursorOffset, syncImageOverlay, getImageBoxAtOffset, selectedImage, hoveredImage],
     );
 
-    const applyFormatToActiveTableCell = useCallback(
-      (patch: Partial<RunFmt>, options?: { requireSelection?: boolean; allowWhenEmpty?: boolean }) => {
-        if (!isTableCellEditingRef.current) return false;
-        const activeCell = activeTableEditingCellRef.current;
-        if (!activeCell) return false;
+    const applyTableImageMetaPatch = useCallback(
+      (
+        image: ImageBox,
+        patch: Partial<ImageTokenMeta>,
+        withHistory = true,
+      ) => {
+        const tableImage = image.tableImage;
+        if (!tableImage) return false;
 
-        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeCell.tableStart);
+        const { tableStart, row, column, tokenRangeIndex } = tableImage;
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), tableStart);
         if (!tableMeta) return false;
 
-        const cellText = runsToText(tableMeta.cells?.[activeCell.row]?.[activeCell.column] ?? []);
+        const cellText = runsToText(tableMeta.cells?.[row]?.[column] ?? []);
+        const ranges = getImageTokenRanges(cellText);
+        const tokenRange = ranges[tokenRangeIndex];
+        if (!tokenRange) return false;
+
+        const token = cellText.slice(tokenRange.start, tokenRange.end);
+        const parsed = parseImageToken(token);
+        if (!parsed) return false;
+
+        const nextToken = buildImageToken({
+          ...parsed,
+          ...patch,
+        });
+        const nextText =
+          cellText.slice(0, tokenRange.start) + nextToken + cellText.slice(tokenRange.end);
+
+        const currentOffset =
+          tableCellCursorRef.current?.tableStart === tableStart &&
+          tableCellCursorRef.current?.row === row &&
+          tableCellCursorRef.current?.column === column
+            ? tableCellCursorRef.current.offset
+            : tokenRange.end;
+        const tokenDelta = nextToken.length - (tokenRange.end - tokenRange.start);
+        const shiftedOffset =
+          currentOffset <= tokenRange.start
+            ? currentOffset
+            : currentOffset >= tokenRange.end
+              ? currentOffset + tokenDelta
+              : tokenRange.start + nextToken.length;
+        const nextOffset = Math.max(0, Math.min(nextText.length, shiftedOffset));
+
+        isTableCellEditingRef.current = true;
+        activeTableEditingCellRef.current = { tableStart, row, column };
+        tableSelectionRangeRef.current = {
+          rowStart: row,
+          rowEnd: row,
+          columnStart: column,
+          columnEnd: column,
+        };
+        tableTextSelectionRef.current = null;
+        tableTextSelectionAnchorRef.current = null;
+        tableCellCursorRef.current = {
+          tableStart,
+          row,
+          column,
+          offset: nextOffset,
+        };
+        setCursorOffset(tableStart);
+        setTableCell(row, column, nextText, tableStart, withHistory);
+
+        window.requestAnimationFrame(() => {
+          const nextBox = getTableCellImageBox(tableStart, row, column, tokenRangeIndex);
+          if (nextBox) {
+            setSelectedImage(nextBox);
+            setAltDraft(nextBox.meta.alt);
+          }
+        });
+        return true;
+      },
+      [getTableCellImageBox, runsRef, setCursorOffset, setTableCell],
+    );
+
+    const updateImageWidthByValue = useCallback(
+      (image: ImageBox, widthPct: number, withHistory = true) => {
+        const nextWidth = Math.max(25, Math.min(100, Math.round(widthPct)));
+        if (image.tableImage) {
+          applyTableImageMetaPatch(image, { widthPct: nextWidth }, withHistory);
+          return;
+        }
+        applyImageMutation(image.start, () => setImageWidthPct(nextWidth, withHistory));
+      },
+      [applyTableImageMetaPatch, applyImageMutation, setImageWidthPct],
+    );
+
+    const updateImageRotationByValue = useCallback(
+      (image: ImageBox, rotationDeg: number, withHistory = true) => {
+        if (image.tableImage) {
+          applyTableImageMetaPatch(image, { rotationDeg }, withHistory);
+          return;
+        }
+        applyImageMutation(image.start, () => setImageRotationDeg(rotationDeg, withHistory));
+      },
+      [applyTableImageMetaPatch, applyImageMutation, setImageRotationDeg],
+    );
+
+    const applyFormatToActiveTableCell = useCallback(
+      (patch: Partial<RunFmt>, options?: { requireSelection?: boolean; allowWhenEmpty?: boolean }) => {
+        const activeCell = activeTableEditingCellRef.current;
+        const selectedCell = selectedTableHitRef.current;
+        const targetCell = activeCell
+          ? { tableStart: activeCell.tableStart, row: activeCell.row, column: activeCell.column }
+          : selectedCell
+            ? {
+                tableStart: selectedCell.box.start,
+                row: selectedCell.row,
+                column: selectedCell.column,
+              }
+            : null;
+        if (!targetCell) return false;
+
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), targetCell.tableStart);
+        if (!tableMeta) return false;
+
+        const cellText = runsToText(tableMeta.cells?.[targetCell.row]?.[targetCell.column] ?? []);
         const tableSelection = tableTextSelectionRef.current;
         const hasTableSelection =
           Boolean(tableSelection) &&
-          tableSelection?.tableStart === activeCell.tableStart &&
-          tableSelection?.row === activeCell.row &&
-          tableSelection?.column === activeCell.column &&
+          tableSelection?.tableStart === targetCell.tableStart &&
+          tableSelection?.row === targetCell.row &&
+          tableSelection?.column === targetCell.column &&
           tableSelection.end > tableSelection.start;
         if (options?.requireSelection && !hasTableSelection) {
           if (options.allowWhenEmpty && cellText.length === 0) {
@@ -1357,12 +1873,12 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         const rangeFrom = hasTableSelection ? tableSelection!.start : 0;
         const rangeTo = hasTableSelection ? tableSelection!.end : cellText.length;
         setTableCellFormat(
-          activeCell.row,
-          activeCell.column,
+          targetCell.row,
+          targetCell.column,
           patch,
           rangeFrom,
           rangeTo,
-          activeCell.tableStart,
+          targetCell.tableStart,
           true,
         );
         return true;
@@ -1462,55 +1978,157 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       [runsRef, setTableCellFormat],
     );
 
+    const insertImageAtCurrentContext = useCallback(
+      (url: string) => {
+        const normalized = url.trim();
+        if (!normalized) return;
+
+        const activeCell = activeTableEditingCellRef.current;
+        const selectedCell = selectedTableHitRef.current;
+
+        const target = activeCell
+          ? { tableStart: activeCell.tableStart, row: activeCell.row, column: activeCell.column }
+          : selectedCell
+            ? {
+                tableStart: selectedCell.box.start,
+                row: selectedCell.row,
+                column: selectedCell.column,
+              }
+              : null;
+
+        if (!target) {
+          insertImage(normalized);
+          return;
+        }
+
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), target.tableStart);
+        if (!tableMeta) {
+          insertImage(normalized);
+          return;
+        }
+
+        const currentText = runsToText(tableMeta.cells?.[target.row]?.[target.column] ?? []);
+        const currentOffset =
+          tableCellCursorRef.current?.tableStart === target.tableStart &&
+          tableCellCursorRef.current?.row === target.row &&
+          tableCellCursorRef.current?.column === target.column
+            ? tableCellCursorRef.current.offset
+            : currentText.length;
+        const safeOffset = Math.max(0, Math.min(currentText.length, currentOffset));
+
+        const tableSelection = tableTextSelectionRef.current;
+        const hasTableSelection =
+          Boolean(tableSelection) &&
+          tableSelection?.tableStart === target.tableStart &&
+          tableSelection?.row === target.row &&
+          tableSelection?.column === target.column &&
+          tableSelection.end > tableSelection.start;
+        const selectedFrom = hasTableSelection ? tableSelection!.start : safeOffset;
+        const selectedTo = hasTableSelection ? tableSelection!.end : safeOffset;
+
+        const token = buildImageToken({
+          src: normalized,
+          widthPct: 10,
+          align: 'left',
+          rotationDeg: 0,
+          wrap: 'inline',
+          alt: '',
+          frontOpacityPct: 45,
+        });
+
+        const nextText = currentText.slice(0, selectedFrom) + token + currentText.slice(selectedTo);
+        const nextOffset = selectedFrom + token.length;
+
+        isTableCellEditingRef.current = true;
+        activeTableEditingCellRef.current = {
+          tableStart: target.tableStart,
+          row: target.row,
+          column: target.column,
+        };
+        tableSelectionRangeRef.current = {
+          rowStart: target.row,
+          rowEnd: target.row,
+          columnStart: target.column,
+          columnEnd: target.column,
+        };
+        tableTextSelectionRef.current = null;
+        tableTextSelectionAnchorRef.current = null;
+        tableCellCursorRef.current = {
+          tableStart: target.tableStart,
+          row: target.row,
+          column: target.column,
+          offset: nextOffset,
+        };
+        setCursorOffset(target.tableStart);
+        setTableCell(target.row, target.column, nextText, target.tableStart, true);
+      },
+      [insertImage, runsRef, setCursorOffset, setTableCell],
+    );
+
     const getTargetImage = useCallback(() => selectedImage ?? hoveredImage, [selectedImage, hoveredImage]);
 
     const updateSelectedImageAlign = useCallback(
       (align: 'left' | 'center' | 'right') => {
         const image = getTargetImage();
         if (!image) return;
+        if (image.tableImage) {
+          applyTableImageMetaPatch(image, { align }, true);
+          return;
+        }
         applyImageMutation(image.start, () => setImageAlign(align));
       },
-      [getTargetImage, applyImageMutation, setImageAlign],
+      [getTargetImage, applyTableImageMetaPatch, applyImageMutation, setImageAlign],
     );
 
     const updateSelectedImageWrap = useCallback(
       (wrap: ImageWrap) => {
         const image = getTargetImage();
         if (!image) return;
+        if (image.tableImage) {
+          applyTableImageMetaPatch(image, { wrap }, true);
+          return;
+        }
         const anchorOffset = getWrapAnchorOffset(wrap, image);
         applyImageMutation(anchorOffset, () => setImageWrap(wrap));
       },
-      [getTargetImage, applyImageMutation, setImageWrap],
+      [getTargetImage, applyTableImageMetaPatch, applyImageMutation, setImageWrap],
     );
 
     const updateBreakLayout = useCallback(
       (mode: 'break-right' | 'break-left' | 'break-center') => {
         const image = getTargetImage();
         if (!image) return;
+        const align = mode === 'break-right' ? 'right' : mode === 'break-center' ? 'center' : 'left';
+        if (image.tableImage) {
+          applyTableImageMetaPatch(image, { wrap: 'break', align }, true);
+          return;
+        }
         const anchorOffset = mode === 'break-right' ? image.start : image.end;
         applyImageMutation(anchorOffset, () => {
           setImageWrap('break');
-          setImageAlign(mode === 'break-right' ? 'right' : mode === 'break-center' ? 'center' : 'left');
+          setImageAlign(align);
         });
       },
-      [getTargetImage, applyImageMutation, setImageWrap, setImageAlign],
+      [getTargetImage, applyTableImageMetaPatch, applyImageMutation, setImageWrap, setImageAlign],
     );
 
     const commitSelectedImageAlt = useCallback(() => {
       const image = getTargetImage();
       if (!image) return;
+      if (image.tableImage) {
+        applyTableImageMetaPatch(image, { alt: altDraft }, true);
+        return;
+      }
       applyImageMutation(image.start, () => setImageAltText(altDraft));
-    }, [getTargetImage, altDraft, applyImageMutation, setImageAltText]);
+    }, [getTargetImage, altDraft, applyTableImageMetaPatch, applyImageMutation, setImageAltText]);
 
     const rotateSelectedImageBy = useCallback(
       (deltaDeg: number) => {
         const image = getTargetImage();
         if (!image) return;
-        applyImageMutation(image.start, () =>
-          setImageRotationDeg(image.meta.rotationDeg + deltaDeg),
-        );
+        updateImageRotationByValue(image, image.meta.rotationDeg + deltaDeg, true);
       },
-      [getTargetImage, applyImageMutation, setImageRotationDeg],
+      [getTargetImage, updateImageRotationByValue],
     );
 
     const startResize = useCallback(
@@ -1556,11 +2174,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             Math.min(100, Math.round((nextWidth / startDrawWidth) * startWidthPct)),
           );
           lastWidthPct = nextWidthPct;
-          applyImageMutation(selectedImage.start, () => setImageWidthPct(nextWidthPct, false));
+          updateImageWidthByValue(selectedImage, nextWidthPct, false);
         };
 
         const onUp = () => {
-          applyImageMutation(selectedImage.start, () => setImageWidthPct(lastWidthPct, true));
+          updateImageWidthByValue(selectedImage, lastWidthPct, true);
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
         };
@@ -1588,11 +2206,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           const nextAngle = Math.atan2(ev.clientY - centerY, ev.clientX - centerX);
           const deltaDeg = ((nextAngle - startAngle) * 180) / Math.PI;
           lastRotation = startRotationDeg + deltaDeg;
-          applyImageMutation(selectedImage.start, () => setImageRotationDeg(lastRotation, false));
+          updateImageRotationByValue(selectedImage, lastRotation, false);
         };
 
         const onUp = () => {
-          applyImageMutation(selectedImage.start, () => setImageRotationDeg(lastRotation, true));
+          updateImageRotationByValue(selectedImage, lastRotation, true);
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
         };
@@ -1600,7 +2218,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
       },
-      [selectedImage, applyImageMutation, setImageRotationDeg],
+      [selectedImage, updateImageRotationByValue],
     );
 
     // ── Imperative API ────────────────────────────────────────────────────────
@@ -1669,7 +2287,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         setHighlightColor(color);
       },
       insertLink,
-      insertImage,
+      insertImage: insertImageAtCurrentContext,
       insertTable,
       insertPageBreak,
       setImageAlign,
@@ -1959,32 +2577,66 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       notifyFmt();
     }, [isImagePanelOpen, notifyFmt]);
 
+    useEffect(() => {
+      if (!selectedImage) return;
+      const handlePointerDownOutside = (event: MouseEvent) => {
+        const root = rootRef.current;
+        const target = event.target as Node | null;
+        if (!root || !target) return;
+        if (root.contains(target)) return;
+        setSelectedImage(null);
+        setHoveredImage(null);
+        setIsImagePanelOpen(false);
+      };
+      document.addEventListener('mousedown', handlePointerDownOutside);
+      return () => {
+        document.removeEventListener('mousedown', handlePointerDownOutside);
+      };
+    }, [selectedImage]);
+
     const visibleImage = selectedImage ?? hoveredImage;
+    const isSameImage = useCallback((a: ImageBox | null, b: ImageBox | null) => {
+      if (!a || !b) return false;
+      const ta = a.tableImage;
+      const tb = b.tableImage;
+      if (ta || tb) {
+        return (
+          Boolean(ta) &&
+          Boolean(tb) &&
+          ta!.tableStart === tb!.tableStart &&
+          ta!.row === tb!.row &&
+          ta!.column === tb!.column &&
+          ta!.tokenRangeIndex === tb!.tokenRangeIndex
+        );
+      }
+      return a.start === b.start && a.end === b.end;
+    }, []);
     useEffect(() => {
       if (!visibleImage) return;
       setAltDraft(visibleImage.meta.alt);
-    }, [visibleImage?.start]);
+    }, [visibleImage, isSameImage]);
 
     const renderImageOverlay = (image: ImageBox | null) => {
       if (!image) return null;
-      const isSelected = selectedImage?.start === image.start;
+      const isSelected = isSameImage(selectedImage, image);
       const canAlignImage = image.meta.wrap !== 'break';
       const popupWidth = 240;
       const popupHeight = 56;
       const canvasWidth = canvasRef.current?.clientWidth ?? 0;
-      // For right-aligned images, show popup on the left side of the image.
-      // Otherwise keep popup on the right side.
-      let popupLeft =
-        image.meta.align === 'right' ? image.x - popupWidth - 8 : image.x + image.width + 8;
+      // Center the popup horizontally above the image so it never overlaps with image content.
+      let popupLeft = image.x + (image.width - popupWidth) / 2;
       let popupTop = image.y - popupHeight - 8;
-      // Clamp to canvas bounds
+      // Clamp horizontal position to canvas bounds
       popupLeft = Math.max(10, Math.min(popupLeft, canvasWidth - popupWidth - 10));
-      popupTop = Math.max(10, popupTop);
+      // If not enough room above the image, flip it below
+      if (popupTop < 10) {
+        popupTop = image.y + image.height + 8;
+      }
 
       const focusImageControls = () => {
-        if (selectedImage?.start === image.start) return;
+        if (isSameImage(selectedImage, image)) return;
         setSelectedImage(image);
-        setCursorOffset(image.start);
+        setCursorOffset(image.tableImage?.tableStart ?? image.start);
         setAltDraft(image.meta.alt);
       };
 
@@ -2113,7 +2765,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     };
 
     const renderImagePanel = (image: ImageBox | null) => {
-      const isSelected = image && selectedImage?.start === image.start;
+      const isSelected = image ? isSameImage(selectedImage, image) : false;
       const canAlignImage = image ? image.meta.wrap !== 'break' : false;
       const hasMoreOptions = image ? image.meta.wrap === 'break' || canAlignImage : false;
       const panelWidthClass = hasMoreOptions ? 'w-[300px]' : 'w-[250px]';
@@ -2136,7 +2788,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                       className="group flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:border-cyan-300 hover:text-cyan-700"
                       onClick={() => {
                         setSelectedImage(image);
-                        setCursorOffset(image.start);
+                        setCursorOffset(image.tableImage?.tableStart ?? image.start);
                         setAltDraft(image.meta.alt);
                       }}
                       title="Pin image panel"
@@ -2153,6 +2805,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                     onClick={() => {
                       setSelectedImage(null);
                       setHoveredImage(null);
+                      setIsImagePanelOpen(false);
                     }}
                     title="Close image panel"
                   >
@@ -2223,11 +2876,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                     <button
                       type="button"
                       className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:border-cyan-300 hover:text-cyan-700"
-                      onClick={() =>
-                        applyImageMutation(image.start, () =>
-                          setImageWidthPct(Math.max(25, image.meta.widthPct - 5), true),
-                        )
-                      }
+                      onClick={() => updateImageWidthByValue(image, Math.max(25, image.meta.widthPct - 5), true)}
                       aria-label="Decrease width"
                       title="Decrease width"
                     >
@@ -2238,21 +2887,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                       min={25}
                       max={100}
                       value={image.meta.widthPct}
-                      onChange={(e) =>
-                        applyImageMutation(image.start, () =>
-                          setImageWidthPct(Number(e.currentTarget.value), false),
-                        )
-                      }
-                      onMouseUp={(e) =>
-                        applyImageMutation(image.start, () =>
-                          setImageWidthPct(Number(e.currentTarget.value), true),
-                        )
-                      }
-                      onTouchEnd={(e) =>
-                        applyImageMutation(image.start, () =>
-                          setImageWidthPct(Number(e.currentTarget.value), true),
-                        )
-                      }
+                      onChange={(e) => updateImageWidthByValue(image, Number(e.currentTarget.value), false)}
+                      onMouseUp={(e) => updateImageWidthByValue(image, Number(e.currentTarget.value), true)}
+                      onTouchEnd={(e) => updateImageWidthByValue(image, Number(e.currentTarget.value), true)}
                       className="flex-1 h-2 rounded-full bg-slate-200 accent-cyan-600 focus:outline-none focus:ring-2 focus:ring-cyan-200"
                       aria-label="Image width"
                       style={{ minWidth: 60 }}
@@ -2260,11 +2897,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                     <button
                       type="button"
                       className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 hover:border-cyan-300 hover:text-cyan-700"
-                      onClick={() =>
-                        applyImageMutation(image.start, () =>
-                          setImageWidthPct(Math.min(100, image.meta.widthPct + 5), true),
-                        )
-                      }
+                      onClick={() => updateImageWidthByValue(image, Math.min(100, image.meta.widthPct + 5), true)}
                       aria-label="Increase width"
                       title="Increase width"
                     >
@@ -2389,7 +3022,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   className="w-full h-full cursor-text"
                   tabIndex={0}
                   onKeyDown={handleCanvasKeyDown}
-                  onPaste={handlePaste}
+                  onPaste={handleCanvasPaste}
                   onMouseDown={handleCanvasMouseDown}
                   onMouseUp={handleCanvasMouseUp}
                   onDoubleClick={handleCanvasDoubleClick}
@@ -2413,7 +3046,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 className="h-full w-full cursor-text"
                 tabIndex={0}
                 onKeyDown={handleCanvasKeyDown}
-                onPaste={handlePaste}
+                onPaste={handleCanvasPaste}
                 onMouseDown={handleCanvasMouseDown}
                 onMouseUp={handleCanvasMouseUp}
                 onDoubleClick={handleCanvasDoubleClick}

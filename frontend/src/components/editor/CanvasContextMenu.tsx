@@ -11,6 +11,7 @@ export type CanvasMenuAction =
   | 'cut'
   | 'copy'
   | 'paste'
+  | 'paste-with-format'
   | 'format-painter'
   | 'clear-formatting'
   | 'comments'
@@ -48,6 +49,12 @@ const MENU_SECTIONS: MenuSection[] = [
       { id: 'cut', label: 'Cut', icon: 'content_cut', shortcut: ['mod', 'x'] },
       { id: 'copy', label: 'Copy', icon: 'content_copy', shortcut: ['mod', 'c'] },
       { id: 'paste', label: 'Paste', icon: 'content_paste', shortcut: ['mod', 'v'] },
+      {
+        id: 'paste-with-format',
+        label: 'Paste with format',
+        icon: 'content_paste_go',
+        shortcut: [],
+      },
     ],
   },
   {
@@ -89,6 +96,20 @@ const MENU_SECTIONS: MenuSection[] = [
 ];
 
 const TABLE_MENU_SECTIONS: MenuSection[] = [
+  {
+    title: 'Clipboard',
+    items: [
+      { id: 'cut', label: 'Cut', icon: 'content_cut', shortcut: ['mod', 'x'] },
+      { id: 'copy', label: 'Copy', icon: 'content_copy', shortcut: ['mod', 'c'] },
+      { id: 'paste', label: 'Paste', icon: 'content_paste', shortcut: ['mod', 'v'] },
+      {
+        id: 'paste-with-format',
+        label: 'Paste with format',
+        icon: 'content_paste_go',
+        shortcut: [],
+      },
+    ],
+  },
   {
     title: 'Cell',
     items: [
@@ -233,7 +254,25 @@ export function CanvasContextMenu({
     },
   ];
 
-  const fontFamilies = ['Raleway', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana'];
+  const fontFamilies = [
+    'Raleway',
+    'Arial',
+    'Helvetica',
+    'Verdana',
+    'Tahoma',
+    'Trebuchet MS',
+    'Times New Roman',
+    'Georgia',
+    'Garamond',
+    'Palatino',
+    'Cambria',
+    'Courier New',
+    'Consolas',
+    'Monaco',
+    'Lucida Console',
+    'Comic Sans MS',
+    'Impact',
+  ];
 
   return (
     <div ref={menuRef} className="absolute z-50" style={style}>

@@ -2741,6 +2741,7 @@ export function useEditorDraw(
       const column = tableHit.column;
       const cellRuns = tableMeta.cells?.[row]?.[column] ?? [];
       const cellText = runsToText(cellRuns);
+      const imageRanges = getImageTokenRanges(cellText);
       if (cellText.length === 0) {
         return { ...tableHit, offset: 0 };
       }
@@ -2782,16 +2783,24 @@ export function useEditorDraw(
       const localX = Math.max(0, clickX - textStartX);
       const localY = clickY - textStartY;
 
+      const isInsideImageInterior = (offset: number) =>
+        imageRanges.some((range) => offset > range.start && offset < range.end);
+
       const measureRangeWidth = (from: number, to: number) => {
         let measured = 0;
         let pos = 0;
         for (const run of cellRuns) {
           const runEnd = pos + run.text.length;
           if (runEnd > from && pos < to) {
-            const seg = run.text.slice(Math.max(0, from - pos), Math.min(run.text.length, to - pos));
-            if (seg) {
+            const segStart = Math.max(0, from - pos);
+            const segEnd = Math.min(run.text.length, to - pos);
+            if (segEnd > segStart) {
               ctx.font = buildFont(run.fontSize, run.bold, run.italic, run.fontFamily);
-              measured += ctx.measureText(seg).width;
+              for (let i = segStart; i < segEnd; i += 1) {
+                const absoluteOffset = pos + i;
+                if (isInsideImageInterior(absoluteOffset)) continue;
+                measured += ctx.measureText(run.text[i]).width;
+              }
             }
           }
           pos = runEnd;
@@ -2810,19 +2819,35 @@ export function useEditorDraw(
 
       const wrappedLines: WrappedLine[] = [];
       let lineCursorY = 0;
-      let logicalLineStart = 0;
+      const baseFmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, Math.max(0, Math.min(cellText.length, 1))) };
+      const baseLineHeight = computeLineHeight(baseFmt.fontSize, baseFmt.lineSpacing ?? 1.2);
+      const tableImageBelowGapY = 12;
+      let centerWrapFlow: { leftEnd: number; rightStart: number; bottomY: number } | null = null;
+      let wrapLaneXRel: number | null = null;
+      let wrapLaneBottomY = 0;
+      let laneCoversAllChunks = false;
 
       const pushWrappedSlices = (lineStart: number, lineEnd: number) => {
         if (lineStart >= lineEnd) {
           const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, Math.max(0, lineStart - 1)) };
           const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
-          wrappedLines.push({ start: lineStart, end: lineStart, y: lineCursorY, lineH, drawX: 0 });
+          const laneActive = wrapLaneXRel !== null && lineCursorY < wrapLaneBottomY - 0.5;
+          const laneX = laneActive ? Math.max(0, wrapLaneXRel ?? 0) : 0;
+          wrappedLines.push({ start: lineStart, end: lineStart, y: lineCursorY, lineH, drawX: laneX });
           lineCursorY += lineH;
+          if (wrapLaneXRel !== null && lineCursorY >= wrapLaneBottomY - 0.5) {
+            wrapLaneXRel = null;
+            wrapLaneBottomY = 0;
+            laneCoversAllChunks = false;
+          }
           return;
         }
 
         let start = lineStart;
         while (start < lineEnd) {
+          const laneActive = wrapLaneXRel !== null && lineCursorY < wrapLaneBottomY - 0.5;
+          const laneBaseX = laneActive ? Math.max(0, Math.min(textMaxWidth - 2, wrapLaneXRel ?? 0)) : 0;
+          const laneMaxWidth = laneActive ? Math.max(12, textMaxWidth - laneBaseX) : textMaxWidth;
           const probeOffset = Math.max(0, Math.min(cellText.length, start + 1));
           const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
           const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
@@ -2832,7 +2857,7 @@ export function useEditorDraw(
           let breakAt = -1;
           for (let i = start + 1; i <= lineEnd; i += 1) {
             const w = measureRangeWidth(start, i);
-            if (w <= textMaxWidth) {
+            if (w <= laneMaxWidth) {
               bestEnd = i;
               const ch = cellText[i - 1];
               if (ch === ' ' || ch === '-') breakAt = i;
@@ -2845,22 +2870,252 @@ export function useEditorDraw(
           const lineWidth = measureRangeWidth(start, bestEnd);
           const drawX =
             align === 'center'
-              ? Math.max(0, (textMaxWidth - lineWidth) / 2)
+              ? laneBaseX + Math.max(0, (laneMaxWidth - lineWidth) / 2)
               : align === 'right'
-                ? Math.max(0, textMaxWidth - lineWidth)
-                : 0;
+                ? laneBaseX + Math.max(0, laneMaxWidth - lineWidth)
+                : laneBaseX;
           wrappedLines.push({ start, end: bestEnd, y: lineCursorY, lineH, drawX });
           lineCursorY += lineH;
+
+          if (laneActive && !laneCoversAllChunks) {
+            wrapLaneXRel = null;
+            wrapLaneBottomY = 0;
+            laneCoversAllChunks = false;
+          }
+          if (wrapLaneXRel !== null && lineCursorY >= wrapLaneBottomY - 0.5) {
+            wrapLaneXRel = null;
+            wrapLaneBottomY = 0;
+            laneCoversAllChunks = false;
+          }
 
           start = bestEnd;
           while (start < lineEnd && cellText[start] === ' ') start += 1;
         }
       };
 
-      for (let i = 0; i <= cellText.length; i += 1) {
-        if (i === cellText.length || cellText[i] === '\n') {
-          pushWrappedSlices(logicalLineStart, i);
-          logicalLineStart = i + 1;
+      // Segment cellText by image token ranges, mirroring the draw loop's parts
+      // structure. This ensures each image's actual drawn height is accounted for
+      // in the Y tracking so text lines after a tall image have correct Y positions.
+      type CellHitPart =
+        | { type: 'text'; start: number; end: number }
+        | { type: 'image'; start: number; end: number; tokenRangeIndex: number };
+      const cellHitParts: CellHitPart[] = [];
+      {
+        let partCursor = 0;
+        imageRanges.forEach((range, tokenRangeIndex) => {
+          if (range.start > partCursor) {
+            cellHitParts.push({ type: 'text', start: partCursor, end: range.start });
+          }
+          cellHitParts.push({ type: 'image', start: range.start, end: range.end, tokenRangeIndex });
+          partCursor = range.end;
+        });
+        if (partCursor < cellText.length) {
+          cellHitParts.push({ type: 'text', start: partCursor, end: cellText.length });
+        }
+        if (cellHitParts.length === 0) {
+          cellHitParts.push({ type: 'text', start: 0, end: cellText.length });
+        }
+      }
+
+      for (const hitPart of cellHitParts) {
+        if (hitPart.type === 'image') {
+          const token = cellText.slice(hitPart.start, hitPart.end);
+          const imageMeta = parseImageToken(token);
+          const imageBox = imageBoxesRef.current.find(
+            (box) =>
+              box.tableImage?.tableStart === tableHit.box.start &&
+              box.tableImage?.row === row &&
+              box.tableImage?.column === column &&
+              box.tableImage?.tokenRangeIndex === hitPart.tokenRangeIndex,
+          );
+          const cached = imageMeta ? imageCacheRef.current.get(imageMeta.src) : undefined;
+          const imageMetrics = imageMeta
+            ? getImageRenderMetrics(
+                imageMeta,
+                textMaxWidth,
+                cached ? { w: cached.w, h: cached.h } : undefined,
+              )
+            : null;
+          const imgDrawH = Math.max(1, imageBox?.drawHeight ?? imageMetrics?.drawHeight ?? baseLineHeight);
+          const imgDrawW = Math.max(1, imageBox?.drawWidth ?? imageMetrics?.drawWidth ?? textMaxWidth);
+          const imageLeftX = imageBox?.x ?? textStartX;
+
+          if (!imageMeta || isTextInFrontWrap(imageMeta.wrap)) {
+            wrapLaneXRel = null;
+            wrapLaneBottomY = 0;
+            laneCoversAllChunks = false;
+            continue;
+          }
+
+          const useSideLaneFlow =
+            imageMeta.align === 'left' && (isInlineWrap(imageMeta.wrap) || isWrapTextWrap(imageMeta.wrap));
+          const useCenterDualFlow =
+            (imageMeta.align === 'center' || imageMeta.align === 'right') && isWrapTextWrap(imageMeta.wrap);
+          const inlineSingleLineFlow = imageMeta.align === 'left' && isInlineWrap(imageMeta.wrap);
+          const wrapFullHeightFlow = imageMeta.align === 'left' && isWrapTextWrap(imageMeta.wrap);
+
+          if (useCenterDualFlow) {
+            // Mirror draw-time center/right wrap geometry so caret hits map to side lanes.
+            const leftEnd = Math.max(0, Math.min(textMaxWidth, imageLeftX - textStartX - 8));
+            const rightStart =
+              imageMeta.align === 'right'
+                ? textMaxWidth
+                : Math.max(0, Math.min(textMaxWidth, imageLeftX - textStartX + imgDrawW + 8));
+            centerWrapFlow = {
+              leftEnd,
+              rightStart,
+              bottomY: lineCursorY + imgDrawH,
+            };
+            wrapLaneXRel = null;
+            wrapLaneBottomY = 0;
+            laneCoversAllChunks = false;
+            continue;
+          }
+
+          if (useSideLaneFlow) {
+            const nextInlineXAbs = Math.max(textStartX, imageLeftX + imgDrawW + 4);
+            const nextInlineXRel = Math.max(0, nextInlineXAbs - textStartX);
+            const minLaneWidth = wrapFullHeightFlow ? 4 : 12;
+            if (nextInlineXRel > textMaxWidth - minLaneWidth) {
+              lineCursorY += Math.max(baseLineHeight, imgDrawH);
+              wrapLaneXRel = null;
+              wrapLaneBottomY = 0;
+              laneCoversAllChunks = false;
+            } else {
+              if (wrapFullHeightFlow) {
+                // Wrap text starts at image top and flows through image height.
+              } else {
+                // Inline text starts near the image bottom and uses one lane line.
+                lineCursorY += Math.max(0, imgDrawH - baseLineHeight);
+              }
+              wrapLaneXRel = nextInlineXRel;
+              laneCoversAllChunks = wrapFullHeightFlow;
+              wrapLaneBottomY = inlineSingleLineFlow ? lineCursorY + 0.6 : lineCursorY + imgDrawH;
+            }
+            continue;
+          }
+
+          // Break-like fallback for non-side-lane wraps.
+          const imageLineH = imgDrawH + tableImageBelowGapY;
+          wrappedLines.push({
+            start: hitPart.start,
+            end: hitPart.end,
+            y: lineCursorY,
+            lineH: imageLineH,
+            drawX: 0,
+          });
+          lineCursorY += imageLineH;
+          wrapLaneXRel = null;
+          wrapLaneBottomY = 0;
+          laneCoversAllChunks = false;
+        } else {
+          if (centerWrapFlow) {
+            let textLineStart = hitPart.start;
+            for (let i = hitPart.start; i <= hitPart.end; i += 1) {
+              if (i !== hitPart.end && cellText[i] !== '\n') continue;
+
+              const rawLineStart = textLineStart;
+              const rawLineEnd = i;
+
+              if (lineCursorY < centerWrapFlow.bottomY - 0.5) {
+                const regions = [
+                  { start: 0, end: centerWrapFlow.leftEnd },
+                  { start: centerWrapFlow.rightStart, end: textMaxWidth },
+                ].filter((region) => region.end - region.start >= 4);
+
+                if (rawLineStart >= rawLineEnd) {
+                  wrappedLines.push({
+                    start: rawLineStart,
+                    end: rawLineStart,
+                    y: lineCursorY,
+                    lineH: baseLineHeight,
+                    drawX: 0,
+                  });
+                  lineCursorY += baseLineHeight;
+                } else {
+                  let local = rawLineStart;
+                  let rowLineHeight = baseLineHeight;
+                  let placedChunk = false;
+
+                  for (const region of regions) {
+                    while (local < rawLineEnd && cellText[local] === ' ') local += 1;
+                    if (local >= rawLineEnd) break;
+
+                    const regionWidth = Math.max(12, region.end - region.start);
+                    const probeOffset = Math.max(0, Math.min(cellText.length, local + 1));
+                    const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
+                    const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
+                    const align = fmt.textAlign ?? 'left';
+
+                    let bestEnd = local + 1;
+                    let breakAt = -1;
+                    for (let j = local + 1; j <= rawLineEnd; j += 1) {
+                      const width = measureRangeWidth(local, j);
+                      if (width <= regionWidth) {
+                        bestEnd = j;
+                        const ch = cellText[j - 1];
+                        if (ch === ' ' || ch === '-') breakAt = j;
+                      } else {
+                        break;
+                      }
+                    }
+                    if (bestEnd === local) bestEnd = local + 1;
+                    if (bestEnd < rawLineEnd && breakAt > local + 1) bestEnd = breakAt;
+
+                    const lineWidth = measureRangeWidth(local, bestEnd);
+                    const drawX =
+                      align === 'center'
+                        ? region.start + Math.max(0, (regionWidth - lineWidth) / 2)
+                        : align === 'right'
+                          ? region.start + Math.max(0, regionWidth - lineWidth)
+                          : region.start;
+
+                    wrappedLines.push({
+                      start: local,
+                      end: bestEnd,
+                      y: lineCursorY,
+                      lineH,
+                      drawX,
+                    });
+                    placedChunk = true;
+                    rowLineHeight = Math.max(rowLineHeight, lineH);
+
+                    local = bestEnd;
+                  }
+
+                  if (!placedChunk) {
+                    wrappedLines.push({
+                      start: rawLineStart,
+                      end: rawLineStart,
+                      y: lineCursorY,
+                      lineH: baseLineHeight,
+                      drawX: 0,
+                    });
+                  }
+                  lineCursorY += rowLineHeight;
+                }
+
+                if (lineCursorY >= centerWrapFlow.bottomY - 0.5) {
+                  centerWrapFlow = null;
+                }
+              } else {
+                centerWrapFlow = null;
+                pushWrappedSlices(rawLineStart, rawLineEnd);
+              }
+
+              textLineStart = i + 1;
+            }
+            continue;
+          }
+
+          // Text part: process each \n-delimited logical line.
+          let textLineStart = hitPart.start;
+          for (let i = hitPart.start; i <= hitPart.end; i += 1) {
+            if (i === hitPart.end || cellText[i] === '\n') {
+              pushWrappedSlices(textLineStart, i);
+              textLineStart = i + 1;
+            }
+          }
         }
       }
       if (wrappedLines.length === 0) {
@@ -2876,10 +3131,34 @@ export function useEditorDraw(
       }
 
       let targetLine = wrappedLines[wrappedLines.length - 1];
-      for (const line of wrappedLines) {
-        if (localY >= line.y && localY <= line.y + line.lineH) {
-          targetLine = line;
-          break;
+      const overlappingLines = wrappedLines.filter(
+        (line) => localY >= line.y && localY <= line.y + line.lineH,
+      );
+      if (overlappingLines.length > 0) {
+        let bestLine = overlappingLines[0];
+        let bestDistance = Number.POSITIVE_INFINITY;
+        for (const line of overlappingLines) {
+          const widthForLine = measureRangeWidth(line.start, line.end);
+          const lineStartX = line.drawX;
+          const lineEndX = line.drawX + widthForLine;
+          const distance =
+            localX < lineStartX
+              ? lineStartX - localX
+              : localX > lineEndX
+                ? localX - lineEndX
+                : 0;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestLine = line;
+          }
+        }
+        targetLine = bestLine;
+      } else {
+        for (const line of wrappedLines) {
+          if (localY >= line.y && localY <= line.y + line.lineH) {
+            targetLine = line;
+            break;
+          }
         }
       }
 
@@ -2895,6 +3174,7 @@ export function useEditorDraw(
       let nearestOffset = targetLine.start;
       let nearestDistance = Number.POSITIVE_INFINITY;
       for (let i = targetLine.start; i <= targetLine.end; i += 1) {
+        if (isInsideImageInterior(i)) continue;
         const caretX = measureRangeWidth(targetLine.start, i);
         const distance = Math.abs(relativeX - caretX);
         if (distance < nearestDistance || (distance === nearestDistance && i > nearestOffset)) {
@@ -2902,6 +3182,41 @@ export function useEditorDraw(
           nearestOffset = i;
         }
       }
+
+      // If nearest lands in an image token, only keep before/after snapping when
+      // the click is actually on the image bounds. Otherwise default to after-image
+      // so text clicks after images keep caret in trailing text.
+      const insideImageToken = imageRanges.find(
+        (range) => nearestOffset > range.start && nearestOffset < range.end,
+      );
+      if (insideImageToken) {
+        const tokenRangeIndex = imageRanges.findIndex(
+          (range) => range.start === insideImageToken.start && range.end === insideImageToken.end,
+        );
+        const imageBox = imageBoxesRef.current.find(
+          (box) =>
+            box.tableImage?.tableStart === tableHit.box.start &&
+            box.tableImage?.row === row &&
+            box.tableImage?.column === column &&
+            box.tableImage?.tokenRangeIndex === tokenRangeIndex,
+        );
+
+        if (imageBox) {
+          const clickInsideImage =
+            clickX >= imageBox.x - 1 &&
+            clickX <= imageBox.x + imageBox.width + 1 &&
+            clickY >= imageBox.y - 1 &&
+            clickY <= imageBox.y + imageBox.height + 1;
+
+          if (clickInsideImage) {
+            const before = clickX < imageBox.x + imageBox.width / 2;
+            return { ...tableHit, offset: before ? insideImageToken.start : insideImageToken.end };
+          }
+
+          return { ...tableHit, offset: insideImageToken.end };
+        }
+      }
+
       return { ...tableHit, offset: nearestOffset };
     },
     [
@@ -2936,8 +3251,8 @@ export function useEditorDraw(
       const nearestColumn = getNearestBorderIndex(box.columnOffsets, localX);
       const rowDist = nearestRow.distance;
       const columnDist = nearestColumn.distance;
-      // Keep resize hit area narrow so normal cell clicks enter edit mode reliably.
-      const hoverThreshold = 3;
+      // Keep resize hit area very narrow so normal cell clicks move the caret reliably.
+      const hoverThreshold = 1.5;
 
       if (rowDist > hoverThreshold && columnDist > hoverThreshold) return null;
       if (rowDist <= columnDist) {
@@ -2960,16 +3275,26 @@ export function useEditorDraw(
   }, []);
 
   const getResolvedImageBox = useCallback(
-    (image: Pick<ImageBox, 'start' | 'end' | 'meta'> | null): ImageBox | null => {
+    (image: Pick<ImageBox, 'start' | 'end' | 'meta' | 'tableImage'> | null): ImageBox | null => {
       if (!image) return null;
 
       const boxes = imageBoxesRef.current;
-      const byOffset = boxes.find(
-        (box) =>
-          box.start === image.start ||
-          box.end === image.end ||
-          (image.start >= box.start && image.start <= box.end),
-      );
+      const tableImage = image.tableImage;
+      if (tableImage) {
+        const byTableIdentity = boxes.find(
+          (box) =>
+            box.tableImage?.tableStart === tableImage.tableStart &&
+            box.tableImage?.row === tableImage.row &&
+            box.tableImage?.column === tableImage.column &&
+            box.tableImage?.tokenRangeIndex === tableImage.tokenRangeIndex,
+        );
+        if (byTableIdentity) return byTableIdentity;
+      }
+
+      const byExactRange = boxes.find((box) => box.start === image.start && box.end === image.end);
+      if (byExactRange) return byExactRange;
+
+      const byOffset = boxes.find((box) => image.start >= box.start && image.start <= box.end);
       if (byOffset) return byOffset;
 
       const targetMetaKey = imageMetaKey(image.meta);
