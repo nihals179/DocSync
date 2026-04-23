@@ -12,6 +12,8 @@ export type CursorFormat = RunFmt & {
   tableSelected: boolean;
   tablePanelOpen: boolean;
   tablePartialTextSelection: boolean;
+  tableRoundedBorders: boolean;
+  tableBorderRadiusPx: number;
 };
 
 export type RichEditorHandle = {
@@ -56,6 +58,16 @@ export type RichEditorHandle = {
   toggleTablePanel: () => void;
   openTablePanel: () => void;
   closeTablePanel: () => void;
+  setTableTextAlign: (align: 'left' | 'center' | 'right') => void;
+  setTableBorderColor: (color: string | null) => void;
+  setTableBorderWidth: (width: number) => void;
+  setTableNoBorders: () => void;
+  setTableBorderRadius: (radiusPx: number) => void;
+  setTableRoundedBorders: (enabled: boolean) => void;
+  addTableRowAbove: () => void;
+  addTableRowBelow: () => void;
+  addTableColumnLeft: () => void;
+  addTableColumnRight: () => void;
   toggleSpaceBeforeLine: () => void;
   toggleSpaceAfterLine: () => void;
   undo: () => void;

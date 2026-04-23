@@ -1197,6 +1197,7 @@ export function useEditorInput(
         rowHeightPx: 36,
         columnWidthsPx: Array.from({ length: safeColumns }, () => 200),
         rowHeightsPx: Array.from({ length: safeRows }, () => 36),
+        tableBorderRadiusPx: 0,
         borderWidth: 1,
         borderColor: '#cbd5e1',
         cellBorders: {},
@@ -1300,6 +1301,7 @@ export function useEditorInput(
         rowHeightPx?: number;
         columnWidthsPx?: number[];
         rowHeightsPx?: number[];
+        tableBorderRadiusPx?: number;
         borderWidth: number;
         borderColor: string | null;
         cellBorders: Record<string, { width: number; color: string | null }>;
@@ -1323,6 +1325,7 @@ export function useEditorInput(
         rowHeightPx: table.rowHeightPx,
         columnWidthsPx: table.columnWidthsPx,
         rowHeightsPx: table.rowHeightsPx,
+        tableBorderRadiusPx: table.tableBorderRadiusPx,
         borderWidth: table.borderWidth,
         borderColor: table.borderColor,
         cellBorders: table.cellBorders,
@@ -1370,6 +1373,7 @@ export function useEditorInput(
         cells: Run[][][];
         cellPaddingPx?: number;
         columnStartPaddingPx?: number[];
+        tableBorderRadiusPx?: number;
         borderWidth: number;
         borderColor: string | null;
         cellBorders: Record<string, { width: number; color: string | null }>;
@@ -1449,12 +1453,11 @@ export function useEditorInput(
           const cellText = runsToText(currentRuns);
           const safeFrom = Math.max(0, from ?? 0);
           const safeTo = Math.min(cellText.length, to ?? cellText.length);
-          const newRuns = applyFormatToRange(
-            currentRuns.length > 0 ? currentRuns : [makeRun('', { ...DEFAULT_RUN_FMT })],
-            safeFrom,
-            safeTo,
-            patch,
-          );
+          const baseRuns = currentRuns.length > 0 ? currentRuns : [makeRun('', { ...DEFAULT_RUN_FMT })];
+          const newRuns =
+            cellText.length === 0
+              ? baseRuns.map((run) => ({ ...run, ...patch }))
+              : applyFormatToRange(baseRuns, safeFrom, safeTo, patch);
           const cells = table.cells.map((r) => [...r]);
           cells[row][column] = newRuns;
           return { ...table, cells };
@@ -1589,6 +1592,7 @@ export function useEditorInput(
           ],
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders,
           columnBorders: { ...table.columnBorders },
@@ -1637,6 +1641,7 @@ export function useEditorInput(
           ],
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders,
           columnBorders: { ...table.columnBorders },
@@ -1685,6 +1690,7 @@ export function useEditorInput(
           }),
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders,
           columnBorders: { ...table.columnBorders },
@@ -1736,6 +1742,7 @@ export function useEditorInput(
           rowHeightsPx: Array.from({ length: table.rows }, (_, index) => table.rowHeightsPx?.[index] ?? table.rowHeightPx ?? 30),
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders: { ...table.rowBorders },
           columnBorders,
@@ -1787,6 +1794,7 @@ export function useEditorInput(
           rowHeightsPx: Array.from({ length: table.rows }, (_, index) => table.rowHeightsPx?.[index] ?? table.rowHeightPx ?? 30),
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders: { ...table.rowBorders },
           columnBorders,
@@ -1838,6 +1846,7 @@ export function useEditorInput(
           rowHeightsPx: Array.from({ length: table.rows }, (_, index) => table.rowHeightsPx?.[index] ?? table.rowHeightPx ?? 30),
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders: { ...table.rowBorders },
           columnBorders,
@@ -1899,6 +1908,7 @@ export function useEditorInput(
           ),
           borderWidth: table.borderWidth,
           borderColor: table.borderColor,
+          tableBorderRadiusPx: table.tableBorderRadiusPx,
           cellBorders,
           rowBorders: { ...table.rowBorders },
           columnBorders: { ...table.columnBorders },
@@ -1994,21 +2004,40 @@ export function useEditorInput(
         const nextWidth = patch.width === undefined ? table.borderWidth : normalizeWidth(patch.width);
         const baseColor = patch.color === undefined ? table.borderColor : patch.color;
         const nextColor = patch.colorless ? HIDDEN_TABLE_BORDER_COLOR : baseColor;
+        const borderSegments = { ...table.borderSegments };
 
-        const rowBorders = { ...table.rowBorders };
-        const columnBorders = { ...table.columnBorders };
-        rowBorders[String(rowStart)] = { width: nextWidth, color: nextColor };
-        rowBorders[String(rowEnd + 1)] = { width: nextWidth, color: nextColor };
-        columnBorders[String(columnStart)] = { width: nextWidth, color: nextColor };
-        columnBorders[String(columnEnd + 1)] = { width: nextWidth, color: nextColor };
+        // Apply to all border segments that belong to the selected cell block
+        // (including inner grid lines when multiple cells are selected).
+        for (let r = rowStart; r <= rowEnd + 1; r++) {
+          for (let c = columnStart; c <= columnEnd; c++) {
+            borderSegments[`h:${r}:${c}`] = { width: nextWidth, color: nextColor };
+          }
+        }
+        for (let c = columnStart; c <= columnEnd + 1; c++) {
+          for (let r = rowStart; r <= rowEnd; r++) {
+            borderSegments[`v:${c}:${r}`] = { width: nextWidth, color: nextColor };
+          }
+        }
 
         return {
           ...table,
-          rowBorders,
-          columnBorders,
-          borderSegments: { ...table.borderSegments },
+          rowBorders: { ...table.rowBorders },
+          columnBorders: { ...table.columnBorders },
+          borderSegments,
         };
       });
+    },
+    [patchTableAtOffset, cursorRef],
+  );
+
+  const setTableBorderRadius = useCallback(
+    (radiusPx: number, tableOffset?: number) => {
+      const targetOffset = Number.isFinite(tableOffset) ? Number(tableOffset) : cursorRef.current;
+      const nextRadius = Math.max(0, Math.min(24, Math.round(radiusPx)));
+      patchTableAtOffset(targetOffset, (table) => ({
+        ...table,
+        tableBorderRadiusPx: nextRadius,
+      }));
     },
     [patchTableAtOffset, cursorRef],
   );
@@ -2358,6 +2387,7 @@ export function useEditorInput(
     deleteTable,
     sortTableByColumn,
     setTableBorders,
+    setTableBorderRadius,
     setImageAlign,
     setImageWidthPct,
     setImageRotationDeg,

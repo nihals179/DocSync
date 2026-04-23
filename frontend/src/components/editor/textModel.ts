@@ -516,6 +516,7 @@ export type TableTokenMeta = {
   rowHeightPx?: number;
   columnWidthsPx?: number[];
   rowHeightsPx?: number[];
+  tableBorderRadiusPx?: number;
   borderWidth: number;
   borderColor: string | null;
   cellBorders: Record<string, { width: number; color: string | null }>;
@@ -554,6 +555,11 @@ function parseImageWrap(value: string | undefined): ImageWrap {
 function clampTableBorderWidth(value: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.max(0, Math.min(8, Math.round(value)));
+}
+
+function clampTableBorderRadiusPx(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(24, Math.round(value)));
 }
 
 function clampTableWidthPx(value: number): number {
@@ -724,7 +730,22 @@ export function updateCellRunsFromText(oldRuns: Run[], newText: string): Run[] {
   const insertText = newText.slice(prefixLen, newText.length - suffixLen);
 
   const effectiveRuns = oldRuns.length > 0 ? oldRuns : [makeRun('', { ...DEFAULT_RUN_FMT })];
-  const insertFmt = getFormatAt(effectiveRuns, deleteFrom);
+  const resolveInsertFmt = () => {
+    // For pure insertions at a run boundary, prefer the run on the right.
+    // This keeps typed text aligned/styled with the visual line at the caret.
+    if (deleteFrom === deleteTo) {
+      let pos = 0;
+      for (const run of effectiveRuns) {
+        const end = pos + run.text.length;
+        if (deleteFrom === pos || deleteFrom < end) {
+          return toRunFmt(run);
+        }
+        pos = end;
+      }
+    }
+    return getFormatAt(effectiveRuns, deleteFrom);
+  };
+  const insertFmt = resolveInsertFmt();
   let result: Run[] = deleteFrom < deleteTo ? deleteRange(oldRuns, deleteFrom, deleteTo) : [...oldRuns];
   if (insertText.length > 0) {
     result = insertRun(result, deleteFrom, makeRun(insertText, insertFmt));
@@ -891,6 +912,10 @@ export function parseTableToken(value: string): TableTokenMeta | null {
   const rawRowHeightPx = Number.parseInt(fields.get('rh') ?? '', 10);
   const rowHeightPx = Number.isFinite(rawRowHeightPx)
     ? clampTableRowHeightPx(rawRowHeightPx)
+    : undefined;
+  const rawTableBorderRadiusPx = Number.parseInt(fields.get('br') ?? '', 10);
+  const tableBorderRadiusPx = Number.isFinite(rawTableBorderRadiusPx)
+    ? clampTableBorderRadiusPx(rawTableBorderRadiusPx)
     : undefined;
   const borderWidth = clampTableBorderWidth(Number.parseInt(fields.get('bw') ?? '1', 10));
   const borderColor = parseTableBorderColor(fields.get('bc'));
@@ -1200,6 +1225,7 @@ export function parseTableToken(value: string): TableTokenMeta | null {
     rowHeightPx,
     columnWidthsPx,
     rowHeightsPx,
+    tableBorderRadiusPx,
     borderWidth,
     borderColor,
     cellBorders,
@@ -1233,6 +1259,10 @@ export function buildTableToken(meta: TableTokenMeta): string {
         clampTableRowHeightPx(Number(meta.rowHeightsPx?.[index] ?? rowHeightPx ?? 30)),
       )
     : undefined;
+  const tableBorderRadiusPx =
+    meta.tableBorderRadiusPx === undefined
+      ? undefined
+      : clampTableBorderRadiusPx(meta.tableBorderRadiusPx);
   const borderWidth = clampTableBorderWidth(meta.borderWidth);
   const borderColor = meta.borderColor;
   const cells = Array.from({ length: rows }, (_, rowIndex) =>
@@ -1321,6 +1351,7 @@ export function buildTableToken(meta: TableTokenMeta): string {
     rowHeightPx === undefined ? null : `rh=${rowHeightPx}`,
     columnWidthsPx === undefined ? null : `cws=${encodeURIComponent(JSON.stringify(columnWidthsPx))}`,
     rowHeightsPx === undefined ? null : `rhs=${encodeURIComponent(JSON.stringify(rowHeightsPx))}`,
+    tableBorderRadiusPx === undefined ? null : `br=${tableBorderRadiusPx}`,
   ]
     .filter(Boolean)
     .join('|');

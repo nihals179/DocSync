@@ -5,6 +5,7 @@ import {
   computeLineHeight,
   DEFAULT_RUN_FMT,
   getFormatAt,
+  getTableTokenAtOffset,
   getTableTokenRanges,
   runsToText,
   type Run,
@@ -74,6 +75,10 @@ export type TableHit = {
   box: TableBox;
   row: number;
   column: number;
+};
+
+export type TableTextHit = TableHit & {
+  offset: number;
 };
 
 export type TableSelectionRange = {
@@ -203,6 +208,33 @@ export function useEditorDraw(
       return Boolean(meta && isInlineWrap(meta.wrap));
     });
   }, []);
+
+  const traceRoundedRect = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      radius: number,
+    ) => {
+      const r = Math.max(0, Math.min(radius, Math.floor(Math.min(width, height) / 2)));
+      if (r <= 0) {
+        ctx.rect(x, y, width, height);
+        return;
+      }
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + width - r, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+      ctx.lineTo(x + width, y + height - r);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+      ctx.lineTo(x + r, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+    },
+    [],
+  );
 
   const buildImageDimsMap = useCallback(() => {
     const imageDims = new Map<string, { w: number; h: number }>();
@@ -466,6 +498,20 @@ export function useEditorDraw(
           const metrics = getTableRenderMetrics(tableMeta, textAreaWidth, imageDimsForLayout);
           const boxX = padLeft + seg.x;
           const boxY = vl.y + (vl.lineH - metrics.boxHeight) / 2;
+          const tableRadius = Math.max(
+            0,
+            Math.min(
+              24,
+              Math.round(tableMeta.tableBorderRadiusPx ?? 0),
+            ),
+          );
+          const hasRoundedTableBorder = tableRadius > 0;
+          if (hasRoundedTableBorder) {
+            ctx.save();
+            ctx.beginPath();
+            traceRoundedRect(ctx, boxX, boxY, metrics.boxWidth, metrics.boxHeight, tableRadius);
+            ctx.clip();
+          }
           const selectedTableHit = selectedTableHitRef.current;
           const tableSelection = tableSelectionRangeRef.current;
           const hoveredLine = hoveredTableLineRef.current;
@@ -756,7 +802,6 @@ export function useEditorDraw(
               const tableImageBelowGapY = 12;
               const textStartX = x;
               const textMaxWidth = Math.max(12, cellWidth - cellPadStartX - cellPadEndX);
-              const textAlign = primaryFmt.textAlign ?? 'left';
               const suppressTextWhileEditing =
                 isEditingCell &&
                 imageRanges.length === 0 &&
@@ -1012,9 +1057,10 @@ export function useEditorDraw(
 
                   let drawX = baseX;
                   if (!chunkStartsInLane && baseX === textStartX) {
-                    if (textAlign === 'center') {
+                    const chunkTextAlign = lineFmt.textAlign ?? 'left';
+                    if (chunkTextAlign === 'center') {
                       drawX = baseX + Math.max(0, (baseWidth - totalLineWidth) / 2);
-                    } else if (textAlign === 'right') {
+                    } else if (chunkTextAlign === 'right') {
                       drawX = baseX + Math.max(0, baseWidth - totalLineWidth);
                     }
                   }
@@ -1240,6 +1286,27 @@ export function useEditorDraw(
             ctx.restore();
           }
 
+          if (hasRoundedTableBorder) {
+            ctx.restore();
+            const outerBorderWidth = Math.max(0.5, tableMeta.borderWidth || 1);
+            if (tableMeta.borderColor && outerBorderWidth > 0) {
+              ctx.save();
+              ctx.strokeStyle = tableMeta.borderColor;
+              ctx.lineWidth = outerBorderWidth;
+              ctx.beginPath();
+              traceRoundedRect(
+                ctx,
+                boxX + outerBorderWidth / 2,
+                boxY + outerBorderWidth / 2,
+                Math.max(1, metrics.boxWidth - outerBorderWidth),
+                Math.max(1, metrics.boxHeight - outerBorderWidth),
+                Math.max(0, tableRadius - outerBorderWidth / 2),
+              );
+              ctx.stroke();
+              ctx.restore();
+            }
+          }
+
           lineOffset += seg.text.length;
           tableBoxesRef.current.push({
             start: segStart,
@@ -1436,8 +1503,8 @@ export function useEditorDraw(
       document.activeElement === tableInputRef.current;
 
     // Draw insertion caret (cursor) with image-aware anchors.
-    // Skip canvas caret while the table textarea owns focus to avoid duplicate cursors.
-    if (blinkRef.current && !hasSelection && !isTableCellEditingRef.current && !tableEditorFocused) {
+    // Skip canvas caret only if a native table textarea owns focus to avoid duplicate cursors.
+    if (blinkRef.current && !hasSelection && !tableEditorFocused) {
       const cursor = cursorRef.current;
       let caretX = padLeft;
       let caretY = padTop;
@@ -1838,6 +1905,23 @@ export function useEditorDraw(
               if (placedTableCaret) {
                 // Wrapped geometry solved in-cell caret placement.
               } else {
+              if (cellValue.length === 0) {
+                const emptyAlign = fmt.textAlign ?? 'left';
+                const innerWidth = Math.max(0, innerRight - innerLeft);
+                caretX =
+                  emptyAlign === 'center'
+                    ? innerLeft + Math.max(0, innerWidth / 2)
+                    : emptyAlign === 'right'
+                      ? innerLeft + Math.max(0, innerWidth)
+                      : innerLeft;
+                caretY = cellY + cellPadY;
+                caretH = Math.max(16, fmt.fontSize);
+                placedTableCaret = true;
+              }
+
+              if (placedTableCaret) {
+                // empty-cell alignment solved placement for this table cell
+              } else {
 
               // Anchor fallback from the nearest image in this cell when caret is after it.
               let lastImageIndex = -1;
@@ -1995,6 +2079,7 @@ export function useEditorDraw(
                 caretY = cellY + cellPadY + lineYOffset;
                 caretH = Math.max(16, fmt.fontSize);
                 placedTableCaret = true;
+              }
               }
               }
             }
@@ -2636,6 +2721,202 @@ export function useEditorDraw(
     [canvasRef, getTrackIndexFromOffsets],
   );
 
+  const getTableTextHitAtClientXY = useCallback(
+    (clientX: number, clientY: number): TableTextHit | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      const tableHit = getTableHitAtClientXY(clientX, clientY);
+      if (!tableHit) return null;
+
+      const flatText = runsToText(runsRef.current);
+      const tableMeta = getTableTokenAtOffset(flatText, tableHit.box.start);
+      if (!tableMeta) {
+        return { ...tableHit, offset: 0 };
+      }
+
+      const row = tableHit.row;
+      const column = tableHit.column;
+      const cellRuns = tableMeta.cells?.[row]?.[column] ?? [];
+      const cellText = runsToText(cellRuns);
+      if (cellText.length === 0) {
+        return { ...tableHit, offset: 0 };
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
+      const paperTopPaddingPx =
+        isPaperMode && paperWidthMm && paperWidthMm > 0
+          ? (width * STANDARD_PAPER_TOP_MARGIN_MM) / paperWidthMm
+          : undefined;
+      const { textAreaWidth } = getLayoutMetrics(
+        width,
+        leftMargin,
+        rightMargin,
+        isPaperMode,
+        curFmtRef.current.fontSize,
+        paperTopPaddingPx,
+      );
+      const metrics = getTableRenderMetrics(tableMeta, textAreaWidth, buildImageDimsMap());
+
+      const cellPadding = Math.max(2, Math.min(32, Math.round(tableMeta.cellPaddingPx ?? 8)));
+      const cellPadStartX = Math.max(
+        2,
+        Math.min(
+          Math.max(2, Math.round((metrics.columnWidths[column] ?? metrics.cellWidth) - 4)),
+          Math.round(tableMeta.columnStartPaddingPx?.[column] ?? cellPadding),
+        ),
+      );
+      const cellPadEndX = cellPadding;
+      const cellPadY = cellPadding + 1;
+      const textStartX = tableHit.box.x + metrics.columnOffsets[column] + cellPadStartX;
+      const textStartY = tableHit.box.y + metrics.rowOffsets[row] + cellPadY;
+      const textMaxWidth = Math.max(
+        12,
+        (metrics.columnWidths[column] ?? metrics.cellWidth) - cellPadStartX - cellPadEndX,
+      );
+      const clickX = clientX - rect.left;
+      const clickY = clientY - rect.top;
+      const localX = Math.max(0, clickX - textStartX);
+      const localY = clickY - textStartY;
+
+      const measureRangeWidth = (from: number, to: number) => {
+        let measured = 0;
+        let pos = 0;
+        for (const run of cellRuns) {
+          const runEnd = pos + run.text.length;
+          if (runEnd > from && pos < to) {
+            const seg = run.text.slice(Math.max(0, from - pos), Math.min(run.text.length, to - pos));
+            if (seg) {
+              ctx.font = buildFont(run.fontSize, run.bold, run.italic, run.fontFamily);
+              measured += ctx.measureText(seg).width;
+            }
+          }
+          pos = runEnd;
+          if (pos >= to) break;
+        }
+        return measured;
+      };
+
+      type WrappedLine = {
+        start: number;
+        end: number;
+        y: number;
+        lineH: number;
+        drawX: number;
+      };
+
+      const wrappedLines: WrappedLine[] = [];
+      let lineCursorY = 0;
+      let logicalLineStart = 0;
+
+      const pushWrappedSlices = (lineStart: number, lineEnd: number) => {
+        if (lineStart >= lineEnd) {
+          const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, Math.max(0, lineStart - 1)) };
+          const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
+          wrappedLines.push({ start: lineStart, end: lineStart, y: lineCursorY, lineH, drawX: 0 });
+          lineCursorY += lineH;
+          return;
+        }
+
+        let start = lineStart;
+        while (start < lineEnd) {
+          const probeOffset = Math.max(0, Math.min(cellText.length, start + 1));
+          const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
+          const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
+          const align = fmt.textAlign ?? 'left';
+
+          let bestEnd = start + 1;
+          let breakAt = -1;
+          for (let i = start + 1; i <= lineEnd; i += 1) {
+            const w = measureRangeWidth(start, i);
+            if (w <= textMaxWidth) {
+              bestEnd = i;
+              const ch = cellText[i - 1];
+              if (ch === ' ' || ch === '-') breakAt = i;
+            } else {
+              break;
+            }
+          }
+          if (bestEnd < lineEnd && breakAt > start + 1) bestEnd = breakAt;
+
+          const lineWidth = measureRangeWidth(start, bestEnd);
+          const drawX =
+            align === 'center'
+              ? Math.max(0, (textMaxWidth - lineWidth) / 2)
+              : align === 'right'
+                ? Math.max(0, textMaxWidth - lineWidth)
+                : 0;
+          wrappedLines.push({ start, end: bestEnd, y: lineCursorY, lineH, drawX });
+          lineCursorY += lineH;
+
+          start = bestEnd;
+          while (start < lineEnd && cellText[start] === ' ') start += 1;
+        }
+      };
+
+      for (let i = 0; i <= cellText.length; i += 1) {
+        if (i === cellText.length || cellText[i] === '\n') {
+          pushWrappedSlices(logicalLineStart, i);
+          logicalLineStart = i + 1;
+        }
+      }
+      if (wrappedLines.length === 0) {
+        return { ...tableHit, offset: 0 };
+      }
+
+      const lastLine = wrappedLines[wrappedLines.length - 1];
+      if (localY < wrappedLines[0].y) {
+        return { ...tableHit, offset: 0 };
+      }
+      if (localY > lastLine.y + lastLine.lineH) {
+        return { ...tableHit, offset: cellText.length };
+      }
+
+      let targetLine = wrappedLines[wrappedLines.length - 1];
+      for (const line of wrappedLines) {
+        if (localY >= line.y && localY <= line.y + line.lineH) {
+          targetLine = line;
+          break;
+        }
+      }
+
+      const relativeX = Math.max(0, localX - targetLine.drawX);
+      const lineWidth = measureRangeWidth(targetLine.start, targetLine.end);
+      if (relativeX <= 0) {
+        return { ...tableHit, offset: targetLine.start };
+      }
+      if (relativeX >= lineWidth) {
+        return { ...tableHit, offset: targetLine.end };
+      }
+
+      let nearestOffset = targetLine.start;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      for (let i = targetLine.start; i <= targetLine.end; i += 1) {
+        const caretX = measureRangeWidth(targetLine.start, i);
+        const distance = Math.abs(relativeX - caretX);
+        if (distance < nearestDistance || (distance === nearestDistance && i > nearestOffset)) {
+          nearestDistance = distance;
+          nearestOffset = i;
+        }
+      }
+      return { ...tableHit, offset: nearestOffset };
+    },
+    [
+      canvasRef,
+      runsRef,
+      curFmtRef,
+      leftMargin,
+      rightMargin,
+      isPaperMode,
+      paperWidthMm,
+      buildImageDimsMap,
+      getTableHitAtClientXY,
+    ],
+  );
+
   const getTableBorderLineAtClientXY = useCallback(
     (clientX: number, clientY: number): TableLineHover | null => {
       const canvas = canvasRef.current;
@@ -2727,6 +3008,7 @@ export function useEditorDraw(
     getImageBoxAtOffset,
     getResolvedImageBox,
     getTableHitAtClientXY,
+    getTableTextHitAtClientXY,
     getTableBorderLineAtClientXY,
     getTableBoxAtOffset,
     getTableCellImageBox,

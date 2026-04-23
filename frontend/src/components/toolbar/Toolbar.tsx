@@ -141,7 +141,16 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const [linkPopupOpen, setLinkPopupOpen] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  const [tablePanelOpen, setTablePanelOpen] = useState(false);
+  const [tableBorderColor, setTableBorderColor] = useState('#cbd5e1');
+  const [tableBorderWidth, setTableBorderWidth] = useState(1);
+  const [tableBorderRadius, setTableBorderRadius] = useState(0);
   const linkLabelRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!cursorFormat?.tableSelected) return;
+    setTableBorderRadius(Math.max(0, Math.min(24, Math.round(cursorFormat.tableBorderRadiusPx ?? 0))));
+  }, [cursorFormat?.tableSelected, cursorFormat?.tableBorderRadiusPx]);
 
   const handleInsertLink = () => {
     setLinkLabel('');
@@ -205,8 +214,49 @@ const Toolbar: React.FC<ToolbarProps> = ({
     refocus();
   };
   const handleToggleTablePanel = () => {
-    editorRef.current?.toggleTablePanel();
-    refocus();
+    setTablePanelOpen((prev) => !prev);
+  };
+
+  const handleSetTableTextAlign = (align: 'left' | 'center' | 'right') => {
+    editorRef.current?.setTableTextAlign(align);
+  };
+
+  const handleSetTableBorderColor = (color: string) => {
+    setTableBorderColor(color);
+    editorRef.current?.setTableBorderColor(color);
+  };
+
+  const handleSetTableBorderWidth = (width: number) => {
+    const next = Math.max(0, Math.min(8, Math.round(width)));
+    setTableBorderWidth(next);
+    editorRef.current?.setTableBorderWidth(next);
+  };
+
+  const handleSetTableNoBorders = () => {
+    setTableBorderWidth(0);
+    editorRef.current?.setTableNoBorders();
+  };
+
+  const handleSetTableBorderRadius = (radiusPx: number) => {
+    const next = Math.max(0, Math.min(24, Math.round(radiusPx)));
+    setTableBorderRadius(next);
+    editorRef.current?.setTableBorderRadius(next);
+  };
+
+  const handleAddTableRowAbove = () => {
+    editorRef.current?.addTableRowAbove();
+  };
+
+  const handleAddTableRowBelow = () => {
+    editorRef.current?.addTableRowBelow();
+  };
+
+  const handleAddTableColumnLeft = () => {
+    editorRef.current?.addTableColumnLeft();
+  };
+
+  const handleAddTableColumnRight = () => {
+    editorRef.current?.addTableColumnRight();
   };
 
   const handleFormatPainter = () => {
@@ -301,14 +351,14 @@ const Toolbar: React.FC<ToolbarProps> = ({
               />
             </>
           )}
-          {cursorFormat?.tableSelected && (
+          {(cursorFormat?.tableSelected || tablePanelOpen) && (
             <>
               <ToolbarDivider />
               <ToolbarButton
                 title="Table Options"
                 icon="table_rows"
                 label="Table Options"
-                active={cursorFormat.tablePanelOpen}
+                active={tablePanelOpen}
                 onClick={handleToggleTablePanel}
               />
             </>
@@ -333,6 +383,199 @@ const Toolbar: React.FC<ToolbarProps> = ({
           </span>
         </div>
       </div>
+    </div>
+
+    <div
+      className="pointer-events-none fixed inset-0 z-50 transition"
+      aria-hidden={!tablePanelOpen}
+    >
+      <aside
+        className={`pointer-events-auto absolute bottom-0 right-0 top-16 w-75 max-w-[92vw] border-l border-slate-200/90 bg-white/98 shadow-[-10px_14px_34px_rgba(15,23,42,0.16)] backdrop-blur transition-transform duration-200 ${tablePanelOpen ? 'translate-x-0' : 'translate-x-[108%]'}`}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 px-3.5 py-2.5">
+          <div className="flex items-center gap-2 text-slate-800">
+            <span className="material-icons text-cyan-700" style={{ fontSize: 17 }}>table_rows</span>
+            <span className="text-[13px] font-semibold">Table Options</span>
+          </div>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setTablePanelOpen(false)}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+            title="Close table options"
+          >
+            <span className="material-icons" style={{ fontSize: 16 }}>close</span>
+          </button>
+        </div>
+
+        <div className="h-[calc(100%-50px)] space-y-4 overflow-y-auto p-3.5">
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Text Alignment</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                title="Align left"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSetTableTextAlign('left')}
+                className={`flex h-8 items-center justify-center rounded-md border text-xs font-medium ${cursorFormat?.textAlign === 'left' ? 'border-cyan-500 bg-cyan-50 text-cyan-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                <span className="material-icons" style={{ fontSize: 18 }}>format_align_left</span>
+              </button>
+              <button
+                type="button"
+                title="Align center"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSetTableTextAlign('center')}
+                className={`flex h-8 items-center justify-center rounded-md border text-xs font-medium ${cursorFormat?.textAlign === 'center' ? 'border-cyan-500 bg-cyan-50 text-cyan-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                <span className="material-icons" style={{ fontSize: 18 }}>format_align_center</span>
+              </button>
+              <button
+                type="button"
+                title="Align right"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSetTableTextAlign('right')}
+                className={`flex h-8 items-center justify-center rounded-md border text-xs font-medium ${cursorFormat?.textAlign === 'right' ? 'border-cyan-500 bg-cyan-50 text-cyan-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                <span className="material-icons" style={{ fontSize: 18 }}>format_align_right</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Structure</div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleAddTableRowAbove}
+                className="flex h-8 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                title="Add row above"
+              >
+                <span className="material-icons" style={{ fontSize: 14 }}>add</span>
+                Row Above
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleAddTableRowBelow}
+                className="flex h-8 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                title="Add row below"
+              >
+                <span className="material-icons" style={{ fontSize: 14 }}>add</span>
+                Row Below
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleAddTableColumnLeft}
+                className="flex h-8 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                title="Add column left"
+              >
+                <span className="material-icons" style={{ fontSize: 14 }}>add</span>
+                Col Left
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleAddTableColumnRight}
+                className="flex h-8 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                title="Add column right"
+              >
+                <span className="material-icons" style={{ fontSize: 14 }}>add</span>
+                Col Right
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Borders</div>
+            <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Border Color</div>
+                <div className="text-[11px] text-slate-400">Applies to selected table edges</div>
+              </div>
+              <input
+                type="color"
+                value={tableBorderColor}
+                onChange={(e) => handleSetTableBorderColor(e.target.value)}
+                className="h-9 w-14 cursor-pointer rounded-md border border-slate-200 bg-white p-1"
+                title="Table border color"
+              />
+            </div>
+
+            <div className="mt-3">
+              <div className="mb-1.5 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Border Size</div>
+                <div className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">{tableBorderWidth}px</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={8}
+                  step={1}
+                  value={tableBorderWidth}
+                  onChange={(e) => handleSetTableBorderWidth(Number(e.target.value || 0))}
+                  className="h-2 w-full cursor-pointer accent-cyan-600"
+                  title="Table border size"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={8}
+                  step={1}
+                  value={tableBorderWidth}
+                  onChange={(e) => handleSetTableBorderWidth(Number(e.target.value || 0))}
+                  className="h-8 w-14 rounded-md border border-slate-200 px-2 text-xs text-slate-700 outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-200"
+                  title="Table border size"
+                />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={handleSetTableNoBorders}
+              className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              title="Remove borders"
+            >
+              <span className="material-icons" style={{ fontSize: 15 }}>border_clear</span>
+              No Borders
+            </button>
+
+            <div className="mt-3">
+              <div className="mb-1.5 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Roundness</div>
+                <div className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">{tableBorderRadius}px</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={tableBorderRadius}
+                  onChange={(e) => handleSetTableBorderRadius(Number(e.target.value || 0))}
+                  className="h-2 w-full cursor-pointer accent-cyan-600"
+                  title="Rounded border radius"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={tableBorderRadius}
+                  onChange={(e) => handleSetTableBorderRadius(Number(e.target.value || 0))}
+                  className="h-8 w-14 rounded-md border border-slate-200 px-2 text-xs text-slate-700 outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-200"
+                  title="Rounded border radius"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
 
     {/* Insert Link popup */}

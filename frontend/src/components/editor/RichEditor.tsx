@@ -7,6 +7,7 @@ import {
   deleteRange,
   getFormatAt,
   getImageTokenRanges,
+  getTableTokenAtOffset,
   isBulletAtOffset,
   isFormatUniform,
   isNumberListAtOffset,
@@ -182,6 +183,13 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       start: number;
       end: number;
     } | null>(null);
+    const tableTextSelectionAnchorRef = useRef<{
+      tableStart: number;
+      row: number;
+      column: number;
+      offset: number;
+    } | null>(null);
+    const isTableTextSelectingRef = useRef(false);
     const autoScrollCursorIntoViewRef = useRef(false);
     const undoStackRef = useRef<Array<{ runs: Run[]; cursor: number }>>([]);
     const redoStackRef = useRef<Array<{ runs: Run[]; cursor: number }>>([]);
@@ -192,6 +200,84 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setContentVersion((value) => value + 1);
     }, [onContentChange, onRunsChange]);
     const notifyFmt = useCallback(() => {
+      const activeCell = activeTableEditingCellRef.current;
+      if (isTableCellEditingRef.current && activeCell) {
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeCell.tableStart);
+        if (tableMeta) {
+          const cellRuns = tableMeta.cells?.[activeCell.row]?.[activeCell.column] ?? [];
+          const cellText = runsToText(cellRuns);
+          const cursorOffset =
+            tableCellCursorRef.current?.tableStart === activeCell.tableStart &&
+            tableCellCursorRef.current?.row === activeCell.row &&
+            tableCellCursorRef.current?.column === activeCell.column
+              ? tableCellCursorRef.current.offset
+              : cellText.length;
+          const safeCursor = Math.max(0, Math.min(cellText.length, cursorOffset));
+          const tableSelection = tableTextSelectionRef.current;
+          const hasTableSelection =
+            Boolean(tableSelection) &&
+            tableSelection?.tableStart === activeCell.tableStart &&
+            tableSelection?.row === activeCell.row &&
+            tableSelection?.column === activeCell.column &&
+            tableSelection.end > tableSelection.start;
+          const tableSelF = hasTableSelection ? tableSelection!.start : safeCursor;
+          const tableSelT = hasTableSelection ? tableSelection!.end : safeCursor;
+
+          const getUniformCellField = <K extends keyof RunFmt>(key: K): RunFmt[K] | null => {
+            if (!hasTableSelection || tableSelF >= tableSelT) return null;
+            let pos = 0;
+            let value: RunFmt[K] | null = null;
+            for (const run of cellRuns) {
+              const end = pos + run.text.length;
+              if (end > tableSelF && pos < tableSelT) {
+                const runValue = run[key] as RunFmt[K];
+                if (value === null) value = runValue;
+                else if (value !== runValue) return null;
+              }
+              pos = end;
+            }
+            return value;
+          };
+
+          const anchorOffset = hasTableSelection
+            ? Math.max(0, Math.min(tableSelF, Math.max(0, cellText.length - 1)))
+            : Math.max(0, Math.min(Math.max(0, safeCursor - 1), Math.max(0, cellText.length - 1)));
+          const anchorFmt = cellRuns.length > 0
+            ? getFormatAt(cellRuns, Math.max(0, Math.min(anchorOffset, cellText.length)))
+            : curFmtRef.current;
+          const tableEffectiveFmt: RunFmt = hasTableSelection
+            ? {
+                ...anchorFmt,
+                bold: isFormatUniform(cellRuns, tableSelF, tableSelT, 'bold', true),
+                italic: isFormatUniform(cellRuns, tableSelF, tableSelT, 'italic', true),
+                underline: isFormatUniform(cellRuns, tableSelF, tableSelT, 'underline', true),
+                fontFamily: getUniformCellField('fontFamily') ?? anchorFmt.fontFamily,
+                fontSize: getUniformCellField('fontSize') ?? anchorFmt.fontSize,
+                color: getUniformCellField('color') ?? anchorFmt.color,
+                highlightColor: getUniformCellField('highlightColor') ?? anchorFmt.highlightColor,
+              }
+            : anchorFmt;
+
+          onCursorFormatChange?.({
+            ...tableEffectiveFmt,
+            bullet: false,
+            numberList: false,
+            hasSpaceBeforeLine: false,
+            hasSpaceAfterLine: false,
+            imageSelected: Boolean(selectedImage),
+            imagePanelOpen: Boolean(selectedImage) && isImagePanelOpen,
+            imageAlign: (selectedImage?.meta.align as 'left' | 'center' | 'right') ?? 'center',
+            imageWidthPct: selectedImage?.meta.widthPct ?? 100,
+            tableSelected: true,
+            tablePanelOpen: true,
+            tablePartialTextSelection: hasTableSelection,
+            tableRoundedBorders: Boolean((tableMeta.tableBorderRadiusPx ?? 0) > 0),
+            tableBorderRadiusPx: Math.max(0, Math.min(24, Math.round(tableMeta.tableBorderRadiusPx ?? 0))),
+          });
+          return;
+        }
+      }
+
       const text = runsToText(runsRef.current);
       const hasSel =
         selStartRef.current !== null && selStartRef.current !== cursorRef.current;
@@ -233,6 +319,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       const numberList = isNumberListAtOffset(text, cursorRef.current);
       const hasSpaceBeforeLine = isSpaceBeforeLineAtOffset(text, cursorRef.current);
       const hasSpaceAfterLine = isSpaceAfterLineAtOffset(text, cursorRef.current);
+      const hasTableBorderSelection =
+        Boolean(selectedTableLineRef.current) || Boolean(selectedTableLineRangeRef.current);
+      const hasTableSelection = Boolean(selectedTableHitRef.current) || hasTableBorderSelection;
       onCursorFormatChange?.({
         ...effectiveFmt,
         bullet,
@@ -243,9 +332,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         imagePanelOpen: Boolean(selectedImage) && isImagePanelOpen,
         imageAlign: (selectedImage?.meta.align as 'left' | 'center' | 'right') ?? 'center',
         imageWidthPct: selectedImage?.meta.widthPct ?? 100,
-        tableSelected: false,
-        tablePanelOpen: false,
+        tableSelected: hasTableSelection,
+        tablePanelOpen: hasTableSelection,
         tablePartialTextSelection: false,
+        tableRoundedBorders: false,
+        tableBorderRadiusPx: 0,
       });
     }, [onCursorFormatChange, selectedImage, isImagePanelOpen]);
 
@@ -278,6 +369,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       getImageBoxAtClientXY,
       getImageBoxAtOffset,
       getResolvedImageBox,
+      getTableHitAtClientXY,
+      getTableTextHitAtClientXY,
+      getTableBorderLineAtClientXY,
     } = useEditorDraw(
       drawRefs,
       leftMargin,
@@ -377,6 +471,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setLineSpacing,
       toggleHighlight,
       setHighlightColor,
+      setTableCellFormat,
       toggleSpaceBeforeLine,
       toggleSpaceAfterLine,
       insertLink,
@@ -389,6 +484,14 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       setImageWrap,
       setImageAltText,
       setImageFrontOpacityPct,
+      setTableCell,
+      setTableTrackSize,
+      addTableRowAbove,
+      addTableRowBelow,
+      addTableColumnLeft,
+      addTableColumnRight,
+      setTableBorders,
+      setTableBorderRadius,
       setCursorOffset,
     } = useEditorInput(inputRefs, {
       ...inputCbs,
@@ -429,19 +532,263 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
     const handleCanvasMouseMove = useCallback(
       (e: React.MouseEvent<HTMLCanvasElement>) => {
+        if (isTableTextSelectingRef.current) {
+          if ((e.buttons & 1) === 0) {
+            isTableTextSelectingRef.current = false;
+            tableTextSelectionAnchorRef.current = null;
+            notifyFmt();
+            resetBlink();
+            draw();
+            return;
+          }
+
+          const anchor = tableTextSelectionAnchorRef.current;
+          const hit = getTableTextHitAtClientXY(e.clientX, e.clientY);
+          if (anchor && hit) {
+            const sameTable = anchor.tableStart === hit.box.start;
+            const sameCell =
+              sameTable &&
+              anchor.row === hit.row &&
+              anchor.column === hit.column;
+            if (sameCell) {
+              tableCellCursorRef.current = {
+                tableStart: hit.box.start,
+                row: hit.row,
+                column: hit.column,
+                offset: hit.offset,
+              };
+              const from = Math.min(anchor.offset, hit.offset);
+              const to = Math.max(anchor.offset, hit.offset);
+              tableTextSelectionRef.current =
+                to > from
+                  ? {
+                      tableStart: hit.box.start,
+                      row: hit.row,
+                      column: hit.column,
+                      start: from,
+                      end: to,
+                    }
+                  : null;
+              notifyFmt();
+              resetBlink();
+              draw();
+              return;
+            }
+
+            if (sameTable) {
+              // Dragging into another cell switches to cell-range selection.
+              tableTextSelectionRef.current = null;
+              tableCellCursorRef.current = null;
+              tableSelectionRangeRef.current = {
+                rowStart: anchor.row,
+                rowEnd: hit.row,
+                columnStart: anchor.column,
+                columnEnd: hit.column,
+              };
+              isTableCellEditingRef.current = false;
+              activeTableEditingCellRef.current = null;
+              notifyFmt();
+              resetBlink();
+              draw();
+              return;
+            }
+          }
+        }
+
+        const borderLine = getTableBorderLineAtClientXY(e.clientX, e.clientY);
+        if (borderLine) {
+          const prev = hoveredTableLineRef.current;
+          if (
+            !prev ||
+            prev.box.start !== borderLine.box.start ||
+            prev.axis !== borderLine.axis ||
+            prev.index !== borderLine.index ||
+            prev.segment !== borderLine.segment
+          ) {
+            hoveredTableLineRef.current = borderLine;
+            draw();
+          }
+          const canvas = canvasRef.current;
+          if (canvas) canvas.style.cursor = borderLine.axis === 'row' ? 'ns-resize' : 'ew-resize';
+          return;
+        }
+        if (hoveredTableLineRef.current) {
+          hoveredTableLineRef.current = null;
+          draw();
+        }
+
         handleMouseMove();
         const next = getImageBoxAtClientXY(e.clientX, e.clientY);
         setHoveredImage(next);
         const canvas = canvasRef.current;
         if (canvas) canvas.style.cursor = next ? 'pointer' : 'text';
       },
-      [handleMouseMove, getImageBoxAtClientXY],
+      [
+        handleMouseMove,
+        getImageBoxAtClientXY,
+        getTableTextHitAtClientXY,
+        getTableBorderLineAtClientXY,
+        notifyFmt,
+        resetBlink,
+        draw,
+      ],
     );
+
+    const handleCanvasMouseUp = useCallback(() => {
+      if (!isTableTextSelectingRef.current) return;
+      isTableTextSelectingRef.current = false;
+      tableTextSelectionAnchorRef.current = null;
+      notifyFmt();
+      resetBlink();
+      draw();
+    }, [notifyFmt, resetBlink, draw]);
 
     const handleCanvasMouseDown = useCallback(
       (e: React.MouseEvent<HTMLCanvasElement>) => {
         if (e.button !== 0) return;
         if (isMenuOpen) setIsMenuOpen(false);
+
+        const tableBorderLine = getTableBorderLineAtClientXY(e.clientX, e.clientY);
+        if (tableBorderLine) {
+          e.preventDefault();
+          const tableHitForBorder = getTableHitAtClientXY(e.clientX, e.clientY);
+          if (tableHitForBorder) {
+            selectedTableHitRef.current = tableHitForBorder;
+          }
+          hoveredTableLineRef.current = tableBorderLine;
+
+          const prev = selectedTableLineRef.current;
+          if (
+            e.shiftKey &&
+            prev &&
+            prev.box.start === tableBorderLine.box.start &&
+            prev.axis === tableBorderLine.axis
+          ) {
+            selectedTableLineRangeRef.current = {
+              box: tableBorderLine.box,
+              axis: tableBorderLine.axis,
+              indexStart: Math.min(prev.index, tableBorderLine.index),
+              indexEnd: Math.max(prev.index, tableBorderLine.index),
+              segmentStart: Math.min(prev.segment, tableBorderLine.segment),
+              segmentEnd: Math.max(prev.segment, tableBorderLine.segment),
+            };
+          } else {
+            selectedTableLineRef.current = tableBorderLine;
+            selectedTableLineRangeRef.current = null;
+          }
+
+          if (!e.shiftKey) {
+            const isRowAxis = tableBorderLine.axis === 'row';
+            const maxTrackCount = isRowAxis ? tableBorderLine.box.rows : tableBorderLine.box.columns;
+            const rawTrackIndex =
+              tableBorderLine.index <= 0
+                ? 0
+                : tableBorderLine.index >= maxTrackCount
+                  ? maxTrackCount - 1
+                  : tableBorderLine.index - 1;
+            const trackIndex = Math.max(0, Math.min(maxTrackCount - 1, rawTrackIndex));
+            const startSize = isRowAxis
+              ? Math.max(24, Math.round(tableBorderLine.box.rowHeights[trackIndex] ?? tableBorderLine.box.rowHeight))
+              : Math.max(48, Math.round(tableBorderLine.box.columnWidths[trackIndex] ?? tableBorderLine.box.cellWidth));
+            const startPointer = isRowAxis ? e.clientY : e.clientX;
+            let lastSize = startSize;
+
+            const onMove = (ev: MouseEvent) => {
+              const delta = (isRowAxis ? ev.clientY : ev.clientX) - startPointer;
+              const nextSize = isRowAxis
+                ? Math.max(24, Math.round(startSize + delta))
+                : Math.max(48, Math.min(960, Math.round(startSize + delta)));
+              lastSize = nextSize;
+              setTableTrackSize(
+                {
+                  axis: isRowAxis ? 'row' : 'column',
+                  index: trackIndex,
+                  sizePx: nextSize,
+                },
+                tableBorderLine.box.start,
+                false,
+              );
+            };
+
+            const onUp = () => {
+              setTableTrackSize(
+                {
+                  axis: isRowAxis ? 'row' : 'column',
+                  index: trackIndex,
+                  sizePx: lastSize,
+                },
+                tableBorderLine.box.start,
+                true,
+              );
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }
+
+          tableSelectionRangeRef.current = null;
+          isTableCellEditingRef.current = false;
+          activeTableEditingCellRef.current = null;
+          tableCellCursorRef.current = null;
+          tableTextSelectionRef.current = null;
+          tableTextSelectionAnchorRef.current = null;
+          isTableTextSelectingRef.current = false;
+          notifyFmt();
+          resetBlink();
+          draw();
+          return;
+        }
+
+        const tableHit = getTableHitAtClientXY(e.clientX, e.clientY);
+        if (tableHit) {
+          e.preventDefault();
+          selectedTableHitRef.current = tableHit;
+          tableSelectionRangeRef.current = {
+            rowStart: tableHit.row,
+            rowEnd: tableHit.row,
+            columnStart: tableHit.column,
+            columnEnd: tableHit.column,
+          };
+          selectedTableLineRef.current = null;
+          selectedTableLineRangeRef.current = null;
+          hoveredTableLineRef.current = null;
+          isTableCellEditingRef.current = true;
+          activeTableEditingCellRef.current = {
+            tableStart: tableHit.box.start,
+            row: tableHit.row,
+            column: tableHit.column,
+          };
+
+          const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), tableHit.box.start);
+          const cellText = tableMeta
+            ? runsToText(tableMeta.cells?.[tableHit.row]?.[tableHit.column] ?? [])
+            : '';
+          const textHit = getTableTextHitAtClientXY(e.clientX, e.clientY);
+          const initialOffset = textHit ? textHit.offset : cellText.length;
+          tableCellCursorRef.current = {
+            tableStart: tableHit.box.start,
+            row: tableHit.row,
+            column: tableHit.column,
+            offset: initialOffset,
+          };
+          tableTextSelectionRef.current = null;
+          tableTextSelectionAnchorRef.current = {
+            tableStart: tableHit.box.start,
+            row: tableHit.row,
+            column: tableHit.column,
+            offset: initialOffset,
+          };
+          isTableTextSelectingRef.current = true;
+
+          setCursorOffset(tableHit.box.start);
+          notifyFmt();
+          resetBlink();
+          draw();
+          return;
+        }
+
         const hit = getImageBoxAtClientXY(e.clientX, e.clientY);
         if (hit) {
           e.preventDefault();
@@ -464,9 +811,33 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         }
         setSelectedImage(null);
         setIsImagePanelOpen(false);
+        selectedTableHitRef.current = null;
+        tableSelectionRangeRef.current = null;
+        hoveredTableLineRef.current = null;
+        selectedTableLineRef.current = null;
+        selectedTableLineRangeRef.current = null;
+        isTableCellEditingRef.current = false;
+        activeTableEditingCellRef.current = null;
+        tableCellCursorRef.current = null;
+        tableTextSelectionRef.current = null;
+        tableTextSelectionAnchorRef.current = null;
+        isTableTextSelectingRef.current = false;
         handleMouseDown(e);
       },
-      [getImageBoxAtClientXY, setCursorOffset, handleMouseDown, runsRef, isMenuOpen],
+      [
+        getTableHitAtClientXY,
+        getTableBorderLineAtClientXY,
+        getTableTextHitAtClientXY,
+        getImageBoxAtClientXY,
+        setCursorOffset,
+        handleMouseDown,
+        runsRef,
+        isMenuOpen,
+        setTableTrackSize,
+        notifyFmt,
+        resetBlink,
+        draw,
+      ],
     );
 
     const handleCanvasDoubleClick = useCallback(
@@ -787,6 +1158,157 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
     const handleCanvasKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+        const activeTable = activeTableEditingCellRef.current;
+        if (isTableCellEditingRef.current && activeTable) {
+          const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeTable.tableStart);
+          if (tableMeta) {
+            const currentText = runsToText(tableMeta.cells?.[activeTable.row]?.[activeTable.column] ?? []);
+            const currentOffset =
+              tableCellCursorRef.current?.tableStart === activeTable.tableStart &&
+              tableCellCursorRef.current?.row === activeTable.row &&
+              tableCellCursorRef.current?.column === activeTable.column
+                ? tableCellCursorRef.current.offset
+                : currentText.length;
+            const safeOffset = Math.max(0, Math.min(currentText.length, currentOffset));
+            const tableSelection = tableTextSelectionRef.current;
+            const hasTableSelection =
+              Boolean(tableSelection) &&
+              tableSelection?.tableStart === activeTable.tableStart &&
+              tableSelection?.row === activeTable.row &&
+              tableSelection?.column === activeTable.column &&
+              tableSelection.end > tableSelection.start;
+            const selectedFrom = hasTableSelection ? tableSelection!.start : safeOffset;
+            const selectedTo = hasTableSelection ? tableSelection!.end : safeOffset;
+
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              isTableCellEditingRef.current = false;
+              activeTableEditingCellRef.current = null;
+              tableTextSelectionRef.current = null;
+              tableTextSelectionAnchorRef.current = null;
+              isTableTextSelectingRef.current = false;
+              tableSelectionRangeRef.current = null;
+              selectedTableHitRef.current = null;
+              tableCellCursorRef.current = null;
+              notifyFmt();
+              resetBlink();
+              draw();
+              return;
+            }
+
+            if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'a') {
+              e.preventDefault();
+              tableTextSelectionRef.current = null;
+              tableTextSelectionAnchorRef.current = null;
+              isTableTextSelectingRef.current = false;
+              tableCellCursorRef.current = null;
+              tableSelectionRangeRef.current = {
+                rowStart: 0,
+                rowEnd: Math.max(0, tableMeta.rows - 1),
+                columnStart: 0,
+                columnEnd: Math.max(0, tableMeta.columns - 1),
+              };
+              isTableCellEditingRef.current = false;
+              activeTableEditingCellRef.current = null;
+              notifyFmt();
+              resetBlink();
+              draw();
+              return;
+            }
+
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              e.preventDefault();
+              if (e.shiftKey) {
+                const anchorOffset =
+                  hasTableSelection && safeOffset === selectedFrom ? selectedTo : selectedFrom;
+                const nextOffset =
+                  e.key === 'ArrowLeft'
+                    ? Math.max(0, safeOffset - 1)
+                    : Math.min(currentText.length, safeOffset + 1);
+                const start = Math.min(anchorOffset, nextOffset);
+                const end = Math.max(anchorOffset, nextOffset);
+                tableTextSelectionRef.current =
+                  end > start
+                    ? {
+                        tableStart: activeTable.tableStart,
+                        row: activeTable.row,
+                        column: activeTable.column,
+                        start,
+                        end,
+                      }
+                    : null;
+                tableCellCursorRef.current = {
+                  tableStart: activeTable.tableStart,
+                  row: activeTable.row,
+                  column: activeTable.column,
+                  offset: nextOffset,
+                };
+                notifyFmt();
+                resetBlink();
+                draw();
+                return;
+              }
+
+              const nextOffset = hasTableSelection
+                ? e.key === 'ArrowLeft'
+                  ? selectedFrom
+                  : selectedTo
+                : e.key === 'ArrowLeft'
+                  ? Math.max(0, safeOffset - 1)
+                  : Math.min(currentText.length, safeOffset + 1);
+              tableTextSelectionRef.current = null;
+              tableCellCursorRef.current = {
+                tableStart: activeTable.tableStart,
+                row: activeTable.row,
+                column: activeTable.column,
+                offset: nextOffset,
+              };
+              notifyFmt();
+              resetBlink();
+              draw();
+              return;
+            }
+
+            let nextText: string | null = null;
+            let nextOffset = safeOffset;
+            if (e.key === 'Backspace') {
+              if (hasTableSelection) {
+                nextText = currentText.slice(0, selectedFrom) + currentText.slice(selectedTo);
+                nextOffset = selectedFrom;
+              } else if (safeOffset > 0) {
+                nextText = currentText.slice(0, safeOffset - 1) + currentText.slice(safeOffset);
+                nextOffset = safeOffset - 1;
+              }
+            } else if (e.key === 'Delete') {
+              if (hasTableSelection) {
+                nextText = currentText.slice(0, selectedFrom) + currentText.slice(selectedTo);
+                nextOffset = selectedFrom;
+              } else if (safeOffset < currentText.length) {
+                nextText = currentText.slice(0, safeOffset) + currentText.slice(safeOffset + 1);
+              }
+            } else if (e.key === 'Enter') {
+              nextText = currentText.slice(0, selectedFrom) + '\n' + currentText.slice(selectedTo);
+              nextOffset = selectedFrom + 1;
+            } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              nextText = currentText.slice(0, selectedFrom) + e.key + currentText.slice(selectedTo);
+              nextOffset = selectedFrom + 1;
+            }
+
+            if (nextText !== null) {
+              e.preventDefault();
+              tableTextSelectionRef.current = null;
+              tableCellCursorRef.current = {
+                tableStart: activeTable.tableStart,
+                row: activeTable.row,
+                column: activeTable.column,
+                offset: nextOffset,
+              };
+              setTableCell(activeTable.row, activeTable.column, nextText, activeTable.tableStart, true);
+              return;
+            }
+          }
+        }
+
         const isMod = e.metaKey || e.ctrlKey;
         if (isMod && !e.shiftKey && e.key.toLowerCase() === 'x') {
           e.preventDefault();
@@ -795,7 +1317,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         }
         handleKeyDown(e);
       },
-      [cutSelectionToClipboard, handleKeyDown],
+      [cutSelectionToClipboard, handleKeyDown, runsRef, setTableCell, notifyFmt, resetBlink, draw],
     );
 
     const applyImageMutation = useCallback(
@@ -806,6 +1328,138 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         syncImageOverlay(current ?? selectedImage ?? hoveredImage ?? null);
       },
       [setCursorOffset, syncImageOverlay, getImageBoxAtOffset, selectedImage, hoveredImage],
+    );
+
+    const applyFormatToActiveTableCell = useCallback(
+      (patch: Partial<RunFmt>, options?: { requireSelection?: boolean; allowWhenEmpty?: boolean }) => {
+        if (!isTableCellEditingRef.current) return false;
+        const activeCell = activeTableEditingCellRef.current;
+        if (!activeCell) return false;
+
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeCell.tableStart);
+        if (!tableMeta) return false;
+
+        const cellText = runsToText(tableMeta.cells?.[activeCell.row]?.[activeCell.column] ?? []);
+        const tableSelection = tableTextSelectionRef.current;
+        const hasTableSelection =
+          Boolean(tableSelection) &&
+          tableSelection?.tableStart === activeCell.tableStart &&
+          tableSelection?.row === activeCell.row &&
+          tableSelection?.column === activeCell.column &&
+          tableSelection.end > tableSelection.start;
+        if (options?.requireSelection && !hasTableSelection) {
+          if (options.allowWhenEmpty && cellText.length === 0) {
+            // Allow formatting empty cells so insertion caret/next typing can inherit style.
+          } else {
+          return true;
+          }
+        }
+        const rangeFrom = hasTableSelection ? tableSelection!.start : 0;
+        const rangeTo = hasTableSelection ? tableSelection!.end : cellText.length;
+        setTableCellFormat(
+          activeCell.row,
+          activeCell.column,
+          patch,
+          rangeFrom,
+          rangeTo,
+          activeCell.tableStart,
+          true,
+        );
+        return true;
+      },
+      [runsRef, setTableCellFormat],
+    );
+
+    const applyTableTextAlignToSelectedLines = useCallback(
+      (align: 'left' | 'center' | 'right') => {
+        if (!isTableCellEditingRef.current) return false;
+        const activeCell = activeTableEditingCellRef.current;
+        if (!activeCell) return false;
+
+        const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), activeCell.tableStart);
+        if (!tableMeta) return false;
+
+        const cellText = runsToText(tableMeta.cells?.[activeCell.row]?.[activeCell.column] ?? []);
+        const tableSelection = tableTextSelectionRef.current;
+        const hasTableSelection =
+          Boolean(tableSelection) &&
+          tableSelection?.tableStart === activeCell.tableStart &&
+          tableSelection?.row === activeCell.row &&
+          tableSelection?.column === activeCell.column &&
+          tableSelection.end > tableSelection.start;
+
+        const cursorOffset =
+          tableCellCursorRef.current?.tableStart === activeCell.tableStart &&
+          tableCellCursorRef.current?.row === activeCell.row &&
+          tableCellCursorRef.current?.column === activeCell.column
+            ? tableCellCursorRef.current.offset
+            : cellText.length;
+        const safeCursor = Math.max(0, Math.min(cellText.length, cursorOffset));
+
+        if (cellText.length === 0) {
+          setTableCellFormat(
+            activeCell.row,
+            activeCell.column,
+            { textAlign: align },
+            0,
+            0,
+            activeCell.tableStart,
+            true,
+          );
+          return true;
+        }
+
+        const rawFrom = hasTableSelection ? tableSelection!.start : safeCursor;
+        const rawTo = hasTableSelection ? tableSelection!.end : safeCursor;
+        const safeFrom = Math.max(0, Math.min(cellText.length, rawFrom));
+        const safeTo = Math.max(safeFrom, Math.min(cellText.length, rawTo));
+
+        const lineStart = cellText.lastIndexOf('\n', Math.max(0, safeFrom - 1)) + 1;
+        const lineEndAnchor = hasTableSelection
+          ? Math.max(lineStart, Math.min(cellText.length - 1, Math.max(safeFrom, safeTo - 1)))
+          : safeFrom;
+        const lineEndBreak = cellText.indexOf('\n', lineEndAnchor);
+        const lineEnd = lineEndBreak === -1 ? cellText.length : lineEndBreak;
+
+        let patchFrom = lineStart;
+        let patchTo = lineEnd;
+        if (patchFrom === patchTo) {
+          // Empty logical line has no glyph range; patch a nearby newline sentinel
+          // so caret/insertion alignment can still resolve for this line.
+          patchFrom = Math.max(0, Math.min(cellText.length - 1, lineStart));
+          patchTo = Math.min(cellText.length, patchFrom + 1);
+        }
+
+        setTableCellFormat(
+          activeCell.row,
+          activeCell.column,
+          { textAlign: align },
+          patchFrom,
+          patchTo,
+          activeCell.tableStart,
+          true,
+        );
+
+        if (!hasTableSelection && cellText.length > 0) {
+          const anchorFrom = safeCursor < cellText.length ? safeCursor : Math.max(0, safeCursor - 1);
+          const anchorTo = Math.min(cellText.length, anchorFrom + 1);
+          if (anchorTo > anchorFrom) {
+            // Keep insertion formatting aligned with current caret line, especially
+            // at empty-line/newline boundaries.
+            setTableCellFormat(
+              activeCell.row,
+              activeCell.column,
+              { textAlign: align },
+              anchorFrom,
+              anchorTo,
+              activeCell.tableStart,
+              false,
+            );
+          }
+        }
+        return true;
+      },
+      [runsRef, setTableCellFormat],
     );
 
     const getTargetImage = useCallback(() => selectedImage ?? hoveredImage, [selectedImage, hoveredImage]);
@@ -961,14 +1615,20 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         draw();
       },
       getFontSize: () => curFmtRef.current.fontSize,
-      setFontSize: (n: number) => applyOrSetFmt({ fontSize: Math.max(8, Math.min(72, n)) }),
+      setFontSize: (n: number) => {
+        const next = Math.max(8, Math.min(72, n));
+        if (applyFormatToActiveTableCell({ fontSize: next })) return;
+        applyOrSetFmt({ fontSize: next });
+      },
       toggleBold: () => {
+        if (applyFormatToActiveTableCell({ bold: !curFmtRef.current.bold })) return;
         const { selF, selT, hasSel } = getSelRange();
         const allBold = hasSel && isFormatUniform(runsRef.current, selF, selT, 'bold', true);
         applyOrSetFmt({ bold: hasSel ? !allBold : !curFmtRef.current.bold });
       },
       getBold: () => curFmtRef.current.bold,
       toggleItalic: () => {
+        if (applyFormatToActiveTableCell({ italic: !curFmtRef.current.italic })) return;
         const { selF, selT, hasSel } = getSelRange();
         const allItalic = hasSel && isFormatUniform(runsRef.current, selF, selT, 'italic', true);
         applyOrSetFmt({
@@ -977,6 +1637,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       },
       getItalic: () => curFmtRef.current.italic,
       toggleUnderline: () => {
+        if (applyFormatToActiveTableCell({ underline: !curFmtRef.current.underline })) return;
         const { selF, selT, hasSel } = getSelRange();
         const allUnder = hasSel && isFormatUniform(runsRef.current, selF, selT, 'underline', true);
         applyOrSetFmt({
@@ -985,16 +1646,28 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       },
       getUnderline: () => curFmtRef.current.underline,
       getFontFamily: () => curFmtRef.current.fontFamily,
-      setFontFamily: (f: string) => applyOrSetFmt({ fontFamily: f }),
+      setFontFamily: (f: string) => {
+        if (applyFormatToActiveTableCell({ fontFamily: f })) return;
+        applyOrSetFmt({ fontFamily: f });
+      },
       getTextColor: () => curFmtRef.current.color,
-      setTextColor: (c: string) => applyOrSetFmt({ color: c }),
+      setTextColor: (c: string) => {
+        if (applyFormatToActiveTableCell({ color: c })) return;
+        applyOrSetFmt({ color: c });
+      },
       toggleBullet,
       toggleNumberList,
       indentLeft,
       indentRight,
-      setLineSpacing,
+      setLineSpacing: (value: number) => {
+        if (applyFormatToActiveTableCell({ lineSpacing: value })) return;
+        setLineSpacing(value);
+      },
       toggleHighlight,
-      setHighlightColor,
+      setHighlightColor: (color: string | null) => {
+        if (applyFormatToActiveTableCell({ highlightColor: color })) return;
+        setHighlightColor(color);
+      },
       insertLink,
       insertImage,
       insertTable,
@@ -1018,6 +1691,159 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       },
       closeTablePanel: () => {
         // Table panel UI is not mounted in this legacy editor shell.
+      },
+      setTableTextAlign: (align: 'left' | 'center' | 'right') => {
+        if (applyTableTextAlignToSelectedLines(align)) {
+          return;
+        }
+        if (applyFormatToActiveTableCell({ textAlign: align })) return;
+        applyOrSetFmt({ textAlign: align });
+      },
+      setTableBorderColor: (color: string | null) => {
+        const selectedTable = selectedTableHitRef.current;
+        const activeTable = activeTableEditingCellRef.current;
+        const tableStart = selectedTable?.box.start ?? activeTable?.tableStart;
+        if (tableStart === undefined) return;
+        const editingCell = isTableCellEditingRef.current && Boolean(activeTable);
+        const selectedRange = tableSelectionRangeRef.current;
+        const hasCellRange = Boolean(selectedRange);
+        if (!editingCell && !hasCellRange && !selectedTableLineRef.current && !selectedTableLineRangeRef.current) return;
+        const targetRange = editingCell
+          ? (activeTable
+              ? {
+                  rowStart: activeTable.row,
+                  rowEnd: activeTable.row,
+                  columnStart: activeTable.column,
+                  columnEnd: activeTable.column,
+                }
+              : null)
+          : hasCellRange
+            ? selectedRange
+            : tableSelectionRangeRef.current;
+        setTableBorders(
+          { color },
+          targetRange,
+          tableStart,
+          editingCell ? null : selectedTableLineRef.current,
+          editingCell ? null : selectedTableLineRangeRef.current,
+        );
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      setTableBorderWidth: (width: number) => {
+        const selectedTable = selectedTableHitRef.current;
+        const activeTable = activeTableEditingCellRef.current;
+        const tableStart = selectedTable?.box.start ?? activeTable?.tableStart;
+        if (tableStart === undefined) return;
+        const editingCell = isTableCellEditingRef.current && Boolean(activeTable);
+        const selectedRange = tableSelectionRangeRef.current;
+        const hasCellRange = Boolean(selectedRange);
+        if (!editingCell && !hasCellRange && !selectedTableLineRef.current && !selectedTableLineRangeRef.current) return;
+        const targetRange = editingCell
+          ? (activeTable
+              ? {
+                  rowStart: activeTable.row,
+                  rowEnd: activeTable.row,
+                  columnStart: activeTable.column,
+                  columnEnd: activeTable.column,
+                }
+              : null)
+          : hasCellRange
+            ? selectedRange
+            : tableSelectionRangeRef.current;
+        const nextWidth = Math.max(0, Math.min(8, Math.round(width)));
+        setTableBorders(
+          { width: nextWidth },
+          targetRange,
+          tableStart,
+          editingCell ? null : selectedTableLineRef.current,
+          editingCell ? null : selectedTableLineRangeRef.current,
+        );
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      setTableNoBorders: () => {
+        const selectedTable = selectedTableHitRef.current;
+        const activeTable = activeTableEditingCellRef.current;
+        const tableStart = selectedTable?.box.start ?? activeTable?.tableStart;
+        if (tableStart === undefined) return;
+        const editingCell = isTableCellEditingRef.current && Boolean(activeTable);
+        const selectedRange = tableSelectionRangeRef.current;
+        const hasCellRange = Boolean(selectedRange);
+        if (!editingCell && !hasCellRange && !selectedTableLineRef.current && !selectedTableLineRangeRef.current) return;
+        const targetRange = editingCell
+          ? (activeTable
+              ? {
+                  rowStart: activeTable.row,
+                  rowEnd: activeTable.row,
+                  columnStart: activeTable.column,
+                  columnEnd: activeTable.column,
+                }
+              : null)
+          : hasCellRange
+            ? selectedRange
+            : tableSelectionRangeRef.current;
+        setTableBorders(
+          { width: 0, colorless: true },
+          targetRange,
+          tableStart,
+          editingCell ? null : selectedTableLineRef.current,
+          editingCell ? null : selectedTableLineRangeRef.current,
+        );
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      setTableBorderRadius: (radiusPx: number) => {
+        const selectedTable = selectedTableHitRef.current;
+        const activeTable = activeTableEditingCellRef.current;
+        const tableStart = selectedTable?.box.start ?? activeTable?.tableStart;
+        if (tableStart === undefined) return;
+        const nextRadius = Math.max(0, Math.min(24, Math.round(radiusPx)));
+        setTableBorderRadius(nextRadius, tableStart);
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      setTableRoundedBorders: (enabled: boolean) => {
+        const selectedTable = selectedTableHitRef.current;
+        const activeTable = activeTableEditingCellRef.current;
+        const tableStart = selectedTable?.box.start ?? activeTable?.tableStart;
+        if (tableStart === undefined) return;
+        setTableBorderRadius(enabled ? 12 : 0, tableStart);
+        notifyFmt();
+        resetBlink();
+        draw();
+      },
+      addTableRowAbove: () => {
+        const active = activeTableEditingCellRef.current;
+        const selected = selectedTableHitRef.current;
+        const row = active?.row ?? selected?.row;
+        if (row === undefined) return;
+        addTableRowAbove(row);
+      },
+      addTableRowBelow: () => {
+        const active = activeTableEditingCellRef.current;
+        const selected = selectedTableHitRef.current;
+        const row = active?.row ?? selected?.row;
+        if (row === undefined) return;
+        addTableRowBelow(row);
+      },
+      addTableColumnLeft: () => {
+        const active = activeTableEditingCellRef.current;
+        const selected = selectedTableHitRef.current;
+        const column = active?.column ?? selected?.column;
+        if (column === undefined) return;
+        addTableColumnLeft(column);
+      },
+      addTableColumnRight: () => {
+        const active = activeTableEditingCellRef.current;
+        const selected = selectedTableHitRef.current;
+        const column = active?.column ?? selected?.column;
+        if (column === undefined) return;
+        addTableColumnRight(column);
       },
       toggleSpaceBeforeLine,
       toggleSpaceAfterLine,
@@ -1565,6 +2391,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                   onKeyDown={handleCanvasKeyDown}
                   onPaste={handlePaste}
                   onMouseDown={handleCanvasMouseDown}
+                  onMouseUp={handleCanvasMouseUp}
                   onDoubleClick={handleCanvasDoubleClick}
                   onMouseMove={handleCanvasMouseMove}
                   onWheel={handleWheel}
@@ -1588,6 +2415,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
                 onKeyDown={handleCanvasKeyDown}
                 onPaste={handlePaste}
                 onMouseDown={handleCanvasMouseDown}
+                onMouseUp={handleCanvasMouseUp}
                 onDoubleClick={handleCanvasDoubleClick}
                 onMouseMove={handleCanvasMouseMove}
                 onWheel={handleWheel}
