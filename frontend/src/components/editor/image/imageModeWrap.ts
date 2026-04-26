@@ -9,4 +9,11 @@ export const resolveWrapTextInsertOffset = (image: ImageAtOffset): number => {
   return image.end;
 };
 
-export const resolveWrapTextClickOffset = (imageEnd: number): number => imageEnd;
+export const resolveWrapTextClickOffset = (
+  imageStart: number,
+  imageEnd: number,
+  clickX: number,
+  imageMidX: number,
+): number => {
+  return clickX < imageMidX ? imageStart : imageEnd;
+};

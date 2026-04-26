@@ -129,6 +129,9 @@ export function getTableRenderMetrics(
       let stackedImageHeight = 0;
       // Wrap-text images sit beside text (height = max of image vs text, not sum).
       let wrapImageMaxHeight = 0;
+      // Front-wrap images are visual overlays but should still expand row height
+      // so the table cell can contain the rendered image bounds.
+      let frontImageMaxHeight = 0;
       let hasAnyContent = false;
 
       const measureTextBlock = (value: string, blockStartOffset: number) => {
@@ -168,12 +171,14 @@ export function getTableRenderMetrics(
           const dims = imageSizes?.get(imageMeta.src);
           const imageMetrics = getImageRenderMetrics(imageMeta, estimatedCellWidth, dims);
           maxTextLineWidth = Math.max(maxTextLineWidth, Math.ceil(imageMetrics.drawWidth));
-          // Front-wrap images are visual overlays — no height contribution.
-          // Wrap-text images sit beside text — height is max(imageH, textH), not their sum.
+          // Wrap-text and front-wrap images sit beside/over text in this estimator,
+          // so height uses max(imageH, textH) rather than a stacked sum.
           // Break/inline images stack vertically with text — heights add.
           if (isWrapTextWrap(imageMeta.wrap)) {
             wrapImageMaxHeight = Math.max(wrapImageMaxHeight, Math.ceil(imageMetrics.drawHeight));
-          } else if (!isTextInFrontWrap(imageMeta.wrap)) {
+          } else if (isTextInFrontWrap(imageMeta.wrap)) {
+            frontImageMaxHeight = Math.max(frontImageMaxHeight, Math.ceil(imageMetrics.drawHeight));
+          } else {
             stackedImageHeight += Math.ceil(imageMetrics.drawHeight) + 6;
           }
         }
@@ -195,7 +200,10 @@ export function getTableRenderMetrics(
       const minCellWidth = Math.max(48, maxTextLineWidth + 12);
       // For wrap-text images: the image and text share vertical space (max, not sum).
       // For stacked images (break/inline): their heights add to text height.
-      const minCellHeight = Math.max(24, Math.max(textHeight + stackedImageHeight, wrapImageMaxHeight) + 8);
+      const minCellHeight = Math.max(
+        24,
+        Math.max(textHeight + stackedImageHeight, wrapImageMaxHeight, frontImageMaxHeight) + 8,
+      );
 
       columnContentMinWidths[column] = Math.max(columnContentMinWidths[column], minCellWidth);
       rowContentMinHeights[row] = Math.max(rowContentMinHeights[row], minCellHeight);

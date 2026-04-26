@@ -42,7 +42,7 @@ export const resolveImageClickOffsetByWrap = ({
     return resolveBreakLineClickOffset(text, imageStart, imageEnd, clickX, imageMidX);
   }
   if (isWrapTextWrap(wrap)) {
-    return resolveWrapTextClickOffset(imageEnd);
+    return resolveWrapTextClickOffset(imageStart, imageEnd, clickX, imageMidX);
   }
   if (isTextInFrontWrap(wrap)) {
     return resolveInlineTextClickOffset(imageStart, imageEnd, clickX, imageMidX);

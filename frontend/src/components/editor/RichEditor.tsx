@@ -108,6 +108,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const [hoveredImage, setHoveredImage] = useState<ImageBox | null>(null);
     const [selectedImage, setSelectedImage] = useState<ImageBox | null>(null);
     const [isImagePanelOpen, setIsImagePanelOpen] = useState(false);
+    const syncOverlayRafRef = useRef<number | null>(null);
     const [altDraft, setAltDraft] = useState('');
     const [contentVersion, setContentVersion] = useState(0);
     const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -506,7 +507,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       ...inputCbs,
       onImageInserted: (offset: number) => {
         // Defer selection until after next draw so imageBoxesRef is up-to-date
-        window.requestAnimationFrame(() => {
+        if (syncOverlayRafRef.current !== null) {
+          cancelAnimationFrame(syncOverlayRafRef.current);
+        }
+        syncOverlayRafRef.current = window.requestAnimationFrame(() => {
+          syncOverlayRafRef.current = null;
           const imageBox = getImageBoxAtOffset(offset);
           if (imageBox) {
             setSelectedImage(imageBox);
@@ -518,7 +523,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
     const syncImageOverlay = useCallback(
       (image: Pick<ImageBox, 'start' | 'end' | 'meta' | 'tableImage'> | null) => {
-        window.requestAnimationFrame(() => {
+        if (syncOverlayRafRef.current !== null) {
+          cancelAnimationFrame(syncOverlayRafRef.current);
+        }
+        syncOverlayRafRef.current = window.requestAnimationFrame(() => {
+          syncOverlayRafRef.current = null;
           if (image === null) {
             setSelectedImage(null);
             return;
@@ -560,6 +569,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               anchor.row === hit.row &&
               anchor.column === hit.column;
             if (sameCell) {
+              if (selectedImage || isImagePanelOpen) {
+                setSelectedImage(null);
+                setHoveredImage(null);
+                setIsImagePanelOpen(false);
+              }
               const tableMeta = getTableTokenAtOffset(runsToText(runsRef.current), hit.box.start);
               const cellText = tableMeta
                 ? runsToText(tableMeta.cells?.[hit.row]?.[hit.column] ?? [])
@@ -602,6 +616,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             }
 
             if (sameTable) {
+              if (selectedImage || isImagePanelOpen) {
+                setSelectedImage(null);
+                setHoveredImage(null);
+                setIsImagePanelOpen(false);
+              }
               // Dragging into another cell switches to cell-range selection.
               tableTextSelectionRef.current = null;
               tableCellCursorRef.current = null;
@@ -654,6 +673,8 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         getImageBoxAtClientXY,
         getTableTextHitAtClientXY,
         getTableBorderLineAtClientXY,
+        selectedImage,
+        isImagePanelOpen,
         notifyFmt,
         resetBlink,
         draw,
@@ -676,6 +697,10 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
         const imageHit = getImageBoxAtClientXY(e.clientX, e.clientY);
         if (!imageHit && (selectedImage || hoveredImage || isImagePanelOpen)) {
+          if (syncOverlayRafRef.current !== null) {
+            cancelAnimationFrame(syncOverlayRafRef.current);
+            syncOverlayRafRef.current = null;
+          }
           setSelectedImage(null);
           setHoveredImage(null);
           setIsImagePanelOpen(false);
@@ -749,7 +774,9 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
             tableTextSelectionAnchorRef.current = null;
             isTableTextSelectingRef.current = false;
             setSelectedImage(imageHit);
+            setHoveredImage(imageHit);
             setAltDraft(imageHit.meta.alt);
+            setIsImagePanelOpen(false);
             setCursorOffset(tableStart);
             notifyFmt();
             resetBlink();
@@ -1687,6 +1714,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               if (selectedImage) {
                 setSelectedImage(null);
                 setHoveredImage(null);
+                setIsImagePanelOpen(false);
               }
               tableTextSelectionRef.current = null;
               tableCellCursorRef.current = {
@@ -1713,6 +1741,7 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         if (isTextEditingKey && !isMod && !e.altKey && selectedImage) {
           setSelectedImage(null);
           setHoveredImage(null);
+          setIsImagePanelOpen(false);
         }
 
         handleKeyDown(e);
@@ -2560,7 +2589,13 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     }, []);
 
     useEffect(() => {
-      if (!selectedImage) return;
+      if (!selectedImage) {
+        if (syncOverlayRafRef.current !== null) {
+          cancelAnimationFrame(syncOverlayRafRef.current);
+          syncOverlayRafRef.current = null;
+        }
+        return;
+      }
       syncImageOverlay(selectedImage);
     }, [selectedImage, leftMargin, rightMargin, pageSize, contentVersion, syncImageOverlay]);
 
@@ -2731,6 +2766,11 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
               top: image.y,
               width: image.width,
               height: image.height,
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              focusImageControls();
             }}
           >
             <button

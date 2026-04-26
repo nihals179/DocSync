@@ -1508,8 +1508,9 @@ export function useEditorDraw(
       const cursor = cursorRef.current;
       let caretX = padLeft;
       let caretY = padTop;
-      let caretH = Math.max(16, curFmtRef.current.fontSize);
-      const imageCaretH = Math.max(16, curFmtRef.current.fontSize);
+      const curFmtCaretH = curFmtRef.current.fontSize;
+      let caretH = curFmtCaretH;
+      const imageCaretH = curFmtCaretH;
       const breakCaretGapY = 8;
       const tableImageBelowGapY = 12;
       let placedTableCaret = false;
@@ -1638,7 +1639,7 @@ export function useEditorDraw(
                   : imageBox.x;
                 caretX = breakLineInnerLeft;
                 caretY = imageBox.y + imgDrawH + tableImageBelowGapY;
-                caretH = Math.max(16, curFmtRef.current.fontSize);
+                caretH = curFmtCaretH;
               } else if (isLeftSideLaneFlow && !atStart && canUseSideLane) {
                 // For post-image typing in table side-lane flow, match rendered text start.
                 caretX = sideLaneX;
@@ -1647,7 +1648,7 @@ export function useEditorDraw(
                 } else {
                   caretY = imageBox.y;
                 }
-                caretH = Math.max(16, caretFmt.fontSize);
+                caretH = caretFmt.fontSize;
               } else if (
                 !atStart &&
                 (isInlineWrap(imageBox.meta.wrap) || isWrapTextWrap(imageBox.meta.wrap))
@@ -1655,7 +1656,7 @@ export function useEditorDraw(
                 // Non-left flow modes in tables are rendered break-like after image.
                 caretX = cellInnerLeft;
                 caretY = imageBox.y + imgDrawH + tableImageBelowGapY;
-                caretH = Math.max(16, caretFmt.fontSize);
+                caretH = caretFmt.fontSize;
               } else {
                 caretX = atStart ? imageBox.x : imageBox.x + imageBox.drawWidth;
                 caretY = imageBox.y + Math.max(0, imgDrawH - imageCaretH);
@@ -1704,6 +1705,7 @@ export function useEditorDraw(
               let wrapLaneX: number | null = null;
               let wrapLaneBottomY = 0;
               let laneCoversAllChunks = false;
+              let centerWrapFlow: { leftEnd: number; rightStart: number; bottomY: number } | null = null;
 
               const measureRunAwareWidth = (from: number, to: number) => {
                 const safeFrom = Math.max(0, Math.min(cellValue.length, from));
@@ -1735,6 +1737,124 @@ export function useEditorDraw(
                 for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
                   const line = lines[lineIndex] ?? '';
                   const lineAbsStart = absoluteStart + consumed;
+
+                  if (centerWrapFlow && geomY < centerWrapFlow.bottomY - 0.5) {
+                    const rawLineStart = lineAbsStart;
+                    const rawLineEnd = lineAbsStart + line.length;
+                    const regions = [
+                      { start: innerLeft, end: centerWrapFlow.leftEnd },
+                      { start: centerWrapFlow.rightStart, end: innerRight },
+                    ].filter((region) => region.end - region.start >= 12);
+
+                    if (regions.length > 0) {
+                      if (rawLineStart >= rawLineEnd) {
+                        const emptyFmt = {
+                          ...DEFAULT_RUN_FMT,
+                          ...getFormatAt(cellRuns, Math.max(0, Math.min(cellValue.length, rawLineStart))),
+                        };
+                        const emptyLineH = computeLineHeight(
+                          emptyFmt.fontSize,
+                          emptyFmt.lineSpacing ?? 1.2,
+                        );
+                        wrappedChunks.push({
+                          start: rawLineStart,
+                          end: rawLineStart,
+                          drawX: innerLeft,
+                          baselineY: geomY,
+                          fontSize: emptyFmt.fontSize,
+                          lineHeight: emptyLineH,
+                        });
+                        geomY += emptyLineH;
+                      } else {
+                        let local = rawLineStart;
+                        // Mirror draw code: outer while loop so long lines fill multiple
+                        // rows of (left + right) regions before bottomY, matching draw's
+                        // `while (local < line.length)` loop in the center-wrap path.
+                        while (local < rawLineEnd) {
+                          let rowLineHeight = cellBaseLineHeight;
+                          let placedChunk = false;
+
+                          for (const region of regions) {
+                            while (local < rawLineEnd && cellValue[local] === ' ') local += 1;
+                            if (local >= rawLineEnd) break;
+
+                            const probeOffset = Math.max(0, Math.min(cellValue.length, local + 1));
+                            const lineFmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
+                            const lineHeight = computeLineHeight(lineFmt.fontSize, lineFmt.lineSpacing ?? 1.2);
+                            rowLineHeight = Math.max(rowLineHeight, lineHeight);
+                            const textAlign = lineFmt.textAlign ?? 'left';
+
+                            const regionWidth = Math.max(12, region.end - region.start);
+                            let bestEnd = local + 1;
+                            let breakAt = -1;
+                            for (let i = local + 1; i <= rawLineEnd; i += 1) {
+                              const width = measureRunAwareWidth(local, i);
+                              if (width <= regionWidth) {
+                                bestEnd = i;
+                                const ch = cellValue[i - 1];
+                                if (ch === ' ' || ch === '-') breakAt = i;
+                              } else {
+                                break;
+                              }
+                            }
+                            if (bestEnd === local) bestEnd = local + 1;
+                            if (bestEnd < rawLineEnd && breakAt > local + 1) bestEnd = breakAt;
+
+                            const lineWidth = measureRunAwareWidth(local, bestEnd);
+                            const drawX =
+                              textAlign === 'center'
+                                ? region.start + Math.max(0, (regionWidth - lineWidth) / 2)
+                                : textAlign === 'right'
+                                  ? region.start + Math.max(0, regionWidth - lineWidth)
+                                  : region.start;
+
+                            wrappedChunks.push({
+                              start: local,
+                              end: bestEnd,
+                              drawX,
+                              baselineY: geomY,
+                              fontSize: lineFmt.fontSize,
+                              lineHeight,
+                            });
+                            placedChunk = true;
+                            local = bestEnd;
+                          }
+
+                          if (!placedChunk) {
+                            const emptyFmt = {
+                              ...DEFAULT_RUN_FMT,
+                              ...getFormatAt(cellRuns, Math.max(0, Math.min(cellValue.length, rawLineStart))),
+                            };
+                            wrappedChunks.push({
+                              start: rawLineStart,
+                              end: rawLineStart,
+                              drawX: innerLeft,
+                              baselineY: geomY,
+                              fontSize: emptyFmt.fontSize,
+                              lineHeight: rowLineHeight,
+                            });
+                            break;
+                          }
+
+                          geomY += rowLineHeight;
+                          if (geomY >= centerWrapFlow.bottomY - 0.5) {
+                            centerWrapFlow = null;
+                            break;
+                          }
+                        }
+                      }
+
+                      if (centerWrapFlow && geomY >= centerWrapFlow.bottomY - 0.5) {
+                        centerWrapFlow = null;
+                      }
+
+                      consumed += line.length + (lineIndex < lines.length - 1 ? 1 : 0);
+                      continue;
+                    }
+
+                    centerWrapFlow = null;
+                  }
+
                   const subChunks: Array<{ start: number; end: number }> = [];
                   const lineLaneActive = wrapLaneX !== null && geomY < wrapLaneBottomY - 0.5;
                   const lineLaneX = wrapLaneX ?? innerLeft;
@@ -1845,6 +1965,8 @@ export function useEditorDraw(
                     geomX = innerLeft;
                     wrapLaneX = null;
                     wrapLaneBottomY = 0;
+                    laneCoversAllChunks = false;
+                    centerWrapFlow = null;
                   } else if (
                     tokenMeta &&
                     tokenMeta.align === 'left' &&
@@ -1860,6 +1982,7 @@ export function useEditorDraw(
                       wrapLaneX = null;
                       wrapLaneBottomY = 0;
                       laneCoversAllChunks = false;
+                      centerWrapFlow = null;
                     } else {
                       if (wrapFullHeightFlow) {
                         geomY = imageBox.y;
@@ -1871,7 +1994,26 @@ export function useEditorDraw(
                       laneCoversAllChunks = wrapFullHeightFlow;
                       // Inline mode: side lane only for the first auto-wrapped line.
                       wrapLaneBottomY = inlineSingleLineFlow ? geomY + 0.6 : imageBox.y + ibDH;
+                      centerWrapFlow = null;
                     }
+                  } else if (
+                    tokenMeta &&
+                    (tokenMeta.align === 'center' || tokenMeta.align === 'right') &&
+                    isWrapTextWrap(tokenMeta.wrap)
+                  ) {
+                    geomY = imageBox.y;
+                    centerWrapFlow = {
+                      leftEnd: Math.max(innerLeft, Math.min(innerRight, imageBox.x - 8)),
+                      rightStart:
+                        tokenMeta.align === 'right'
+                          ? innerRight
+                          : Math.max(innerLeft, Math.min(innerRight, imageBox.x + imageBox.drawWidth + 8)),
+                      bottomY: imageBox.y + ibDH,
+                    };
+                    geomX = innerLeft;
+                    wrapLaneX = null;
+                    wrapLaneBottomY = 0;
+                    laneCoversAllChunks = false;
                   } else if (tokenMeta && isTextInFrontWrap(tokenMeta.wrap)) {
                     // Front mode: image is a visual overlay, text flow geometry is unchanged.
                   } else {
@@ -1880,6 +2022,7 @@ export function useEditorDraw(
                     wrapLaneX = null;
                     wrapLaneBottomY = 0;
                     laneCoversAllChunks = false;
+                    centerWrapFlow = null;
                   }
                 }
               }
@@ -1898,7 +2041,7 @@ export function useEditorDraw(
                 const xOffset = measureRunAwareWidth(chunk.start, Math.min(cellOffset, chunk.end));
                 caretX = Math.max(innerLeft, Math.min(innerRight, chunk.drawX + xOffset));
                 caretY = chunk.baselineY;
-                caretH = Math.max(16, chunk.fontSize);
+                caretH = chunk.fontSize;
                 placedTableCaret = true;
               }
 
@@ -1915,7 +2058,7 @@ export function useEditorDraw(
                       ? innerLeft + Math.max(0, innerWidth)
                       : innerLeft;
                 caretY = cellY + cellPadY;
-                caretH = Math.max(16, fmt.fontSize);
+                caretH = fmt.fontSize;
                 placedTableCaret = true;
               }
 
@@ -1945,7 +2088,7 @@ export function useEditorDraw(
                   // drawHeight = full rendered height; height = clipped to cell.
                   const abDH = anchorBox.drawHeight;
                   let baseX = anchorBox.x + anchorBox.drawWidth;
-                  let baseY = anchorBox.y + Math.max(0, abDH - Math.max(16, fmt.fontSize));
+                  let baseY = anchorBox.y + Math.max(0, abDH - fmt.fontSize);
                   const isLeftSideLaneFlow =
                     anchorBox.meta.align === 'left' &&
                     (isInlineWrap(anchorBox.meta.wrap) || isWrapTextWrap(anchorBox.meta.wrap));
@@ -1963,7 +2106,7 @@ export function useEditorDraw(
                       baseX = Math.max(innerLeft, Math.min(innerRight, nextLaneX));
                     }
                     // Table side-lane text starts from image bottom, not top.
-                    const laneLineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
+                    const laneLineH = fmt.fontSize;
                     if (nextLaneX <= innerRight - 12) {
                       baseY = isInlineWrap(anchorBox.meta.wrap)
                         ? anchorBox.y + Math.max(0, abDH - laneLineH)
@@ -1992,7 +2135,7 @@ export function useEditorDraw(
                     }
                   }
                   caretY = baseY + trailingYOffset;
-                  caretH = Math.max(16, fmt.fontSize);
+                  caretH = fmt.fontSize;
                   placedTableCaret = true;
                 }
               }
@@ -2077,7 +2220,7 @@ export function useEditorDraw(
 
                 caretX = Math.max(innerLeft, Math.min(innerLeft + caretXOffset, innerRight));
                 caretY = cellY + cellPadY + lineYOffset;
-                caretH = Math.max(16, fmt.fontSize);
+                caretH = fmt.fontSize;
                 placedTableCaret = true;
               }
               }
@@ -2143,17 +2286,17 @@ export function useEditorDraw(
           // Single stable anchor for break-wrap start: next line below image.
           caretX = padLeft;
           caretY = imageAtStart.y + imageAtStart.drawHeight + breakCaretGapY;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else if (isWrapTextWrap(imageAtStart.meta.wrap)) {
           // Wrap-text writes from the lane beside the image.
           caretX = getWrapLaneX(imageAtStart.x, imageAtStart.drawWidth);
           caretY = imageAtStart.y;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else if (isTextInFrontWrap(imageAtStart.meta.wrap)) {
           // Front mode caret should follow text line position, not image-height anchoring.
           caretX = imageAtStart.x;
           caretY = imageAtStart.y;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else {
           // Cursor at image bottom-left when at image start.
           caretX = imageAtStart.x;
@@ -2165,16 +2308,16 @@ export function useEditorDraw(
           // Break-line mode: caret should continue below the image block.
           caretX = padLeft;
           caretY = imageAtEnd.y + imageAtEnd.drawHeight + breakCaretGapY;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else if (isWrapTextWrap(imageAtEnd.meta.wrap)) {
           caretX = getWrapLaneX(imageAtEnd.x, imageAtEnd.drawWidth);
           caretY = imageAtEnd.y;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else if (isTextInFrontWrap(imageAtEnd.meta.wrap)) {
           // Front mode caret should follow text line position, not image-height anchoring.
           caretX = imageAtEnd.x + imageAtEnd.drawWidth;
           caretY = imageAtEnd.y;
-          caretH = Math.max(16, curFmtRef.current.fontSize);
+          caretH = curFmtCaretH;
         } else {
           caretX = imageAtEnd.x + imageAtEnd.drawWidth;
           caretY = imageAtEnd.y + Math.max(0, imageAtEnd.drawHeight - imageCaretH);
@@ -2192,8 +2335,8 @@ export function useEditorDraw(
           let lineOffset = vl.startOffset;
           if (vl.segs.length === 0) {
             caretX = padLeft;
-            caretY = vl.y + Math.max(0, (vl.lineH - curFmtRef.current.fontSize) / 2);
-            caretH = Math.max(16, curFmtRef.current.fontSize);
+            caretY = vl.y + Math.max(0, (vl.lineH - curFmtCaretH) / 2);
+            caretH = curFmtCaretH;
             placed = true;
             break;
           }
@@ -2232,32 +2375,33 @@ export function useEditorDraw(
                     : seg.x;
                 const imgX = padLeft + imgAlignedX;
                 const imgY = vl.y + (vl.lineH - metrics.boxHeight) / 2;
+                const segFmtCaretH = seg.fmt.fontSize;
                 const textCaretY = lineHasInlineImage
-                  ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
-                  : vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
+                  ? vl.y + Math.max(0, vl.lineH - segFmtCaretH)
+                  : vl.y + Math.max(0, (vl.lineH - segFmtCaretH) / 2);
                 const hasTextBefore = segStart > vl.startOffset;
                 const hasTextAfter = segEnd < vl.endOffset;
                 if (isInlineWrap(inlineImage.wrap) && cursor === segStart && hasTextBefore) {
                   caretX = imgX;
                   caretY = textCaretY;
-                  caretH = Math.max(16, seg.fmt.fontSize);
+                  caretH = segFmtCaretH;
                 } else if (isInlineWrap(inlineImage.wrap) && cursor === segEnd && hasTextAfter) {
                   caretX = imgX + metrics.boxWidth;
                   caretY = textCaretY;
-                  caretH = Math.max(16, seg.fmt.fontSize);
+                  caretH = segFmtCaretH;
                 } else if (cursor <= segStart) {
                   if (isBreakLineWrap(inlineImage.wrap)) {
                     caretX = padLeft;
                     caretY = imgY + metrics.boxHeight + breakCaretGapY;
-                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                    caretH = curFmtCaretH;
                   } else if (isTextInFrontWrap(inlineImage.wrap)) {
                     caretX = imgX;
-                    caretY = vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
-                    caretH = Math.max(16, seg.fmt.fontSize);
+                    caretY = vl.y + Math.max(0, (vl.lineH - segFmtCaretH) / 2);
+                    caretH = segFmtCaretH;
                   } else if (isWrapTextWrap(inlineImage.wrap)) {
                     caretX = getWrapLaneX(imgX, metrics.boxWidth);
                     caretY = vl.y;
-                    caretH = Math.max(16, seg.fmt.fontSize);
+                    caretH = segFmtCaretH;
                   } else {
                     caretX = imgX;
                     caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
@@ -2267,15 +2411,15 @@ export function useEditorDraw(
                   if (isBreakLineWrap(inlineImage.wrap)) {
                     caretX = padLeft;
                     caretY = imgY + metrics.boxHeight + breakCaretGapY;
-                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                    caretH = curFmtCaretH;
                   } else if (isTextInFrontWrap(inlineImage.wrap)) {
                     caretX = imgX + metrics.boxWidth;
-                    caretY = vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
-                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                    caretY = vl.y + Math.max(0, (vl.lineH - segFmtCaretH) / 2);
+                    caretH = segFmtCaretH;
                   } else if (isWrapTextWrap(inlineImage.wrap)) {
                     caretX = getWrapLaneX(imgX, metrics.boxWidth);
                     caretY = vl.y;
-                    caretH = Math.max(16, curFmtRef.current.fontSize);
+                    caretH = curFmtCaretH;
                   } else {
                     caretX = imgX + metrics.boxWidth;
                     caretY = imgY + Math.max(0, metrics.boxHeight - imageCaretH);
@@ -2294,12 +2438,13 @@ export function useEditorDraw(
                 // always sits at the left edge (seg.x) regardless of prefix width.
                 const prefixW = seg.leading ? 0 : ctx.measureText(prefix).width;
                 caretX = padLeft + seg.x + prefixW;
+                const segCaretLineH = seg.fmt.fontSize;
                 caretY = lineHasBreakImage
                   ? vl.y
                   : lineHasInlineImage
-                    ? vl.y + Math.max(0, vl.lineH - seg.fmt.fontSize)
-                    : vl.y + Math.max(0, (vl.lineH - seg.fmt.fontSize) / 2);
-                caretH = Math.max(16, seg.fmt.fontSize);
+                    ? vl.y + Math.max(0, vl.lineH - segCaretLineH)
+                    : vl.y + Math.max(0, (vl.lineH - segCaretLineH) / 2);
+                caretH = segCaretLineH;
               }
               placed = true;
               break;
@@ -2333,15 +2478,15 @@ export function useEditorDraw(
               if (isBreakLineWrap(inlineImage.wrap)) {
                 caretX = padLeft;
                 caretY = vl.y + metrics.boxHeight + breakCaretGapY;
-                caretH = Math.max(16, curFmtRef.current.fontSize);
+                caretH = curFmtCaretH;
               } else if (isTextInFrontWrap(inlineImage.wrap)) {
                 caretX = padLeft + lastAlignedX + metrics.boxWidth;
-                caretY = vl.y + Math.max(0, (vl.lineH - curFmtRef.current.fontSize) / 2);
-                caretH = Math.max(16, curFmtRef.current.fontSize);
+                caretY = vl.y + Math.max(0, (vl.lineH - curFmtCaretH) / 2);
+                caretH = curFmtCaretH;
               } else if (isWrapTextWrap(inlineImage.wrap)) {
                 caretX = getWrapLaneX(padLeft + lastAlignedX, metrics.boxWidth);
                 caretY = vl.y;
-                caretH = Math.max(16, curFmtRef.current.fontSize);
+                caretH = curFmtCaretH;
               } else {
                 caretY =
                   vl.y +
@@ -2357,12 +2502,13 @@ export function useEditorDraw(
                 lastSeg.fmt.fontFamily,
               );
               caretX = padLeft + lastSeg.x + ctx.measureText(lastSeg.text).width;
+              const lastSegCaretH = lastSeg.fmt.fontSize;
               caretY = lineHasBreakImage
                 ? vl.y
                 : lineHasInlineImage
-                  ? vl.y + Math.max(0, vl.lineH - lastSeg.fmt.fontSize)
-                  : vl.y + Math.max(0, (vl.lineH - lastSeg.fmt.fontSize) / 2);
-              caretH = Math.max(16, lastSeg.fmt.fontSize);
+                  ? vl.y + Math.max(0, vl.lineH - lastSegCaretH)
+                  : vl.y + Math.max(0, (vl.lineH - lastSegCaretH) / 2);
+              caretH = lastSegCaretH;
             }
             placed = true;
           }
@@ -2382,23 +2528,24 @@ export function useEditorDraw(
               lastSeg.fmt.fontFamily,
             );
             caretX = padLeft + lastSeg.x + ctx.measureText(lastSeg.text).width;
+            const lastLineSegCaretH = lastSeg.fmt.fontSize;
             caretY = lastLineHasBreakImage
               ? lastLine.y
               : lastLineHasInlineImage
-                ? lastLine.y + Math.max(0, lastLine.lineH - lastSeg.fmt.fontSize)
-                : lastLine.y + Math.max(0, (lastLine.lineH - lastSeg.fmt.fontSize) / 2);
-            caretH = Math.max(16, lastSeg.fmt.fontSize);
+                ? lastLine.y + Math.max(0, lastLine.lineH - lastLineSegCaretH)
+                : lastLine.y + Math.max(0, (lastLine.lineH - lastLineSegCaretH) / 2);
+            caretH = lastLineSegCaretH;
           } else {
             caretX = padLeft;
-            caretY = lastLine.y + Math.max(0, (lastLine.lineH - curFmtRef.current.fontSize) / 2);
-            caretH = Math.max(16, curFmtRef.current.fontSize);
+            caretY = lastLine.y + Math.max(0, (lastLine.lineH - curFmtCaretH) / 2);
+            caretH = curFmtCaretH;
           }
         }
       }
 
       const crispX = Math.round(caretX) + 0.5;
       ctx.fillStyle = '#0f172a';
-      ctx.fillRect(crispX, caretY, 1, Math.max(8, caretH));
+      ctx.fillRect(crispX, caretY, 1, caretH);
     }
 
     ctx.restore();
@@ -2546,7 +2693,74 @@ export function useEditorDraw(
         return lastLine.endOffset;
       }
 
-      const best = getClosestVisualLine(vls, clickY);
+      const getLineXBounds = (line: VisualLine) => {
+        let minX = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        for (const seg of line.segs) {
+          if (seg.leading) continue;
+          const tableMeta = parseTableToken(seg.text);
+          if (tableMeta) {
+            const metrics = getTableRenderMetrics(tableMeta, textAreaWidth, imageDims);
+            minX = Math.min(minX, seg.x);
+            maxX = Math.max(maxX, seg.x + metrics.boxWidth);
+            continue;
+          }
+          const inlineImage = parseImageToken(seg.text);
+          if (inlineImage && (isFlowingImageWrap(inlineImage.wrap) || isTextInFrontWrap(inlineImage.wrap))) {
+            const dims = imageCacheRef.current.get(inlineImage.src);
+            const metrics = getImageRenderMetrics(
+              inlineImage,
+              textAreaWidth,
+              dims ? { w: dims.w, h: dims.h } : undefined,
+            );
+            const segStartX =
+              line.segs.length === 1
+                ? getAlignedXInTextArea(metrics.align, metrics.boxWidth, textAreaWidth)
+                : seg.x;
+            minX = Math.min(minX, segStartX);
+            maxX = Math.max(maxX, segStartX + metrics.boxWidth);
+            continue;
+          }
+          ctx.font = buildFont(seg.fmt.fontSize, seg.fmt.bold, seg.fmt.italic, seg.fmt.fontFamily);
+          const segW = ctx.measureText(seg.text).width;
+          minX = Math.min(minX, seg.x);
+          maxX = Math.max(maxX, seg.x + segW);
+        }
+        if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+          return { minX: 0, maxX: 0 };
+        }
+        return { minX, maxX };
+      };
+
+      const best = vls.reduce((candidate, line) => {
+        const lineTop = line.y;
+        const lineBottom = line.y + line.lineH;
+        const yDistance =
+          clickY < lineTop ? lineTop - clickY : clickY > lineBottom ? clickY - lineBottom : 0;
+        const { minX, maxX } = getLineXBounds(line);
+        const xDistance =
+          clickX < minX ? minX - clickX : clickX > maxX ? clickX - maxX : 0;
+        const score = yDistance * 10000 + xDistance;
+
+        if (!candidate) {
+          return { line, score, yDistance, xDistance };
+        }
+        if (score < candidate.score) {
+          return { line, score, yDistance, xDistance };
+        }
+        if (score === candidate.score && yDistance < candidate.yDistance) {
+          return { line, score, yDistance, xDistance };
+        }
+        if (
+          score === candidate.score &&
+          yDistance === candidate.yDistance &&
+          xDistance < candidate.xDistance
+        ) {
+          return { line, score, yDistance, xDistance };
+        }
+        return candidate;
+      }, null as { line: VisualLine; score: number; yDistance: number; xDistance: number } | null)?.line ??
+        getClosestVisualLine(vls, clickY);
 
       const imageMeta = best.imageMeta ?? null;
       if (imageMeta) {
@@ -2778,6 +2992,14 @@ export function useEditorDraw(
         12,
         (metrics.columnWidths[column] ?? metrics.cellWidth) - cellPadStartX - cellPadEndX,
       );
+      // Mirror the draw code's innerW / innerRight geometry so lane-width calculations
+      // (image metrics fallback, wrap-overflow thresholds, lane text widths) match exactly.
+      const cellColumnWidth = metrics.columnWidths[column] ?? metrics.cellWidth;
+      const clipPadLeft = Math.max(2, Math.round(cellPadStartX / 2));
+      const clipPadRight = Math.max(2, Math.round(cellPadEndX / 2));
+      const innerW = Math.max(8, cellColumnWidth - clipPadLeft - clipPadRight);
+      // innerRelRight: right edge of inner clip area relative to textStartX
+      const innerRelRight = cellColumnWidth - clipPadRight - cellPadStartX;
       const clickX = clientX - rect.left;
       const clickY = clientY - rect.top;
       const localX = Math.max(0, clickX - textStartX);
@@ -2844,10 +3066,21 @@ export function useEditorDraw(
         }
 
         let start = lineStart;
+        // Mirror draw code: the FIRST visual sub-line of each \n-delimited input
+        // line fits text to (innerRelRight - laneBaseX) — the actual lane width.
+        // Subsequent sub-lines use textMaxWidth, exactly as drawTextRunsLine does
+        // (chunks.length===0 ? firstChunkMaxWidth : textMaxWidth). Using the lane
+        // width for ALL sub-lines produces extra wrapped lines vs the draw code,
+        // shifting all Y positions down by one lineH → caret one line above.
+        let isFirstVisualLine = true;
         while (start < lineEnd) {
           const laneActive = wrapLaneXRel !== null && lineCursorY < wrapLaneBottomY - 0.5;
-          const laneBaseX = laneActive ? Math.max(0, Math.min(textMaxWidth - 2, wrapLaneXRel ?? 0)) : 0;
-          const laneMaxWidth = laneActive ? Math.max(12, textMaxWidth - laneBaseX) : textMaxWidth;
+          const laneBaseX = laneActive ? Math.max(0, Math.min(innerRelRight - 2, wrapLaneXRel ?? 0)) : 0;
+          const chunkStartsInLane = laneActive && (laneCoversAllChunks || isFirstVisualLine);
+          const laneMaxWidth =
+            laneActive && isFirstVisualLine
+              ? Math.max(12, innerRelRight - laneBaseX)
+              : textMaxWidth;
           const probeOffset = Math.max(0, Math.min(cellText.length, start + 1));
           const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
           const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
@@ -2868,14 +3101,18 @@ export function useEditorDraw(
           if (bestEnd < lineEnd && breakAt > start + 1) bestEnd = breakAt;
 
           const lineWidth = measureRangeWidth(start, bestEnd);
-          const drawX =
-            align === 'center'
-              ? laneBaseX + Math.max(0, (laneMaxWidth - lineWidth) / 2)
-              : align === 'right'
-                ? laneBaseX + Math.max(0, laneMaxWidth - lineWidth)
-                : laneBaseX;
+          let drawX = laneBaseX;
+          if (!chunkStartsInLane) {
+            drawX =
+              align === 'center'
+                ? laneBaseX + Math.max(0, (laneMaxWidth - lineWidth) / 2)
+                : align === 'right'
+                  ? laneBaseX + Math.max(0, laneMaxWidth - lineWidth)
+                  : laneBaseX;
+          }
           wrappedLines.push({ start, end: bestEnd, y: lineCursorY, lineH, drawX });
           lineCursorY += lineH;
+          isFirstVisualLine = false;
 
           if (laneActive && !laneCoversAllChunks) {
             wrapLaneXRel = null;
@@ -2932,7 +3169,7 @@ export function useEditorDraw(
           const imageMetrics = imageMeta
             ? getImageRenderMetrics(
                 imageMeta,
-                textMaxWidth,
+                innerW,
                 cached ? { w: cached.w, h: cached.h } : undefined,
               )
             : null;
@@ -2956,11 +3193,11 @@ export function useEditorDraw(
 
           if (useCenterDualFlow) {
             // Mirror draw-time center/right wrap geometry so caret hits map to side lanes.
-            const leftEnd = Math.max(0, Math.min(textMaxWidth, imageLeftX - textStartX - 8));
+            const leftEnd = Math.max(0, Math.min(innerRelRight, imageLeftX - textStartX - 8));
             const rightStart =
               imageMeta.align === 'right'
-                ? textMaxWidth
-                : Math.max(0, Math.min(textMaxWidth, imageLeftX - textStartX + imgDrawW + 8));
+                ? innerRelRight
+                : Math.max(0, Math.min(innerRelRight, imageLeftX - textStartX + imgDrawW + 8));
             centerWrapFlow = {
               leftEnd,
               rightStart,
@@ -2976,7 +3213,7 @@ export function useEditorDraw(
             const nextInlineXAbs = Math.max(textStartX, imageLeftX + imgDrawW + 4);
             const nextInlineXRel = Math.max(0, nextInlineXAbs - textStartX);
             const minLaneWidth = wrapFullHeightFlow ? 4 : 12;
-            if (nextInlineXRel > textMaxWidth - minLaneWidth) {
+            if (nextInlineXRel > innerRelRight - minLaneWidth) {
               lineCursorY += Math.max(baseLineHeight, imgDrawH);
               wrapLaneXRel = null;
               wrapLaneBottomY = 0;
@@ -3013,15 +3250,17 @@ export function useEditorDraw(
             let textLineStart = hitPart.start;
             for (let i = hitPart.start; i <= hitPart.end; i += 1) {
               if (i !== hitPart.end && cellText[i] !== '\n') continue;
+              if (!centerWrapFlow) break;
 
               const rawLineStart = textLineStart;
               const rawLineEnd = i;
 
-              if (lineCursorY < centerWrapFlow.bottomY - 0.5) {
+              const cwf = centerWrapFlow;
+              if (lineCursorY < cwf.bottomY - 0.5) {
                 const regions = [
-                  { start: 0, end: centerWrapFlow.leftEnd },
-                  { start: centerWrapFlow.rightStart, end: textMaxWidth },
-                ].filter((region) => region.end - region.start >= 4);
+                  { start: 0, end: cwf.leftEnd },
+                  { start: cwf.rightStart, end: innerRelRight },
+                ].filter((region) => region.end - region.start >= 12);
 
                 if (rawLineStart >= rawLineEnd) {
                   wrappedLines.push({
@@ -3034,68 +3273,78 @@ export function useEditorDraw(
                   lineCursorY += baseLineHeight;
                 } else {
                   let local = rawLineStart;
-                  let rowLineHeight = baseLineHeight;
-                  let placedChunk = false;
+                  // Mirror draw code: outer while loop so long lines fill multiple
+                  // rows of (left + right) regions before bottomY, matching draw's
+                  // `while (local < line.length)` loop in the center-wrap path.
+                  while (local < rawLineEnd) {
+                    let rowLineHeight = baseLineHeight;
+                    let placedChunk = false;
 
-                  for (const region of regions) {
-                    while (local < rawLineEnd && cellText[local] === ' ') local += 1;
-                    if (local >= rawLineEnd) break;
+                    for (const region of regions) {
+                      while (local < rawLineEnd && cellText[local] === ' ') local += 1;
+                      if (local >= rawLineEnd) break;
 
-                    const regionWidth = Math.max(12, region.end - region.start);
-                    const probeOffset = Math.max(0, Math.min(cellText.length, local + 1));
-                    const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
-                    const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
-                    const align = fmt.textAlign ?? 'left';
+                      const regionWidth = Math.max(12, region.end - region.start);
+                      const probeOffset = Math.max(0, Math.min(cellText.length, local + 1));
+                      const fmt = { ...DEFAULT_RUN_FMT, ...getFormatAt(cellRuns, probeOffset) };
+                      const lineH = computeLineHeight(fmt.fontSize, fmt.lineSpacing ?? 1.2);
+                      const align = fmt.textAlign ?? 'left';
 
-                    let bestEnd = local + 1;
-                    let breakAt = -1;
-                    for (let j = local + 1; j <= rawLineEnd; j += 1) {
-                      const width = measureRangeWidth(local, j);
-                      if (width <= regionWidth) {
-                        bestEnd = j;
-                        const ch = cellText[j - 1];
-                        if (ch === ' ' || ch === '-') breakAt = j;
-                      } else {
-                        break;
+                      let bestEnd = local + 1;
+                      let breakAt = -1;
+                      for (let j = local + 1; j <= rawLineEnd; j += 1) {
+                        const width = measureRangeWidth(local, j);
+                        if (width <= regionWidth) {
+                          bestEnd = j;
+                          const ch = cellText[j - 1];
+                          if (ch === ' ' || ch === '-') breakAt = j;
+                        } else {
+                          break;
+                        }
                       }
+                      if (bestEnd === local) bestEnd = local + 1;
+                      if (bestEnd < rawLineEnd && breakAt > local + 1) bestEnd = breakAt;
+
+                      const lineWidth = measureRangeWidth(local, bestEnd);
+                      const drawX =
+                        align === 'center'
+                          ? region.start + Math.max(0, (regionWidth - lineWidth) / 2)
+                          : align === 'right'
+                            ? region.start + Math.max(0, regionWidth - lineWidth)
+                            : region.start;
+
+                      wrappedLines.push({
+                        start: local,
+                        end: bestEnd,
+                        y: lineCursorY,
+                        lineH,
+                        drawX,
+                      });
+                      placedChunk = true;
+                      rowLineHeight = Math.max(rowLineHeight, lineH);
+
+                      local = bestEnd;
                     }
-                    if (bestEnd === local) bestEnd = local + 1;
-                    if (bestEnd < rawLineEnd && breakAt > local + 1) bestEnd = breakAt;
 
-                    const lineWidth = measureRangeWidth(local, bestEnd);
-                    const drawX =
-                      align === 'center'
-                        ? region.start + Math.max(0, (regionWidth - lineWidth) / 2)
-                        : align === 'right'
-                          ? region.start + Math.max(0, regionWidth - lineWidth)
-                          : region.start;
-
-                    wrappedLines.push({
-                      start: local,
-                      end: bestEnd,
-                      y: lineCursorY,
-                      lineH,
-                      drawX,
-                    });
-                    placedChunk = true;
-                    rowLineHeight = Math.max(rowLineHeight, lineH);
-
-                    local = bestEnd;
+                    if (!placedChunk) {
+                      wrappedLines.push({
+                        start: rawLineStart,
+                        end: rawLineStart,
+                        y: lineCursorY,
+                        lineH: baseLineHeight,
+                        drawX: 0,
+                      });
+                      break;
+                    }
+                    lineCursorY += rowLineHeight;
+                    if (lineCursorY >= cwf.bottomY - 0.5) {
+                      centerWrapFlow = null;
+                      break;
+                    }
                   }
-
-                  if (!placedChunk) {
-                    wrappedLines.push({
-                      start: rawLineStart,
-                      end: rawLineStart,
-                      y: lineCursorY,
-                      lineH: baseLineHeight,
-                      drawX: 0,
-                    });
-                  }
-                  lineCursorY += rowLineHeight;
                 }
 
-                if (lineCursorY >= centerWrapFlow.bottomY - 0.5) {
+                if (centerWrapFlow && lineCursorY >= centerWrapFlow.bottomY - 0.5) {
                   centerWrapFlow = null;
                 }
               } else {
