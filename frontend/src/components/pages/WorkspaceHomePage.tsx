@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { docsApi, versionsApi, workspaceApi } from '../../lib/api';
+import { docsApi, templatesApi, versionsApi, workspaceApi } from '../../lib/api';
 import { buildDocumentTree } from '../../lib/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../../lib/workspaceSelection';
 
@@ -53,41 +53,6 @@ type WorkspaceModalState =
   }
   | { type: 'info'; title: string; message: string };
 
-const TEMPLATES: Template[] = [
-  {
-    id: 'resume',
-    title: 'Resume',
-    description: 'Professional resume layout for job applications.',
-    icon: 'badge',
-    content:
-      '<h1>Your Name</h1><p>Email | Phone | LinkedIn</p><h2>Summary</h2><p>Write a concise professional summary.</p><h2>Experience</h2><p>Role - Company - Duration</p><h2>Education</h2><p>Degree - Institution - Year</p><h2>Skills</h2><p>List your skills.</p>',
-  },
-  {
-    id: 'letter',
-    title: 'Letter',
-    description: 'Formal letter format for official communication.',
-    icon: 'mail',
-    content:
-      '<p>Date</p><p>Recipient Name<br/>Organization<br/>Address</p><p>Subject: </p><p>Dear [Recipient],</p><p>Write your letter content here.</p><p>Sincerely,<br/>[Your Name]</p>',
-  },
-  {
-    id: 'proposal',
-    title: 'Project Proposal',
-    description: 'Structured proposal with goals, scope, and timeline.',
-    icon: 'description',
-    content:
-      '<h1>Project Proposal</h1><h2>Overview</h2><p>Briefly describe the project.</p><h2>Objectives</h2><ul><li>Objective 1</li><li>Objective 2</li></ul><h2>Scope</h2><p>Define what is included and excluded.</p><h2>Timeline</h2><p>Outline milestones and delivery dates.</p>',
-  },
-  {
-    id: 'meeting-notes',
-    title: 'Meeting Notes',
-    description: 'Capture agenda, decisions, and action items quickly.',
-    icon: 'event_note',
-    content:
-      '<h1>Meeting Notes</h1><p><strong>Date:</strong> </p><p><strong>Attendees:</strong> </p><h2>Agenda</h2><ul><li></li></ul><h2>Discussion</h2><p></p><h2>Decisions</h2><ul><li></li></ul><h2>Action Items</h2><ul><li>Owner - Task - Due date</li></ul>',
-  },
-];
-
 function prettyDate(iso: string) {
   const date = new Date(iso);
   return date.toLocaleString(undefined, {
@@ -125,6 +90,7 @@ export default function WorkspaceHomePage({
   const [docs, setDocs] = useState<DocSummary[]>([]);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingTemplate, setCreatingTemplate] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -161,9 +127,10 @@ export default function WorkspaceHomePage({
       setError('');
 
       try {
-        const [{ workspaces: availableWorkspaces }, { docs: list }] = await Promise.all([
+        const [{ workspaces: availableWorkspaces }, { docs: list }, { templates: availableTemplates }] = await Promise.all([
           workspaceApi.list(token),
           docsApi.list(token),
+          templatesApi.list(token),
         ]);
         if (ignore) return;
         // Backend provides an auto-created personal workspace (e.g. "Admin's Workspace").
@@ -173,6 +140,7 @@ export default function WorkspaceHomePage({
         );
         setWorkspaces(visibleWorkspaces);
         setDocs(list);
+        setTemplates(availableTemplates);
 
         // Fallback to personal workspace if saved selection no longer exists.
         const savedSelection = selectedWorkspaceIdRef.current;
@@ -881,9 +849,9 @@ export default function WorkspaceHomePage({
                   <h2 className="text-lg font-black tracking-tight text-slate-800">Launch A Template</h2>
                   <p className="mt-1 text-xs text-slate-500">Choose a pre-designed template to get started quickly</p>
                 </div>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  {TEMPLATES.map((template) => (
-                    <article key={template.id} className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white transition-all hover:-translate-y-1 hover:shadow-md">
+                <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
+                  {templates.map((template) => (
+                    <article key={template.id} className="group relative w-56 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white transition-all hover:-translate-y-1 hover:shadow-md">
                       <div className="p-5">
                         <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-cyan-500 text-white">
                           <span className="material-icons" style={{ fontSize: '1.25rem' }}>{template.icon}</span>

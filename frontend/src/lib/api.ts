@@ -64,6 +64,14 @@ export type BillingPlan = {
   };
 };
 
+export type TemplateSummary = {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  content: string;
+};
+
 export type BillingInvoice = {
   id: string;
   organizationId: string;
@@ -193,6 +201,11 @@ type FetchOptions = RequestInit & {
 };
 
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
 
 function getStoredCsrfToken() {
   if (typeof window === 'undefined') return '';
@@ -243,7 +256,10 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
     credentials: 'include',
   });
   const data: unknown = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401) unauthorizedHandler?.();
+    throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
   return data as T;
 }
 
@@ -261,6 +277,8 @@ export async function apiFetchText(path: string, options: FetchOptions = {}): Pr
     headers,
     credentials: 'include',
   });
+
+  if (res.status === 401) unauthorizedHandler?.();
 
   const text = await res.text();
   if (!res.ok) {
@@ -498,6 +516,11 @@ export const workspaceApi = {
       token,
       body: JSON.stringify({ name }),
     }),
+};
+
+export const templatesApi = {
+  list: (token: string) =>
+    apiFetch<{ templates: TemplateSummary[] }>('/api/templates', { token }),
 };
 
 export const organizationsApi = {

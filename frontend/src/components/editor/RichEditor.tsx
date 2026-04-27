@@ -2536,9 +2536,27 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       const prevDefaultLineSpacing = getDefaultLineSpacingForPageSize(prevSize);
       const nextDefaultFontSize = getDefaultFontSizeForPageSize(pageSize);
       const nextDefaultLineSpacing = getDefaultLineSpacingForPageSize(pageSize);
+      const fontScale = prevDefaultFontSize > 0 ? nextDefaultFontSize / prevDefaultFontSize : 1;
       prevPageSize.current = pageSize;
       setLeftMargin(DEFAULT_MARGINS[pageSize].left);
       setRightMargin(DEFAULT_MARGINS[pageSize].right);
+
+      const clampFontSize = (value: number) => Math.max(8, Math.min(72, Math.round(value)));
+
+      let didScaleRuns = false;
+      if (fontScale !== 1 && runsRef.current.length > 0) {
+        runsRef.current = runsRef.current.map((run) => {
+          const baseSize = Number.isFinite(run.fontSize) ? run.fontSize : prevDefaultFontSize;
+          const nextSize = clampFontSize(baseSize * fontScale);
+          if (nextSize !== run.fontSize) didScaleRuns = true;
+          return { ...run, fontSize: nextSize };
+        });
+      }
+
+      if (fontScale !== 1) {
+        const nextFmtFontSize = clampFontSize(curFmtRef.current.fontSize * fontScale);
+        curFmtRef.current = { ...curFmtRef.current, fontSize: nextFmtFontSize };
+      }
 
       if (curFmtRef.current.fontSize === prevDefaultFontSize) {
         curFmtRef.current = { ...curFmtRef.current, fontSize: nextDefaultFontSize };
@@ -2546,26 +2564,17 @@ const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       if (curFmtRef.current.lineSpacing === prevDefaultLineSpacing) {
         curFmtRef.current = { ...curFmtRef.current, lineSpacing: nextDefaultLineSpacing };
       }
-      const currentText = runsToText(runsRef.current);
-      if (
-        currentText.length === 0 &&
-        runsRef.current.length === 1 &&
-        runsRef.current[0].fontSize === prevDefaultFontSize
-      ) {
-        runsRef.current = [{
-          ...runsRef.current[0],
-          fontSize: nextDefaultFontSize,
-          lineSpacing:
-            runsRef.current[0].lineSpacing === prevDefaultLineSpacing
-              ? nextDefaultLineSpacing
-              : runsRef.current[0].lineSpacing,
-        }];
-      }
       setQuickFormattingState((prev) =>
         prev.fontSize === prevDefaultFontSize
           ? { ...prev, fontSize: nextDefaultFontSize }
-          : prev,
+          : fontScale !== 1
+            ? { ...prev, fontSize: clampFontSize(prev.fontSize * fontScale) }
+            : prev,
       );
+
+      if (didScaleRuns) {
+        emitChange();
+      }
 
       // Keep external toolbar state in sync immediately after mode/page-size switch.
       notifyFmt();

@@ -11,6 +11,7 @@ const todosRoutes = require('./routes/todos.routes');
 const aiRoutes = require('./routes/ai.routes');
 const grammarRoutes = require('./routes/grammar.routes');
 const workspacesRoutes = require('./routes/workspaces.routes');
+const templatesRoutes = require('./routes/templates.routes');
 const organizationsRoutes = require('./routes/organizations.routes');
 const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
 const billingRoutes = require('./routes/billing.routes');
@@ -37,6 +38,9 @@ app.use('/api/docs', docsRoutes);
 
 // Workspaces
 app.use('/api/workspaces', workspacesRoutes);
+
+// Templates
+app.use('/api/templates', templatesRoutes);
 
 // Organizations
 app.use('/api/organizations', organizationsRoutes);

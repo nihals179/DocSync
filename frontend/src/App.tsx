@@ -6,7 +6,7 @@ import RichEditor from './components/editor/RichEditor';
 import Toolbar from './components/toolbar/Toolbar';
 import type { CursorFormat, RichEditorHandle, Run } from './components/editor';
 import { isPageSize, type PageSize } from './components/editor/pageConfig';
-import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, versionsApi, workspaceApi } from './lib/api';
+import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, setUnauthorizedHandler, versionsApi, workspaceApi } from './lib/api';
 import { canvasRunsToHtml, canvasTextToHtml, htmlToCanvasText, htmlToRuns } from './lib/contentAdapter';
 import { buildDocumentTree } from './lib/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from './lib/workspaceSelection';
@@ -239,10 +239,9 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     docsApi
       .get(token, docId)
       .then(({ doc }) => {
-        const canvasText = htmlToCanvasText(doc.content ?? '');
         setTitle(doc.title ?? '');
-        setCurrentText(canvasText);
-        editorRef.current?.setContent?.(canvasText);
+        const runs = htmlToRuns(doc.content ?? '');
+        editorRef.current?.setRuns(runs);
       })
       .catch((error: unknown) => {
         console.error('Failed to load document.', error);
@@ -1954,6 +1953,17 @@ function App() {
   const handleOpenOrganizationAdmin = useCallback(() => {
     navigate('/organization-admin');
   }, [navigate]);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      applySession(null);
+      navigate('/auth', { replace: true });
+    });
+
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, [applySession, navigate]);
 
   if (!authReady) {
     return (

@@ -1,4 +1,4 @@
-import { DEFAULT_RUN_FMT, detectBulletPrefix, parseImageToken, parseTableToken, runsToText, type Run } from '../components/editor/textModel';
+import { DEFAULT_RUN_FMT, buildTableToken, detectBulletPrefix, parseImageToken, parseTableToken, runsToText, type Run } from '../components/editor/textModel';
 
 const TABLE_PLACEHOLDER_PREFIX = '__DOCSYNC_TABLE_BLOCK_';
 
@@ -447,6 +447,8 @@ export function htmlToRuns(html: string): Run[] {
       case 'h2': return 30;
       case 'h3': return 24;
       case 'h4': return 20;
+      case 'h5': return 18;
+      case 'h6': return 16;
       default: return 16;
     }
   }
@@ -454,6 +456,175 @@ export function htmlToRuns(html: string): Run[] {
   function pushRun(text: string, fmt: Run) {
     if (!text) return;
     runs.push({ ...fmt, text });
+  }
+
+  function inferBorderWidth(el: HTMLElement, fallback: number): number {
+    const widthFromProp = parseFloat(el.style.borderWidth);
+    if (!Number.isNaN(widthFromProp) && Number.isFinite(widthFromProp)) {
+      return Math.max(0, Math.round(widthFromProp));
+    }
+    const borderMatch = (el.style.border || '').match(/(\d+(?:\.\d+)?)px/i);
+    if (borderMatch) {
+      const px = parseFloat(borderMatch[1]);
+      if (!Number.isNaN(px) && Number.isFinite(px)) return Math.max(0, Math.round(px));
+    }
+    return fallback;
+  }
+
+  function inferBorderColor(el: HTMLElement, fallback: string | null): string | null {
+    if (el.style.borderColor) return el.style.borderColor;
+    return fallback;
+  }
+
+  function tableElementToToken(tableEl: HTMLTableElement): string | null {
+    const rowElements = Array.from(tableEl.querySelectorAll('tr'));
+    if (rowElements.length === 0) return null;
+
+    const columnCount = Math.max(
+      ...rowElements.map((row) => row.querySelectorAll('th,td').length),
+      0,
+    );
+    if (columnCount <= 0) return null;
+
+    const tableBorderWidth = inferBorderWidth(tableEl, 1);
+    const tableBorderColor = inferBorderColor(tableEl, '#cbd5e1');
+    const tableFmt = patchStyle({ ...BASE }, tableEl);
+    const tableWidthRaw = (tableEl.style.width || '').trim();
+    let tableWidthPx: number | undefined;
+    if (tableWidthRaw.endsWith('px')) {
+      const parsed = Number.parseFloat(tableWidthRaw.slice(0, -2));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        tableWidthPx = Math.round(parsed);
+      }
+    }
+
+    function collectCellRuns(node: Node, fmt: Run, bucket: Run[]) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = (node.textContent ?? '').replace(/\u00a0/g, ' ');
+        if (text) bucket.push({ ...fmt, text });
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+      const el = node as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      let next = patchStyle(fmt, el);
+
+      // void elements
+      if (tag === 'br') { bucket.push({ ...next, text: '\n' }); return; }
+      if (tag === 'wbr') return;
+
+      // text-level semantics — same rules as walkInline (WHATWG §4.5)
+      if (tag === 'strong' || tag === 'b' || tag === 'th') next = { ...next, bold: true };
+      if (tag === 'em' || tag === 'i') next = { ...next, italic: true };
+      if (tag === 'u' || tag === 'ins') next = { ...next, underline: true };
+      if (tag === 'cite' || tag === 'dfn' || tag === 'var') next = { ...next, italic: true };
+      if (tag === 'code' || tag === 'kbd' || tag === 'samp') next = { ...next, fontFamily: 'monospace' };
+      if (tag === 'mark') next = { ...next, highlightColor: next.highlightColor ?? '#fef08a' };
+      if (tag === 'small') next = { ...next, fontSize: Math.max(10, Math.round(next.fontSize * 0.85)) };
+      if (tag === 'sub' || tag === 'sup') next = { ...next, fontSize: Math.max(10, Math.round(next.fontSize * 0.75)) };
+      if (tag === 'a') {
+        const href = el.getAttribute('href') ?? undefined;
+        next = { ...next, href, color: '#2563eb', underline: true };
+      }
+      // <q> — inline quotation with typographic marks (WHATWG §4.5.7)
+      if (tag === 'q') {
+        bucket.push({ ...fmt, text: '“' });
+        for (const child of Array.from(el.childNodes)) collectCellRuns(child, next, bucket);
+        bucket.push({ ...fmt, text: '”' });
+        return;
+      }
+
+      // block elements inside cells emit a trailing newline (WHATWG §4.4)
+      const isCellBlock = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'blockquote', 'address'].includes(tag);
+      if (isCellBlock) {
+        for (const child of Array.from(el.childNodes)) collectCellRuns(child, next, bucket);
+        if (bucket.length > 0 && bucket[bucket.length - 1].text !== '\n') {
+          bucket.push({ ...next, text: '\n' });
+        }
+        return;
+      }
+
+      // lists inside cells (WHATWG §4.4.6/§4.4.8)
+      if (tag === 'ul' || tag === 'ol') {
+        let counter = 0;
+        for (const child of Array.from(el.children)) {
+          if (child.tagName.toLowerCase() !== 'li') continue;
+          counter++;
+          const liEl = child as HTMLElement;
+          const liFmt = patchStyle(next, liEl);
+          bucket.push({ ...liFmt, text: tag === 'ul' ? '• ' : `${counter}. ` });
+          for (const c of Array.from(liEl.childNodes)) collectCellRuns(c, liFmt, bucket);
+          if (bucket.length > 0 && bucket[bucket.length - 1].text !== '\n') {
+            bucket.push({ ...liFmt, text: '\n' });
+          }
+        }
+        return;
+      }
+
+      for (const child of Array.from(el.childNodes)) {
+        collectCellRuns(child, next, bucket);
+      }
+    }
+
+    const cells: Run[][][] = Array.from({ length: rowElements.length }, (_, rowIndex) => {
+      const rowEl = rowElements[rowIndex] as HTMLElement;
+      const rowFmt = patchStyle({ ...tableFmt }, rowEl);
+      const cellElements = Array.from(rowElements[rowIndex].children).filter((child) => {
+        const tag = child.tagName.toLowerCase();
+        return tag === 'th' || tag === 'td';
+      }) as HTMLElement[];
+
+      return Array.from({ length: columnCount }, (_, colIndex) => {
+        const cell = cellElements[colIndex] as HTMLElement | undefined;
+        if (!cell) return [];
+
+        const cellFmt = patchStyle({ ...rowFmt }, cell);
+        const baseCellFmt =
+          cell.tagName.toLowerCase() === 'th' ? { ...cellFmt, bold: true } : cellFmt;
+        const cellRuns: Run[] = [];
+
+        for (const child of Array.from(cell.childNodes)) {
+          collectCellRuns(child, baseCellFmt, cellRuns);
+        }
+
+        if (cellRuns.length === 0) {
+          const fallbackText = (cell.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+          if (!fallbackText) return [];
+          return [{ ...baseCellFmt, text: fallbackText }];
+        }
+
+        return cellRuns;
+      });
+    });
+
+    const cellBorders: Record<string, { width: number; color: string | null }> = {};
+    rowElements.forEach((rowEl, rowIndex) => {
+      const cellElements = Array.from(rowEl.children).filter((child) => {
+        const tag = child.tagName.toLowerCase();
+        return tag === 'th' || tag === 'td';
+      });
+      cellElements.forEach((cellEl, colIndex) => {
+        const htmlCell = cellEl as HTMLElement;
+        cellBorders[`${rowIndex}:${colIndex}`] = {
+          width: inferBorderWidth(htmlCell, tableBorderWidth),
+          color: inferBorderColor(htmlCell, tableBorderColor),
+        };
+      });
+    });
+
+    return buildTableToken({
+      rows: rowElements.length,
+      columns: columnCount,
+      cells,
+      widthPx: tableWidthPx,
+      borderWidth: tableBorderWidth,
+      borderColor: tableBorderColor,
+      cellBorders,
+      rowBorders: {},
+      columnBorders: {},
+      borderSegments: {},
+    });
   }
 
   function walkInline(node: Node, fmt: Run) {
@@ -466,13 +637,35 @@ export function htmlToRuns(html: string): Run[] {
     const el = node as HTMLElement;
     const tag = el.tagName.toLowerCase();
     let next = patchStyle(fmt, el);
+    // <br> is a void element representing a line break (WHATWG §4.4.11)
+    if (tag === 'br') { pushRun('\n', fmt); return; }
+
+    // Text-level semantic elements (WHATWG §4.5)
     if (tag === 'strong' || tag === 'b') next = { ...next, bold: true };
     if (tag === 'em' || tag === 'i') next = { ...next, italic: true };
-    if (tag === 'u') next = { ...next, underline: true };
+    if (tag === 'u' || tag === 'ins') next = { ...next, underline: true };
+    if (tag === 'cite' || tag === 'dfn' || tag === 'var') next = { ...next, italic: true };
+    if (tag === 'code' || tag === 'kbd' || tag === 'samp') next = { ...next, fontFamily: 'monospace' };
+    if (tag === 'mark') next = { ...next, highlightColor: next.highlightColor ?? '#fef08a' };
+    if (tag === 'small') next = { ...next, fontSize: Math.max(10, Math.round(next.fontSize * 0.85)) };
     if (tag === 'a') {
       const href = el.getAttribute('href') ?? undefined;
       next = { ...next, href, color: '#2563eb', underline: true };
     }
+
+    // <q> — quoted text with typographic quotation marks (WHATWG §4.5.7)
+    if (tag === 'q') {
+      pushRun('\u201c', fmt);
+      for (const child of Array.from(el.childNodes)) walkInline(child, next);
+      pushRun('\u201d', fmt);
+      return;
+    }
+    // <sub>/<sup> — subscript/superscript (WHATWG §4.5.19) — inline, reduced font size
+    if (tag === 'sub' || tag === 'sup') {
+      next = { ...next, fontSize: Math.max(10, Math.round(next.fontSize * 0.75)) };
+    }
+    // <wbr> — word-break opportunity (WHATWG §4.5.27) — void element, no output
+    if (tag === 'wbr') return;
     for (const child of Array.from(el.childNodes)) {
       walkInline(child, next);
     }
@@ -481,6 +674,24 @@ export function htmlToRuns(html: string): Run[] {
   function walkBlock(el: Element) {
     const tag = el.tagName.toLowerCase();
     const htmlEl = el as HTMLElement;
+
+    if (tag === 'div' && htmlEl.dataset.docsyncTableToken) {
+      const decodedToken = decodeUriComponentSafe(htmlEl.dataset.docsyncTableToken);
+      if (parseTableToken(decodedToken)) {
+        pushRun(decodedToken, { ...BASE });
+        pushRun('\n', { ...BASE });
+        return;
+      }
+    }
+
+    if (tag === 'table') {
+      const token = tableElementToToken(htmlEl as HTMLTableElement);
+      if (token) {
+        pushRun(token, { ...BASE });
+        pushRun('\n', { ...BASE });
+      }
+      return;
+    }
 
     if (tag === 'ul' || tag === 'ol') {
       let counter = 0;
@@ -492,14 +703,22 @@ export function htmlToRuns(html: string): Run[] {
         const prefix = tag === 'ul' ? '• ' : `${counter}. `;
         pushRun(prefix, fmt);
         for (const c of Array.from(liEl.childNodes)) {
-          walkInline(c, fmt);
+          // nested list — walk as block so items get proper prefixes (WHATWG §4.4.6/§4.4.8)
+          if (
+            c.nodeType === Node.ELEMENT_NODE &&
+            ['ul', 'ol'].includes((c as HTMLElement).tagName.toLowerCase())
+          ) {
+            walkBlock(c as Element);
+          } else {
+            walkInline(c, fmt);
+          }
         }
         pushRun('\n', fmt);
       }
       return;
     }
 
-    if (['h1', 'h2', 'h3', 'h4', 'p', 'div'].includes(tag)) {
+    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div'].includes(tag)) {
       const inner = htmlEl.textContent ?? '';
       // Spacer paragraph
       if (inner === '\u00a0' || inner.trim() === '') {
@@ -516,9 +735,130 @@ export function htmlToRuns(html: string): Run[] {
       return;
     }
 
-    // Fallback: recurse into children
-    for (const child of Array.from(el.children)) {
-      walkBlock(child);
+    // <pre> — preformatted text, monospace font, whitespace preserved (WHATWG §4.4.3)
+    if (tag === 'pre') {
+      const preFmt = patchStyle({ ...BASE, fontFamily: 'monospace' }, htmlEl);
+      const text = (htmlEl.textContent ?? '').replace(/\u00a0/g, ' ');
+      if (text.trim()) {
+        pushRun(text.trimEnd(), preFmt);
+        pushRun('\n', preFmt);
+      }
+      return;
+    }
+
+    // <blockquote> — block quotation, recurse its block children (WHATWG §4.4.4)
+    if (tag === 'blockquote') {
+      for (const child of Array.from(el.children)) walkBlock(child);
+      return;
+    }
+
+    // <hr> — thematic break, emit a blank line (WHATWG §4.4.2)
+    if (tag === 'hr') {
+      pushRun('\n', { ...BASE });
+      return;
+    }
+
+    // <dl> — description list: <dt> bold, <dd> indented (WHATWG §4.4.9)
+    if (tag === 'dl') {
+      for (const child of Array.from(el.children)) {
+        const ct = child.tagName.toLowerCase();
+        const childEl = child as HTMLElement;
+        const childFmt = patchStyle({ ...BASE }, childEl);
+        if (ct === 'dt') {
+          for (const c of Array.from(childEl.childNodes)) walkInline(c, { ...childFmt, bold: true });
+          pushRun('\n', { ...childFmt, bold: true });
+        } else if (ct === 'dd') {
+          pushRun('    ', childFmt);
+          for (const c of Array.from(childEl.childNodes)) walkInline(c, childFmt);
+          pushRun('\n', childFmt);
+        }
+      }
+      return;
+    }
+
+    // <figure> — figcaption as italic small text, other children as blocks (WHATWG §4.4.12)
+    if (tag === 'figure') {
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() === 'figcaption') {
+          const capFmt = patchStyle({ ...BASE, fontSize: 14, italic: true }, child as HTMLElement);
+          for (const c of Array.from((child as HTMLElement).childNodes)) walkInline(c, capFmt);
+          pushRun('\n', capFmt);
+        } else {
+          walkBlock(child);
+        }
+      }
+      return;
+    }
+
+    // <address> — contact info, conventionally italic (WHATWG §4.3.10)
+    if (tag === 'address') {
+      const addrFmt = patchStyle({ ...BASE, italic: true }, htmlEl);
+      for (const child of Array.from(el.childNodes)) walkInline(child, addrFmt);
+      pushRun('\n', addrFmt);
+      return;
+    }
+
+    // <menu> — list of commands, treat as unordered list (WHATWG §4.4.7)
+    if (tag === 'menu') {
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() !== 'li') continue;
+        const liEl = child as HTMLElement;
+        const fmt = patchStyle({ ...BASE }, liEl);
+        pushRun('• ', fmt);
+        for (const c of Array.from(liEl.childNodes)) walkInline(c, fmt);
+        pushRun('\n', fmt);
+      }
+      return;
+    }
+
+    // <details>/<summary> — disclosure widget (WHATWG §4.11.1)
+    if (tag === 'details') {
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() === 'summary') {
+          const sumFmt = patchStyle({ ...BASE, bold: true }, child as HTMLElement);
+          for (const c of Array.from((child as HTMLElement).childNodes)) walkInline(c, sumFmt);
+          pushRun('\n', sumFmt);
+        } else {
+          walkBlock(child);
+        }
+      }
+      return;
+    }
+
+    // Fallback: structural/sectioning container (WHATWG §4.3) — route each child node
+    // correctly so text nodes in sectioning elements are never silently dropped.
+    // Block children go through walkBlock; inline content is collected and flushed as a paragraph.
+    {
+      const BLOCK_TAGS = new Set([
+        'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'menu',
+        'table', 'pre', 'blockquote', 'hr', 'dl', 'figure', 'section',
+        'article', 'aside', 'header', 'footer', 'main', 'nav', 'address',
+        'details', 'dialog', 'fieldset', 'form', 'search',
+      ]);
+      const containerFmt = patchStyle({ ...BASE }, htmlEl);
+      const inlineBuf: Node[] = [];
+      const flushInline = () => {
+        if (inlineBuf.length === 0) return;
+        const hasText = inlineBuf.some(n => (n.textContent ?? '').replace(/\u00a0/g, ' ').trim().length > 0);
+        if (hasText) {
+          for (const n of inlineBuf) walkInline(n, containerFmt);
+          pushRun('\n', containerFmt);
+        }
+        inlineBuf.length = 0;
+      };
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          inlineBuf.push(child);
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          if (BLOCK_TAGS.has((child as HTMLElement).tagName.toLowerCase())) {
+            flushInline();
+            walkBlock(child as Element);
+          } else {
+            inlineBuf.push(child);
+          }
+        }
+      }
+      flushInline();
     }
   }
 
