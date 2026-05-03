@@ -24,3 +24,10 @@ Last updated: 2026-04-16
 ## Production Readiness Sign-off
 
 - ./production-readiness-checklist.md
+
+## Phase Guides
+
+- ./phase-1-authentication-core.md
+- ./phase-3-billing-and-entitlements.md
+- ./phase-4-enterprise-access-controls.md
+- ./phase-5-compliance-operational-readiness.md

@@ -75,6 +75,15 @@ function getUserAgent(req) {
   return req.get('user-agent') || 'unknown';
 }
 
+function isOrgIpAllowedForUser(req, user) {
+  if (!user?.currentOrganizationId) return true;
+  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  if (!security?.ipAllowlistEnabled || !Array.isArray(security.ipAllowlist) || security.ipAllowlist.length === 0) {
+    return true;
+  }
+  return security.ipAllowlist.includes(getRequestIp(req));
+}
+
 function audit(req, action, status, userId = null, metadata = {}) {
   const user = userId ? users.get(userId) : null;
   return writeAuditLog({
@@ -410,8 +419,19 @@ router.post('/login', loginRateLimit, async (req, res) => {
   users.set(user.id, user);
   ensureTenantBootstrapForUser(user);
 
+  if (!isOrgIpAllowedForUser(req, user)) {
+    audit(req, 'login-ip-policy', 'failure', user.id, {
+      reason: 'ip-not-allowlisted',
+      organizationId: user.currentOrganizationId,
+    });
+    return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
+  }
+
   const security = getOrganizationSecurityState(user.currentOrganizationId);
-  if (security?.requireMfa && !user.twoFactorEnabled) {
+  const hasActiveSsoProvider = Boolean(
+    security?.ssoProviders?.some((provider) => provider && provider.enabled !== false),
+  );
+  if (security?.requireMfa && !hasActiveSsoProvider && !user.twoFactorEnabled) {
     audit(req, 'login-mfa-policy', 'failure', user.id, {
       reason: 'mfa-required-by-organization',
       organizationId: user.currentOrganizationId,
@@ -453,6 +473,14 @@ router.post('/login/2fa', loginRateLimit, (req, res) => {
     return res.status(400).json({ error: 'Two-factor authentication is not configured.' });
   }
 
+  if (!isOrgIpAllowedForUser(req, user)) {
+    audit(req, 'login-2fa-ip-policy', 'failure', user.id, {
+      reason: 'ip-not-allowlisted',
+      organizationId: user.currentOrganizationId,
+    });
+    return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
+  }
+
   const valid = authenticator.check(code, user.twoFactorSecret);
   if (!valid) {
     audit(req, 'login-2fa', 'failure', user.id);
@@ -484,6 +512,16 @@ router.post('/refresh', authRateLimit, (req, res) => {
   if (!resolved) {
     clearAuthCookies(res);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
+  }
+
+  if (!isOrgIpAllowedForUser(req, resolved.user)) {
+    clearAuthCookies(res);
+    audit(req, 'session-refresh-ip-policy', 'failure', resolved.user.id, {
+      reason: 'ip-not-allowlisted',
+      organizationId: resolved.user.currentOrganizationId,
+      sessionId: resolved.session.id,
+    });
+    return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
   }
 
   const rotated = rotateSession(resolved.session, req);

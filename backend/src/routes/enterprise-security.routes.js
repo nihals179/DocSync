@@ -32,9 +32,11 @@ function sanitizeProvider(provider) {
 }
 
 function ensureProviderShape(provider) {
+  const rawType = String(provider.type || '').toLowerCase();
+  const normalizedType = rawType === 'saml' || rawType === 'ldap' ? rawType : 'oidc';
   return {
     id: provider.id,
-    type: String(provider.type || '').toLowerCase() === 'saml' ? 'saml' : 'oidc',
+    type: normalizedType,
     name: String(provider.name || 'SSO Provider').trim(),
     issuerUrl: provider.issuerUrl ? String(provider.issuerUrl).trim() : null,
     ssoUrl: provider.ssoUrl ? String(provider.ssoUrl).trim() : null,

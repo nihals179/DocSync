@@ -118,7 +118,7 @@ export type BillingSnapshot = {
 
 export type SsoProvider = {
   id: string;
-  type: 'oidc' | 'saml';
+  type: 'oidc' | 'saml' | 'ldap';
   name: string;
   issuerUrl: string | null;
   ssoUrl: string | null;
@@ -604,7 +604,7 @@ export const organizationsApi = {
   createSsoProvider: (
     token: string,
     payload: {
-      type: 'oidc' | 'saml';
+      type: 'oidc' | 'saml' | 'ldap';
       name: string;
       issuerUrl?: string;
       ssoUrl?: string;
@@ -623,7 +623,7 @@ export const organizationsApi = {
     token: string,
     providerId: string,
     payload: Partial<{
-      type: 'oidc' | 'saml';
+      type: 'oidc' | 'saml' | 'ldap';
       name: string;
       issuerUrl: string;
       ssoUrl: string;

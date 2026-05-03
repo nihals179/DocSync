@@ -168,3 +168,47 @@ test('ip allowlist blocks authenticated requests when address is not approved', 
     .set('x-forwarded-for', '10.10.10.10')
     .expect(200);
 });
+
+test('ip allowlist blocks new login sessions from unapproved addresses', async () => {
+  const client = request(app);
+  const email = 'ip-login-owner@acme.com';
+  const password = 'Password123!';
+
+  const registerRes = await client
+    .post('/api/auth/register')
+    .send({ name: 'IP Login Owner', email, password })
+    .expect(201);
+
+  await client
+    .post('/api/auth/verify-email')
+    .send({ token: registerRes.body.verificationTokenPreview })
+    .expect(200);
+
+  const initialLogin = await client
+    .post('/api/auth/login')
+    .set('x-forwarded-for', '10.10.10.10')
+    .send({ email, password, remember: false })
+    .expect(200);
+
+  await client
+    .put('/api/organizations/current/security/policies')
+    .set(authHeader(initialLogin.body.accessToken))
+    .set('x-forwarded-for', '10.10.10.10')
+    .send({
+      ipAllowlistEnabled: true,
+      ipAllowlist: ['10.10.10.10'],
+    })
+    .expect(200);
+
+  await client
+    .post('/api/auth/login')
+    .set('x-forwarded-for', '203.0.113.15')
+    .send({ email, password, remember: false })
+    .expect(403);
+
+  await client
+    .post('/api/auth/login')
+    .set('x-forwarded-for', '10.10.10.10')
+    .send({ email, password, remember: false })
+    .expect(200);
+});

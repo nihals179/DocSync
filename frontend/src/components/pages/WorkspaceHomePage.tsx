@@ -71,7 +71,7 @@ interface WorkspaceHomePageProps {
   onOpenReadOnlyDocument?: (docId: string) => void;
   onCreateDocument: (title: string, content: string, workspaceId?: string | null) => Promise<void>;
   onOpenSecuritySettings?: () => void;
-  onOpenOrganizationAdmin?: () => void;
+  onOpenEnterpriseSecurity?: () => void;
   onLogout?: () => void;
 }
 
@@ -82,7 +82,7 @@ export default function WorkspaceHomePage({
   onOpenReadOnlyDocument,
   onCreateDocument,
   onOpenSecuritySettings,
-  onOpenOrganizationAdmin,
+  onOpenEnterpriseSecurity,
   onLogout,
 }: WorkspaceHomePageProps) {
   const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
@@ -742,8 +742,8 @@ export default function WorkspaceHomePage({
                     <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenSecuritySettings?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>settings</span>Settings
                     </button>
-                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenOrganizationAdmin?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
-                      <span className="material-icons" style={{ fontSize: '1rem' }}>groups</span>Organization Admin
+                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenEnterpriseSecurity?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>shield</span>Enterprise Security
                     </button>
                     <button type="button" onClick={() => setProfileMenuOpen(false)} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>help</span>Help &amp; Support

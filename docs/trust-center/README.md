@@ -8,7 +8,7 @@ Owner: Security and Platform Team
 - Multi-tenant architecture with organization-scoped access controls
 - Role-based access control (owner, admin, editor, viewer)
 - Authentication controls: email verification, password reset, optional MFA, session revocation
-- Enterprise security controls: SSO provider config (OIDC/SAML), domain mapping, session policy, optional IP allowlist
+- Enterprise security controls: SSO provider config (OIDC/SAML/LDAP), domain mapping, session policy, optional IP allowlist
 - Audit logging for auth, organization admin events, and document access changes
 
 ## Data Protection Summary

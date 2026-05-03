@@ -9,7 +9,7 @@ interface EnterpriseSecuritySettingsPageProps {
 }
 
 type ProviderDraft = {
-  type: 'oidc' | 'saml';
+  type: 'oidc' | 'saml' | 'ldap';
   name: string;
   issuerUrl: string;
   ssoUrl: string;
@@ -239,9 +239,10 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
           <h2 className="text-xl font-black text-slate-900">SSO providers</h2>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <input placeholder="Provider name" value={providerDraft.name} onChange={(event) => setProviderDraft((prev) => ({ ...prev, name: event.target.value }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
-            <select value={providerDraft.type} onChange={(event) => setProviderDraft((prev) => ({ ...prev, type: event.target.value as 'oidc' | 'saml' }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500">
+            <select value={providerDraft.type} onChange={(event) => setProviderDraft((prev) => ({ ...prev, type: event.target.value as 'oidc' | 'saml' | 'ldap' }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500">
               <option value="oidc">OIDC</option>
               <option value="saml">SAML</option>
+              <option value="ldap">LDAP</option>
             </select>
             <input placeholder="Issuer URL (OIDC)" value={providerDraft.issuerUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, issuerUrl: event.target.value }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
             <input placeholder="SSO URL (SAML)" value={providerDraft.ssoUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, ssoUrl: event.target.value }))} className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />

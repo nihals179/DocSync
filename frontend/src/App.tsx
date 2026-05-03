@@ -67,6 +67,7 @@ type Session = AuthSuccess;
 const WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.workspacePanelCollapsed';
 const VIEWER_WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.viewerWorkspacePanelCollapsed';
 const SESSION_STORAGE_KEY = 'docsync.session';
+const ADMIN_SESSION_KEY = 'docsync.adminSession';
 const PAGE_SIZE_STORAGE_KEY = 'docsync.pageSize';
 
 const AiTool = lazy(() => import('./components/features/panels/AiTool'));
@@ -79,6 +80,7 @@ const AuthPage = lazy(() => import('./components/pages/AuthPage'));
 const BillingPortalPage = lazy(() => import('./components/pages/BillingPortalPage'));
 const EnterpriseSecuritySettingsPage = lazy(() => import('./components/pages/EnterpriseSecuritySettingsPage'));
 const LandingPage = lazy(() => import('./components/pages/LandingPage'));
+const AdminLoginPage = lazy(() => import('./components/pages/AdminLoginPage'));
 const OrganizationAdminPage = lazy(() => import('./components/pages/OrganizationAdminPage'));
 const OrganizationAuditConsolePage = lazy(() => import('./components/pages/OrganizationAuditConsolePage'));
 const ResetPasswordPage = lazy(() => import('./components/pages/ResetPasswordPage'));
@@ -1805,6 +1807,37 @@ function App() {
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const readPersistedAdminSession = useCallback((): Session | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.sessionStorage.getItem(ADMIN_SESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Session;
+      if (!parsed?.accessToken || !parsed.accessTokenExpiresAt || !parsed.user) {
+        window.sessionStorage.removeItem(ADMIN_SESSION_KEY);
+        return null;
+      }
+      if (new Date(parsed.accessTokenExpiresAt).getTime() <= Date.now()) {
+        window.sessionStorage.removeItem(ADMIN_SESSION_KEY);
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [adminSession, setAdminSession] = useState<Session | null>(() => readPersistedAdminSession());
+
+  const applyAdminSession = useCallback((auth: Session | null) => {
+    setAdminSession(auth);
+    if (typeof window !== 'undefined') {
+      try {
+        if (auth) window.sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(auth));
+        else window.sessionStorage.removeItem(ADMIN_SESSION_KEY);
+      } catch { /* ignore */ }
+    }
+  }, []);
 
   const readPersistedSession = useCallback((): Session | null => {
     if (typeof window === 'undefined') return null;
@@ -1950,12 +1983,18 @@ function App() {
     navigate('/security');
   }, [navigate]);
 
-  const handleOpenOrganizationAdmin = useCallback(() => {
-    navigate('/organization-admin');
+  const handleOpenEnterpriseSecurity = useCallback(() => {
+    navigate('/enterprise-security');
   }, [navigate]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      const path = typeof window !== 'undefined' ? window.location.pathname : '';
+      if (path.startsWith('/admin')) {
+        applyAdminSession(null);
+        navigate('/admin', { replace: true });
+        return;
+      }
       applySession(null);
       navigate('/auth', { replace: true });
     });
@@ -1963,7 +2002,7 @@ function App() {
     return () => {
       setUnauthorizedHandler(null);
     };
-  }, [applySession, navigate]);
+  }, [applyAdminSession, applySession, navigate]);
 
   if (!authReady) {
     return (
@@ -2030,7 +2069,7 @@ function App() {
               onOpenReadOnlyDocument={handleOpenReadOnlyDocument}
               onCreateDocument={handleCreateDocument}
               onOpenSecuritySettings={handleOpenSecuritySettings}
-              onOpenOrganizationAdmin={handleOpenOrganizationAdmin}
+              onOpenEnterpriseSecurity={handleOpenEnterpriseSecurity}
               onLogout={handleLogout}
             />
           ) : (
@@ -2039,12 +2078,16 @@ function App() {
         }
       />
       <Route
-        path="/organization-admin"
+        path="/admin"
         element={
-          session ? (
-            <OrganizationAdminPage token={session.accessToken} userName={session.user.name} />
+          adminSession ? (
+            <OrganizationAdminPage
+              token={adminSession.accessToken}
+              userName={adminSession.user.name}
+              onAdminLogout={() => applyAdminSession(null)}
+            />
           ) : (
-            <Navigate to="/auth" replace />
+            <AdminLoginPage onAuthSuccess={applyAdminSession} />
           )
         }
       />
