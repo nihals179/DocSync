@@ -1,7 +1,14 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
-const { documents, calculateOrganizationStorageBytes, getOrganizationEntitlements } = require('../store');
+const {
+  documents,
+  calculateOrganizationStorageBytes,
+  canCreateDocuments,
+  canUpdateDocuments,
+  consumeDocumentUpdates,
+  getOrganizationEntitlements,
+} = require('../store');
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
@@ -26,6 +33,14 @@ function bytes(value) {
  */
 router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, (req, res) => {
   const { title = 'Untitled', content = '', parentId = null, workspaceId = null } = req.body;
+  const createCheck = canCreateDocuments(req.organization.id, 1);
+  if (!createCheck.allowed) {
+    return res.status(402).json({
+      error: createCheck.reason,
+      code: 'document_limit_exceeded',
+    });
+  }
+
   const entitlements = getOrganizationEntitlements(req.organization.id);
   if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
 
@@ -130,6 +145,14 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   const doc = getDocForOrg(req.params.id, req.organization.id);
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
+  const updateCheck = canUpdateDocuments(req.organization.id, 1);
+  if (!updateCheck.allowed) {
+    return res.status(402).json({
+      error: updateCheck.reason,
+      code: 'document_update_limit_exceeded',
+    });
+  }
+
   if (req.body.content !== undefined) {
     const entitlements = getOrganizationEntitlements(req.organization.id);
     if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
@@ -153,6 +176,7 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   if (req.body.sortOrder !== undefined) doc.sortOrder = req.body.sortOrder;
   doc.updatedAt = new Date().toISOString();
   documents.set(doc.id, doc);
+  consumeDocumentUpdates(req.organization.id, 1);
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,

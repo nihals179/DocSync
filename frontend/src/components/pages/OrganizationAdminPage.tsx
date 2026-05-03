@@ -139,6 +139,10 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
   });
 
   const [memberFilters, setMemberFilters] = useState({ member: '', role: '', billing: '' });
+  const [inviteDraft, setInviteDraft] = useState<{ email: string; role: RoleValue }>({
+    email: '',
+    role: 'viewer',
+  });
   const [inviteFilters, setInviteFilters] = useState({ email: '', role: '', billing: '', expires: '', status: '' });
   const [documentFilters, setDocumentFilters] = useState({ title: '', preview: '', updated: '' });
   const [versionFilters, setVersionFilters] = useState({ document: '', versions: '', lastSaved: '' });
@@ -563,6 +567,29 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     }
   }
 
+  async function handleInviteMember() {
+    const email = inviteDraft.email.trim().toLowerCase();
+    if (!email) {
+      setError('Invite email is required.');
+      return;
+    }
+
+    setMessage('');
+    setError('');
+    try {
+      const { invite } = await organizationsApi.inviteMember(token, {
+        email,
+        role: inviteDraft.role,
+      });
+      setInvites((prev) => [invite, ...prev]);
+      setInviteDraft({ email: '', role: 'viewer' });
+      setMessage('Invite sent.');
+      setActiveView('invites');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to invite member.');
+    }
+  }
+
   async function saveSecurityPolicies() {
     setMessage('');
     setError('');
@@ -812,6 +839,31 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
                 {activeView === 'members' && (
                   <div className="overflow-x-auto">
+                    <div className="grid gap-2 border-b border-slate-200 bg-cyan-50/50 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+                      <input
+                        value={inviteDraft.email}
+                        onChange={(e) => setInviteDraft((prev) => ({ ...prev, email: e.target.value }))}
+                        placeholder="Invite by email"
+                        disabled={!canManageMembers}
+                        className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                      <select
+                        value={inviteDraft.role}
+                        onChange={(e) => setInviteDraft((prev) => ({ ...prev, role: e.target.value as RoleValue }))}
+                        disabled={!canManageMembers}
+                        className="rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500 disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleInviteMember()}
+                        disabled={!canManageMembers}
+                        className="rounded-none border border-cyan-200 bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Invite member
+                      </button>
+                    </div>
                     <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-3">
                       <input
                         value={memberFilters.member}

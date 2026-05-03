@@ -82,6 +82,12 @@ test('RBAC enforcement across invite, doc, workspace, and membership APIs', asyn
     email: 'owner@example.com',
   });
 
+  await client
+    .patch('/api/billing/seats')
+    .set(authHeader(owner.token))
+    .send({ purchasedSeats: 3 })
+    .expect(200);
+
   const ownerDocRes = await client
     .post('/api/docs')
     .set(authHeader(owner.token))
@@ -231,6 +237,12 @@ test('Owner-only safeguards are enforced for owner membership changes', async ()
     name: 'Org Owner',
     email: 'org-owner@example.com',
   });
+
+  await client
+    .patch('/api/billing/seats')
+    .set(authHeader(owner.token))
+    .send({ purchasedSeats: 2 })
+    .expect(200);
 
   const adminInviteRes = await client
     .post('/api/organizations/current/invites')

@@ -1,9 +1,12 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
 const { requireAuth } = require('../middleware/auth');
 const { resolveOrganizationContext, requirePermission } = require('../middleware/rbac');
 const {
+	canAssignCollaborators,
+	canAssignSeats,
   findOrganizationByDomain,
   getOrganizationSecurityState,
   organizationMemberships,
@@ -46,6 +49,28 @@ function ensureProviderShape(provider) {
     enabled: provider.enabled !== false,
     createdAt: provider.createdAt,
     updatedAt: provider.updatedAt,
+  };
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeImportedRole(input) {
+  const value = String(input || '').toLowerCase().trim();
+  if (value === 'owner' || value === 'admin' || value === 'editor' || value === 'viewer') return value;
+  return 'viewer';
+}
+
+function sanitizeImportedUser(row) {
+  const email = String(row?.email || '').trim().toLowerCase();
+  const hasValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if (!hasValidEmail) return null;
+  const displayName = String(row?.name || email.split('@')[0]).trim() || email.split('@')[0];
+  return {
+    email,
+    name: displayName,
+    role: normalizeImportedRole(row?.role),
   };
 }
 
@@ -228,6 +253,146 @@ router.post('/sso/simulate-login', requirePermission('organization.read'), (req,
     provider: sanitizeProvider(provider),
     user: user ? { id: user.id, email: user.email, name: user.name } : null,
     membershipStatus: mappedMembership?.status || null,
+  });
+});
+
+router.post('/current/security/ldap/import-users', requirePermission('organization.member.manage'), async (req, res) => {
+  const security = getOrganizationSecurityState(req.organization.id);
+  const enabledLdapProviders = security.ssoProviders.filter((provider) => provider.type === 'ldap' && provider.enabled !== false);
+  if (!enabledLdapProviders.length) {
+    return res.status(400).json({ error: 'No enabled LDAP provider configured for this organization.' });
+  }
+
+  const requestedProviderId = req.body?.providerId ? String(req.body.providerId) : '';
+  const selectedProvider = requestedProviderId
+    ? enabledLdapProviders.find((provider) => provider.id === requestedProviderId)
+    : enabledLdapProviders[0];
+
+  if (!selectedProvider) {
+    return res.status(404).json({ error: 'LDAP provider not found or disabled.' });
+  }
+
+  const rows = Array.isArray(req.body?.users) ? req.body.users : [];
+  if (!rows.length) return res.status(400).json({ error: 'users array is required.' });
+
+  const imported = [];
+  const skipped = [];
+  const failed = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const parsed = sanitizeImportedUser(rows[index]);
+    if (!parsed) {
+      failed.push({ index, reason: 'Invalid email format.' });
+      continue;
+    }
+
+    if (parsed.role === 'owner' && req.membership.role !== 'owner') {
+      failed.push({ email: parsed.email, reason: 'Only owner can import members with owner role.' });
+      continue;
+    }
+
+    let user = [...users.values()].find((item) => item.email === parsed.email) || null;
+    let existingMembership = user
+      ? [...organizationMemberships.values()].find(
+        (membership) => membership.organizationId === req.organization.id && membership.userId === user.id,
+      )
+      : null;
+
+    const needsSeat = !existingMembership || existingMembership.status !== 'active';
+    if (needsSeat) {
+      const seatCheck = canAssignSeats(req.organization.id, 1);
+      if (!seatCheck.allowed) {
+        failed.push({ email: parsed.email, reason: seatCheck.reason, code: 'seat_limit_exceeded' });
+        continue;
+      }
+    }
+
+    const hadCollaborator = existingMembership && existingMembership.status === 'active' && existingMembership.role !== 'viewer';
+    const needsCollaborator = parsed.role !== 'viewer' && !hadCollaborator;
+    if (needsCollaborator) {
+      const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
+      if (!collaboratorCheck.allowed) {
+        failed.push({ email: parsed.email, reason: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+        continue;
+      }
+    }
+
+    if (!user) {
+      user = {
+        id: uuidv4(),
+        name: parsed.name,
+        email: parsed.email,
+        passwordHash: await bcrypt.hash(uuidv4(), 12),
+        createdAt: nowIso(),
+        emailVerified: true,
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
+        role: 'user',
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        twoFactorTempSecret: null,
+        currentOrganizationId: req.organization.id,
+      };
+      users.set(user.id, user);
+    }
+
+    if (existingMembership && existingMembership.status === 'active' && existingMembership.role === parsed.role) {
+      skipped.push({ email: parsed.email, reason: 'Already an active member with same role.' });
+      continue;
+    }
+
+    if (existingMembership) {
+      existingMembership.status = 'active';
+      existingMembership.role = parsed.role;
+      existingMembership.updatedAt = nowIso();
+      organizationMemberships.set(existingMembership.id, existingMembership);
+      imported.push({ email: parsed.email, role: parsed.role, status: 'updated' });
+    } else {
+      existingMembership = {
+        id: uuidv4(),
+        organizationId: req.organization.id,
+        userId: user.id,
+        role: parsed.role,
+        billingAdmin: false,
+        status: 'active',
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      };
+      organizationMemberships.set(existingMembership.id, existingMembership);
+      imported.push({ email: parsed.email, role: parsed.role, status: 'created' });
+    }
+
+    if (!user.currentOrganizationId) {
+      user.currentOrganizationId = req.organization.id;
+      users.set(user.id, user);
+    }
+  }
+
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: req.organization.id,
+    action: 'organization.security.ldap.import-users',
+    metadata: {
+      providerId: selectedProvider.id,
+      requested: rows.length,
+      imported: imported.length,
+      skipped: skipped.length,
+      failed: failed.length,
+    },
+  });
+
+  return res.json({
+    message: 'LDAP import completed.',
+    provider: sanitizeProvider(selectedProvider),
+    summary: {
+      requested: rows.length,
+      imported: imported.length,
+      skipped: skipped.length,
+      failed: failed.length,
+    },
+    imported,
+    skipped,
+    failed,
   });
 });
 

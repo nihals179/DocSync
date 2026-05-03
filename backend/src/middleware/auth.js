@@ -8,6 +8,25 @@ const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 const INACTIVITY_TTL_MS = 30 * 60 * 1000; // Session expires after 30 min of UI inactivity
 const REFRESH_COOKIE = 'docsync_refresh';
 const CSRF_COOKIE = 'docsync_csrf';
+const ADMIN_REFRESH_COOKIE = 'docsync_admin_refresh';
+const ADMIN_CSRF_COOKIE = 'docsync_admin_csrf';
+
+function getAuthScope(req) {
+  return String(req?.get?.('x-auth-scope') || '').toLowerCase() === 'admin' ? 'admin' : 'workspace';
+}
+
+function resolveCookieNames(scope) {
+  if (scope === 'admin') {
+    return {
+      refreshCookie: ADMIN_REFRESH_COOKIE,
+      csrfCookie: ADMIN_CSRF_COOKIE,
+    };
+  }
+  return {
+    refreshCookie: REFRESH_COOKIE,
+    csrfCookie: CSRF_COOKIE,
+  };
+}
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -142,6 +161,10 @@ module.exports = {
   JWT_SECRET,
   REFRESH_COOKIE,
   CSRF_COOKIE,
+  ADMIN_REFRESH_COOKIE,
+  ADMIN_CSRF_COOKIE,
+  getAuthScope,
+  resolveCookieNames,
   hashToken,
   generateOpaqueToken,
   getCookieOptions,

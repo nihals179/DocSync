@@ -123,6 +123,7 @@ Behavior notes:
 - Access token is short-lived JWT
 - Refresh token is opaque, stored as hash in server session record
 - Session revocation supported per-session and revoke-all
+- Because session state is in-memory, backend restart clears refresh sessions and users are forced to sign in again.
 
 ### 4.5 Session Management UI
 
@@ -189,6 +190,10 @@ Store reference:
 3. Frontend keeps access token in app state and schedules renewal
 4. On failure, app clears session and redirects to `/auth`
 
+Important runtime caveat:
+- If the backend process restarts, in-memory `authSessions` are lost, so `/refresh` will fail even if browser cookies still exist.
+- This is expected with current in-memory persistence and is not a frontend-only issue.
+
 ### 5.4 Password reset
 1. User requests reset link by email
 2. Backend returns generic success response (prevents account enumeration)
@@ -238,6 +243,10 @@ Recommended variables:
 - `FRONTEND_URL=https://your-frontend-domain` (must match browser origin)
 - `JWT_SECRET=<strong-random-secret>`
 - `ACCESS_TOKEN_TTL=15m` (or chosen short TTL)
+
+JWT secret rotation guidance:
+- Rotating `JWT_SECRET` without a migration window invalidates all active access tokens immediately.
+- For zero-downtime rotation, support verify-with-old + sign-with-new until old tokens expire.
 
 Where used:
 - [backend/src/middleware/auth.js](backend/src/middleware/auth.js)
@@ -298,10 +307,11 @@ Before go-live, complete these actions:
 
 Current implementation is functionally complete for Phase 1, but these are important upgrades:
 1. Persistence gap: all auth/session/audit state is in-memory and resets on server restart.
-2. Email delivery gap: verification/reset uses dev preview responses, not real email transport.
-3. Configurability gap: lockout/rate/session constants are mostly hardcoded.
-4. Access-token TTL consistency gap: static ms helper should track configured TTL.
-5. Cookie hardening options can be expanded (for example stricter sameSite based on deployment).
+2. Restart impact: users with valid browser cookies are logged out after backend restart because refresh sessions are server-side and ephemeral.
+3. Email delivery gap: verification/reset uses dev preview responses, not real email transport.
+4. Configurability gap: lockout/rate/session constants are mostly hardcoded.
+5. Access-token TTL consistency gap: static ms helper should track configured TTL.
+6. Cookie hardening options can be expanded (for example stricter sameSite based on deployment).
 
 ## 11) Quick Test Plan
 

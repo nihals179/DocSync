@@ -78,7 +78,7 @@ export default function OrganizationAuditConsolePage({ token, userName }: Organi
             <Link to="/enterprise-security" className="rounded-xl border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700">
               Security settings
             </Link>
-            <Link to="/organization-admin" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
+            <Link to="/admin" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
               Organization admin
             </Link>
           </div>

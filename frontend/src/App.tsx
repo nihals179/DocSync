@@ -77,14 +77,12 @@ const SavedDocuments = lazy(() => import('./components/features/panels/SavedDocu
 const TodoList = lazy(() => import('./components/features/panels/TodoList'));
 
 const AuthPage = lazy(() => import('./components/pages/AuthPage'));
-const BillingPortalPage = lazy(() => import('./components/pages/BillingPortalPage'));
-const EnterpriseSecuritySettingsPage = lazy(() => import('./components/pages/EnterpriseSecuritySettingsPage'));
 const LandingPage = lazy(() => import('./components/pages/LandingPage'));
 const AdminLoginPage = lazy(() => import('./components/pages/AdminLoginPage'));
 const OrganizationAdminPage = lazy(() => import('./components/pages/OrganizationAdminPage'));
-const OrganizationAuditConsolePage = lazy(() => import('./components/pages/OrganizationAuditConsolePage'));
 const ResetPasswordPage = lazy(() => import('./components/pages/ResetPasswordPage'));
 const SecuritySettingsPage = lazy(() => import('./components/pages/SecuritySettingsPage'));
+const SettingsDashboardPage = lazy(() => import('./components/pages/SettingsDashboardPage'));
 const VerifyEmailPage = lazy(() => import('./components/pages/VerifyEmailPage'));
 const WorkspaceHomePage = lazy(() => import('./components/pages/WorkspaceHomePage'));
 
@@ -228,6 +226,8 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     tableSelected: false,
     tablePanelOpen: false,
     tablePartialTextSelection: false,
+    tableRoundedBorders: false,
+    tableBorderRadiusPx: 0,
   });
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -1293,7 +1293,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
             event.preventDefault();
             event.stopPropagation();
           }}
-          className="fixed z-[80] min-w-[170px] rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl"
+          className="fixed z-80 min-w-42.5 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
           aria-label="Document actions"
@@ -1324,7 +1324,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
       )}
 
       {workspaceModal && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/45 p-4">
+        <div className="fixed inset-0 z-90 flex items-center justify-center bg-slate-900/45 p-4">
           <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-2xl">
             {workspaceModal.type === 'transfer-workspace' && (
               <>
@@ -1803,6 +1803,28 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
 
 
 // ─── App shell ────────────────────────────────────────────────────────────────
+function AppLoadingScreen({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div className="fixed inset-0 z-100 flex items-center justify-center overflow-hidden bg-slate-50/65 px-6 backdrop-blur-[1px]">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-24 top-16 h-72 w-72 rounded-full bg-cyan-200/45 blur-3xl" />
+        <div className="absolute -right-20 bottom-16 h-72 w-72 rounded-full bg-sky-200/40 blur-3xl" />
+      </div>
+
+      <div className="relative w-full max-w-md px-6 py-8 text-center">
+        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-200/70 bg-white/60 backdrop-blur-sm">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-500" />
+        </div>
+        <p className="text-lg font-semibold text-slate-900">{title}</p>
+        <p className="mt-2 text-sm text-slate-600">{subtitle}</p>
+        <div className="mx-auto mt-6 h-1.5 max-w-56 overflow-hidden rounded-full bg-slate-200/80">
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-cyan-500" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
@@ -1881,35 +1903,58 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+    const isAdminPath = pathname.startsWith('/admin');
+    const isPublicPath =
+      pathname === '/' ||
+      pathname.startsWith('/auth') ||
+      pathname.startsWith('/verify-email') ||
+      pathname.startsWith('/reset-password');
     const restoredSession = readPersistedSession();
+    const isRestoredSessionUsable =
+      Boolean(restoredSession) &&
+      new Date(restoredSession?.accessTokenExpiresAt || 0).getTime() > Date.now() + 15_000;
 
     if (restoredSession) {
       applySession(restoredSession);
-      setAuthReady(true);
     }
 
-    authApi
-      .refresh()
+    const refreshWithRetry = async () => {
+      try {
+        return await authApi.refresh();
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        if (message.includes('csrf')) {
+          return authApi.refresh();
+        }
+        throw error;
+      }
+    };
+
+    refreshWithRetry()
       .then((auth) => {
         if (cancelled) return;
         applySession(auth);
-        if (!restoredSession) setAuthReady(true);
       })
       .catch(() => {
         if (cancelled) return;
-        const current = readPersistedSession();
-        if (!current) {
-          applySession(null);
+        if (isRestoredSessionUsable && restoredSession) {
+          applySession(restoredSession);
+          return;
+        }
+        applySession(null);
+        if (!isAdminPath && !isPublicPath) {
+          navigate('/auth', { replace: true });
         }
       })
       .finally(() => {
-        if (!cancelled && !restoredSession) setAuthReady(true);
+        if (!cancelled) setAuthReady(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [applySession, readPersistedSession]);
+  }, [applySession, navigate, readPersistedSession]);
 
   const refreshSession = useCallback(async () => {
     const auth = await authApi.refresh();
@@ -1923,7 +1968,11 @@ function App() {
     const timeout = window.setTimeout(() => {
       void refreshSession().catch(() => {
         applySession(null);
-        navigate('/auth', { replace: true });
+        const isAdminPath =
+          typeof window !== 'undefined' && window.location.pathname.startsWith('/admin');
+        if (!isAdminPath) {
+          navigate('/auth', { replace: true });
+        }
       });
     }, Math.max(refreshAt, 5_000));
 
@@ -1980,11 +2029,15 @@ function App() {
   }, [applySession, navigate, session]);
 
   const handleOpenSecuritySettings = useCallback(() => {
-    navigate('/security');
+    navigate('/settings?view=security');
   }, [navigate]);
 
-  const handleOpenEnterpriseSecurity = useCallback(() => {
-    navigate('/enterprise-security');
+  const handleOpenProfile = useCallback(() => {
+    navigate('/settings?view=profile');
+  }, [navigate]);
+
+  const handleOpenSettingsDashboard = useCallback(() => {
+    navigate('/settings');
   }, [navigate]);
 
   useEffect(() => {
@@ -2004,23 +2057,14 @@ function App() {
     };
   }, [applyAdminSession, applySession, navigate]);
 
-  if (!authReady) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-600">
-        Restoring your secure session...
-      </div>
-    );
-  }
-
   return (
-    <Suspense
-      fallback={(
-        <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-600">
-          Loading...
-        </div>
-      )}
-    >
-      <Routes>
+    <>
+      <Suspense
+        fallback={(
+          <AppLoadingScreen title="Loading DocSync" subtitle="Preparing your workspace and editor modules..." />
+        )}
+      >
+        <Routes>
       <Route
         path="/"
         element={
@@ -2068,8 +2112,9 @@ function App() {
               onOpenDocument={handleOpenDocument}
               onOpenReadOnlyDocument={handleOpenReadOnlyDocument}
               onCreateDocument={handleCreateDocument}
+              onOpenProfile={handleOpenProfile}
               onOpenSecuritySettings={handleOpenSecuritySettings}
-              onOpenEnterpriseSecurity={handleOpenEnterpriseSecurity}
+              onOpenSettingsDashboard={handleOpenSettingsDashboard}
               onLogout={handleLogout}
             />
           ) : (
@@ -2095,7 +2140,17 @@ function App() {
         path="/enterprise-security"
         element={
           session ? (
-            <EnterpriseSecuritySettingsPage token={session.accessToken} userName={session.user.name} />
+            <Navigate to="/settings" replace />
+          ) : (
+            <Navigate to="/auth" replace />
+          )
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          session ? (
+            <SettingsDashboardPage token={session.accessToken} userName={session.user.name} />
           ) : (
             <Navigate to="/auth" replace />
           )
@@ -2105,7 +2160,7 @@ function App() {
         path="/organization-audit"
         element={
           session ? (
-            <OrganizationAuditConsolePage token={session.accessToken} userName={session.user.name} />
+            <Navigate to="/settings" replace />
           ) : (
             <Navigate to="/auth" replace />
           )
@@ -2115,7 +2170,7 @@ function App() {
         path="/billing"
         element={
           session ? (
-            <BillingPortalPage token={session.accessToken} userName={session.user.name} />
+            <Navigate to="/settings" replace />
           ) : (
             <Navigate to="/auth" replace />
           )
@@ -2134,8 +2189,15 @@ function App() {
         }
       />
         <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+      {!authReady && (
+        <AppLoadingScreen
+          title="Restoring your secure session"
+          subtitle="Syncing credentials and workspace state..."
+        />
+      )}
+    </>
   );
 }
 

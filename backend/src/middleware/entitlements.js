@@ -1,4 +1,5 @@
 const {
+  canUseGrammar,
   canConsumeAiRequests,
   consumeAiRequests,
   getOrganizationEntitlements,
@@ -53,6 +54,20 @@ function requireAiQuota(req, res, next) {
   return next();
 }
 
+function requireGrammarAccess(req, res, next) {
+  if (!ensureOrganizationContext(req, res)) return;
+
+  const check = canUseGrammar(req.organization.id);
+  if (!check.allowed) {
+    return res.status(402).json({
+      error: check.reason,
+      code: 'grammar_access_expired',
+    });
+  }
+
+  return next();
+}
+
 function consumeAiQuota(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
@@ -70,6 +85,7 @@ function consumeAiQuota(req, res, next) {
 
 module.exports = {
   attachEntitlements,
+  requireGrammarAccess,
   requireAiQuota,
   consumeAiQuota,
 };

@@ -134,3 +134,37 @@ Covers:
 - CSV export endpoint behavior
 - IP allowlist enforcement for authenticated routes
 - IP allowlist enforcement for new login sessions
+
+## Plan-Based Document Feature Limits
+
+Membership tiers:
+- free
+- pro
+- enterprise
+- onprem
+
+Applied limits:
+- Create documents:
+  - free: 10 documents
+  - pro/enterprise/onprem: unlimited
+- Update documents:
+  - free: 1000 updates per month
+  - pro/enterprise/onprem: unlimited
+- Version history retention:
+  - free: 7 days
+  - pro/enterprise/onprem: unlimited
+- Grammar checker access:
+  - free: first 10 days
+  - pro/enterprise/onprem: unlimited
+- AI assistant for document help:
+  - free: first 10 days and up to 200 requests per month
+  - pro/enterprise/onprem: up to 5000 requests per month
+
+Enforcement points:
+- backend/src/routes/docs.routes.js
+- backend/src/routes/versions.routes.js
+- backend/src/routes/grammar.routes.js
+- backend/src/routes/ai.routes.js
+- backend/src/middleware/entitlements.js
+- backend/src/store/catalog.js
+- backend/src/store/index.js

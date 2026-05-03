@@ -1,11 +1,29 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
-const { documents, versions } = require('../store');
+const { documents, getVersionHistoryRetentionDays, versions } = require('../store');
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 
 const router = express.Router({ mergeParams: true });
+
+function parseSavedAtMs(savedAt) {
+  const ts = Date.parse(String(savedAt || ''));
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function getRetentionCutoffMs(retentionDays) {
+  if (retentionDays === null || retentionDays === undefined) return null;
+  const days = Number(retentionDays);
+  if (!Number.isFinite(days) || days <= 0) return Date.now();
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function filterVersionsByRetention(versionsList, retentionDays) {
+  const cutoffMs = getRetentionCutoffMs(retentionDays);
+  if (cutoffMs === null) return versionsList;
+  return versionsList.filter((item) => parseSavedAtMs(item.savedAt) >= cutoffMs);
+}
 
 function getDoc(docId, organizationId, res) {
   const doc = documents.get(docId);
@@ -19,7 +37,9 @@ function getDoc(docId, organizationId, res) {
  */
 router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.read'), (req, res) => {
   if (!getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = (versions.get(req.params.docId) ?? []).map(({ id, preview, savedAt }) => ({ id, preview, savedAt }));
+  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retained = filterVersionsByRetention(versions.get(req.params.docId) ?? [], retentionDays);
+  const list = retained.map(({ id, preview, savedAt }) => ({ id, preview, savedAt }));
   res.json({ versions: list });
 });
 
@@ -37,7 +57,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
     id: uuidv4(),
     preview: (preview ?? content.replace(/<[^>]+>/g, '').trim()).slice(0, 90),
     content,
-    savedAt: new Date().toLocaleString(),
+    savedAt: new Date().toISOString(),
   };
   const list = versions.get(req.params.docId) ?? [];
   list.unshift(version);
@@ -55,8 +75,12 @@ router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requ
   const doc = getDoc(req.params.docId, req.organization.id, res);
   if (!doc) return;
   const list = versions.get(req.params.docId) ?? [];
+  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retainedList = filterVersionsByRetention(list, retentionDays);
   const version = list.find((v) => v.id === req.params.versionId);
-  if (!version) return res.status(404).json({ error: 'Version not found.' });
+  if (!version || !retainedList.some((item) => item.id === version.id)) {
+    return res.status(404).json({ error: 'Version not found.' });
+  }
 
   doc.content = version.content;
   doc.updatedAt = new Date().toISOString();
@@ -70,6 +94,11 @@ router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requ
 router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePermission('document.version.delete'), (req, res) => {
   if (!getDoc(req.params.docId, req.organization.id, res)) return;
   const list = versions.get(req.params.docId) ?? [];
+  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retainedIds = new Set(filterVersionsByRetention(list, retentionDays).map((item) => item.id));
+  if (!retainedIds.has(req.params.versionId)) {
+    return res.status(404).json({ error: 'Version not found.' });
+  }
   const idx = list.findIndex((v) => v.id === req.params.versionId);
   if (idx === -1) return res.status(404).json({ error: 'Version not found.' });
   list.splice(idx, 1);

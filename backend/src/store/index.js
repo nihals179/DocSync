@@ -1,111 +1,23 @@
-/**
- * In-memory data store.
- * Each Map is keyed by entity ID.
- * Swap these out for a real DB (Postgres, MongoDB, etc.) later.
- */
-
 const { v4: uuidv4 } = require('uuid');
-
-/** @type {Map<string, { id: string, name: string, username?: string, email: string, passwordHash: string, createdAt: string, emailVerified: boolean, failedLoginAttempts: number, lockoutUntil: string | null, role?: string, twoFactorEnabled: boolean, twoFactorSecret: string | null, twoFactorTempSecret: string | null }>} */
-const users = new Map();
-
-/** @type {Map<string, { id: string, name: string, ownerUserId: string, createdAt: string, updatedAt: string, billing?: Record<string, unknown> }>} */
-const organizations = new Map();
-
-const PLAN_CATALOG = {
-	free: {
-		id: 'free',
-		name: 'Free',
-		priceMonthlyCents: 0,
-		limits: {
-			seats: 3,
-			storageBytes: 1024 * 1024 * 1024,
-			aiRequestsPerMonth: 200,
-			collaborators: 2,
-		},
-	},
-	pro: {
-		id: 'pro',
-		name: 'Pro',
-		priceMonthlyCents: 2900,
-		limits: {
-			seats: 10,
-			storageBytes: 20 * 1024 * 1024 * 1024,
-			aiRequestsPerMonth: 5000,
-			collaborators: 8,
-		},
-	},
-	business: {
-		id: 'business',
-		name: 'Business',
-		priceMonthlyCents: 12900,
-		limits: {
-			seats: 50,
-			storageBytes: 200 * 1024 * 1024 * 1024,
-			aiRequestsPerMonth: 30000,
-			collaborators: 40,
-		},
-	},
-	enterprise: {
-		id: 'enterprise',
-		name: 'Enterprise',
-		priceMonthlyCents: 39900,
-		limits: {
-			seats: 500,
-			storageBytes: 2 * 1024 * 1024 * 1024 * 1024,
-			aiRequestsPerMonth: 200000,
-			collaborators: 450,
-		},
-	},
-};
-
-const TRIAL_DAYS_BY_PLAN = {
-	pro: 14,
-	business: 14,
-	enterprise: 30,
-};
-
-/** @type {Map<string, { id: string, organizationId: string, userId: string, role: 'owner' | 'admin' | 'editor' | 'viewer', billingAdmin: boolean, status: 'active' | 'removed', createdAt: string, updatedAt: string }>} */
-const organizationMemberships = new Map();
-
-/** @type {Map<string, { id: string, token: string, organizationId: string, email: string, role: 'owner' | 'admin' | 'editor' | 'viewer', billingAdmin: boolean, status: 'pending' | 'accepted' | 'expired' | 'cancelled', invitedByUserId: string, createdAt: string, updatedAt: string, expiresAt: string, acceptedAt: string | null }>} */
-const organizationInvites = new Map();
-
-/** @type {Map<string, { id: string, userId: string, refreshTokenHash: string, csrfToken: string, createdAt: string, lastUsedAt: string, expiresAt: string, revokedAt: string | null, remember: boolean, userAgent: string, ipAddress: string }>} */
-const authSessions = new Map();
-
-/** @type {Map<string, { id: string, organizationId: string, provider: string, status: 'draft' | 'open' | 'paid' | 'failed' | 'void', amountCents: number, currency: string, periodStart: string | null, periodEnd: string | null, issuedAt: string, paidAt: string | null, hostedUrl: string | null }>} */
-const invoices = new Map();
-
-/** @type {Map<string, { organizationId: string, monthKey: string, aiRequests: number }>} */
-const organizationUsage = new Map();
-
-/** @type {Map<string, { id: string, eventId: string, provider: string, type: string, payload: Record<string, unknown>, status: 'queued' | 'processing' | 'processed' | 'failed', attempts: number, maxAttempts: number, nextAttemptAt: string, lastError: string | null, createdAt: string, updatedAt: string }>} */
-const webhookJobs = new Map();
-
-/** @type {Map<string, { eventId: string, provider: string, processedAt: string }>} */
-const processedWebhookEvents = new Map();
-
-/** @type {Map<string, { id: string, userId: string, type: 'email-verification' | 'password-reset', expiresAt: string, createdAt: string }>} */
-const authTokens = new Map();
-
-/** @type {Map<string, { id: string, userId: string | null, action: string, status: 'success' | 'failure', ipAddress: string, userAgent: string, createdAt: string, metadata?: Record<string, unknown> }>} */
-const auditLogs = new Map();
-
-/** @type {Map<string, { id: string, title: string, content: string, userId: string, createdAt: string, updatedAt: string }>} */
-const documents = new Map();
-
-/** @type {Map<string, Array<{ id: string, text: string, userId: string, createdAt: string }>>} */
-const comments = new Map();
-
-/** @type {Map<string, Array<{ id: string, preview: string, content: string, savedAt: string }>>} */
-const versions = new Map();
-
-/** @type {Map<string, Array<{ id: string, text: string, done: boolean }>>} */
-const todos = new Map();
-
-/** @type {Map<string, { id: string, name: string, ownerId: string, memberIds: string[], createdAt: string, updatedAt: string }>} */
-const workspaces = new Map();
+const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN } = require('./catalog');
+const {
+	users,
+	organizations,
+	organizationMemberships,
+	organizationInvites,
+	authSessions,
+	invoices,
+	organizationUsage,
+	webhookJobs,
+	processedWebhookEvents,
+	authTokens,
+	auditLogs,
+	documents,
+	comments,
+	versions,
+	todos,
+	workspaces,
+} = require('./schemas');
 
 function nowIso() {
 	return new Date().toISOString();
@@ -288,9 +200,92 @@ function getOrganizationUsage(organizationId) {
 		organizationId,
 		monthKey,
 		aiRequests: existing && existing.monthKey === monthKey ? existing.aiRequests : 0,
+		documentUpdates: existing && existing.monthKey === monthKey ? (existing.documentUpdates || 0) : 0,
 	};
 	organizationUsage.set(organizationId, usage);
 	return usage;
+}
+
+function isWithinPlanAccessDays(organization, accessDays) {
+	if (!organization) return false;
+	if (accessDays === null || accessDays === undefined) return true;
+	const parsedDays = Number(accessDays);
+	if (!Number.isFinite(parsedDays) || parsedDays <= 0) return false;
+	const startAtMs = new Date(organization.createdAt || nowIso()).getTime();
+	const expiresAtMs = startAtMs + parsedDays * 24 * 60 * 60 * 1000;
+	return Date.now() <= expiresAtMs;
+}
+
+function countOrganizationDocuments(organizationId) {
+	let total = 0;
+	for (const doc of documents.values()) {
+		if (doc.organizationId === organizationId) total += 1;
+	}
+	return total;
+}
+
+function canCreateDocuments(organizationId, additionalDocuments = 1) {
+	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+	const plan = getPlan(billing.planId);
+	const limit = plan.limits.documents;
+	if (limit === null || limit === undefined) {
+		return { allowed: true, current: countOrganizationDocuments(organizationId), limit: null };
+	}
+	const current = countOrganizationDocuments(organizationId);
+	const nextTotal = current + Math.max(0, additionalDocuments);
+	if (nextTotal > limit) {
+		return {
+			allowed: false,
+			reason: `Document limit reached (${current}/${limit}) for ${plan.name} plan.`,
+		};
+	}
+	return { allowed: true, current, limit };
+}
+
+function canUpdateDocuments(organizationId, additionalUpdates = 1) {
+	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+	const plan = getPlan(billing.planId);
+	const limit = plan.limits.documentUpdatesPerMonth;
+	const usage = getOrganizationUsage(organizationId);
+	if (limit === null || limit === undefined) {
+		return { allowed: true, usage, limit: null };
+	}
+	const nextTotal = (usage.documentUpdates || 0) + Math.max(0, additionalUpdates);
+	if (nextTotal > limit) {
+		return {
+			allowed: false,
+			reason: `Document update limit reached (${usage.documentUpdates || 0}/${limit}) for ${plan.name} plan.`,
+			usage,
+			limit,
+		};
+	}
+	return { allowed: true, usage, limit };
+}
+
+function consumeDocumentUpdates(organizationId, count = 1) {
+	const check = canUpdateDocuments(organizationId, count);
+	if (!check.allowed) return check;
+	const usage = getOrganizationUsage(organizationId);
+	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
+	organizationUsage.set(organizationId, usage);
+	return { allowed: true, usage };
+}
+
+function canUseGrammar(organizationId) {
+	const organization = organizations.get(organizationId);
+	if (!organization) return { allowed: false, reason: 'Organization not found.' };
+	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+	const plan = getPlan(billing.planId);
+	if (isWithinPlanAccessDays(organization, plan.limits.grammarAccessDays)) {
+		return { allowed: true };
+	}
+	return {
+		allowed: false,
+		reason: `Grammar checker access expired for ${plan.name} plan.`,
+	};
 }
 
 function getAssignedSeatCount(organizationId) {
@@ -348,12 +343,20 @@ function calculateOrganizationStorageBytes(organizationId) {
 }
 
 function canConsumeAiRequests(organizationId, count = 1) {
+	const organization = organizations.get(organizationId);
+	if (!organization) return { allowed: false, reason: 'Organization not found.' };
 	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	if (billing.status === 'suspended') {
 		return { allowed: false, reason: 'Subscription suspended due to failed payments.' };
 	}
 	const plan = getPlan(billing.planId);
+	if (!isWithinPlanAccessDays(organization, plan.limits.aiAccessDays)) {
+		return {
+			allowed: false,
+			reason: `AI assistant access expired for ${plan.name} plan.`,
+		};
+	}
 	const usage = getOrganizationUsage(organizationId);
 	const nextUsage = usage.aiRequests + Math.max(0, count);
 	if (nextUsage > plan.limits.aiRequestsPerMonth) {
@@ -391,15 +394,28 @@ function getOrganizationEntitlements(organizationId) {
 			storageBytes: plan.limits.storageBytes,
 			aiRequestsPerMonth: plan.limits.aiRequestsPerMonth,
 			collaborators: plan.limits.collaborators,
+			documents: plan.limits.documents,
+			documentUpdatesPerMonth: plan.limits.documentUpdatesPerMonth,
+			versionHistoryDays: plan.limits.versionHistoryDays,
+			grammarAccessDays: plan.limits.grammarAccessDays,
+			aiAccessDays: plan.limits.aiAccessDays,
 		},
 		usage: {
 			monthKey: usage.monthKey,
 			aiRequests: usage.aiRequests,
+			documentUpdates: usage.documentUpdates || 0,
 			assignedSeats,
 			storageUsedBytes,
 			collaboratorsAssigned,
 		},
 	};
+}
+
+function getVersionHistoryRetentionDays(organizationId) {
+	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	if (!billing) return null;
+	const plan = getPlan(billing.planId);
+	return plan.limits.versionHistoryDays;
 }
 
 function upsertInvoice(invoice) {
@@ -492,6 +508,7 @@ function ensureOrganizationForUser(user) {
 	const existingMembership = [...organizationMemberships.values()].find(
 		(membership) => membership.userId === user.id && membership.status === 'active',
 	);
+
 	if (existingMembership) {
 		const existingOrg = organizations.get(existingMembership.organizationId);
 		if (existingOrg) {
@@ -611,6 +628,11 @@ module.exports = {
 	calculateOrganizationStorageBytes,
 	canConsumeAiRequests,
 	consumeAiRequests,
+	canCreateDocuments,
+	canUpdateDocuments,
+	consumeDocumentUpdates,
+	canUseGrammar,
+	getVersionHistoryRetentionDays,
 	upsertInvoice,
 	listInvoicesByOrganization,
 	enqueueWebhookJob,

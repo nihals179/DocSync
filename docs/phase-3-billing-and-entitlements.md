@@ -27,10 +27,10 @@
 │  POST /api/billing-webhooks/provider   ◄── Stripe/etc.  │
 │                                                         │
 │  ┌────────────────┐   ┌──────────────────────────────┐  │
-│  │ billing/       │   │ middleware/entitlements.js    │  │
-│  │ service.js     │   │  - attachEntitlements         │  │
-│  │  processBilling│   │  - requireAiQuota             │  │
-│  │  Event()       │   │  - consumeAiQuota             │  │
+│  │ billing/       │   │ middleware/entitlements.js   │  │
+│  │ service.js     │   │  - attachEntitlements        │  │
+│  │  processBilling│   │  - requireAiQuota            │  │
+│  │  Event()       │   │  - consumeAiQuota            │  │
 │  │  webhookWorker │   └──────────────────────────────┘  │
 │  └────────────────┘                                     │
 │                                                         │

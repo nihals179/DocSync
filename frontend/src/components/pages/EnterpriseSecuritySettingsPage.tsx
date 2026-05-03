@@ -168,7 +168,7 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
             <Link to="/organization-audit" className="rounded-xl border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700">
               Audit console
             </Link>
-            <Link to="/organization-admin" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
+            <Link to="/admin" className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
               Organization admin
             </Link>
           </div>

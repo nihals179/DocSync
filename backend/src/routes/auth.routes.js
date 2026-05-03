@@ -24,9 +24,9 @@ const { v4: uuidv4 } = require('uuid');
 
 const {
   authSessions,
-  authTokens,
   ensureTenantBootstrapForUser,
   findOrganizationByDomain,
+  getOrganizationBillingState,
   getOrganizationSecurityState,
   organizationMemberships,
   ensureWorkspaceForUser,
@@ -34,18 +34,34 @@ const {
 } = require('../store');
 const { writeAuditLog, listAuditLogs } = require('../lib/audit');
 const {
-  CSRF_COOKIE,
-  REFRESH_COOKIE,
-  generateOpaqueToken,
-  getCookieOptions,
-  getCsrfCookieOptions,
-  hashToken,
+  getAuthScope,
+  resolveCookieNames,
   requireAuth,
   resolveUserFromSession,
-  signAccessToken,
   signTwoFactorToken,
   verifyTwoFactorToken,
 } = require('../middleware/auth');
+const {
+  nowIso,
+  getRequestIp,
+  getUserAgent,
+  isOrgIpAllowedForUser,
+  ensureUserShape,
+  publicUser,
+  issueOneTimeToken,
+  consumeOneTimeToken,
+  clearAuthCookies,
+  createSession,
+  rotateSession,
+  writeSessionCookies,
+  buildAuthResponse,
+  matchesRefreshToken,
+  validateCsrf,
+  revokeSession,
+  revokeAllUserSessions,
+  findUserByIdentifier,
+} = require('../middleware/auth-helpers');
+
 const {
   authRateLimit,
   loginRateLimit,
@@ -55,34 +71,12 @@ const {
 
 const router = express.Router();
 const DEV_MODE = process.env.NODE_ENV !== 'production';
+const EMAIL_VERIFICATION_BYPASS = process.env.AUTH_BYPASS_EMAIL_VERIFICATION === 'true';
 const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_MS = 30 * 60 * 1000;
-const REMEMBER_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
-const STANDARD_SESSION_MS = 8 * 60 * 60 * 1000;
 const APP_NAME = 'DocSync';
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function getRequestIp(req) {
-  return req.headers['x-forwarded-for']?.toString().split(',')[0].trim() || req.ip || 'unknown';
-}
-
-function getUserAgent(req) {
-  return req.get('user-agent') || 'unknown';
-}
-
-function isOrgIpAllowedForUser(req, user) {
-  if (!user?.currentOrganizationId) return true;
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
-  if (!security?.ipAllowlistEnabled || !Array.isArray(security.ipAllowlist) || security.ipAllowlist.length === 0) {
-    return true;
-  }
-  return security.ipAllowlist.includes(getRequestIp(req));
-}
 
 function audit(req, action, status, userId = null, metadata = {}) {
   const user = userId ? users.get(userId) : null;
@@ -99,171 +93,11 @@ function audit(req, action, status, userId = null, metadata = {}) {
   });
 }
 
-function getOrgSessionDurationMs(user, remember) {
-  if (!user?.currentOrganizationId) {
-    return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
-  }
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
-  if (!security) {
-    return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
-  }
-  const orgMs = Math.min(24, Math.max(1, Number(security.sessionDurationHours || 8))) * 60 * 60 * 1000;
-  return remember ? Math.min(REMEMBER_SESSION_MS, orgMs) : orgMs;
+function hasActiveSubscription(organizationId) {
+  const billing = getOrganizationBillingState(organizationId);
+  return Boolean(billing?.subscriptionId);
 }
 
-function ensureUserShape(user) {
-  if (!user) return null;
-  if (typeof user.emailVerified !== 'boolean') user.emailVerified = false;
-  if (typeof user.failedLoginAttempts !== 'number') user.failedLoginAttempts = 0;
-  if (user.lockoutUntil === undefined) user.lockoutUntil = null;
-  if (typeof user.twoFactorEnabled !== 'boolean') user.twoFactorEnabled = false;
-  if (user.twoFactorSecret === undefined) user.twoFactorSecret = null;
-  if (user.twoFactorTempSecret === undefined) user.twoFactorTempSecret = null;
-  if (user.currentOrganizationId === undefined) user.currentOrganizationId = null;
-  return user;
-}
-
-function publicUser(user) {
-  const current = ensureUserShape(user);
-  ensureTenantBootstrapForUser(current);
-  return {
-    id: current.id,
-    name: current.name,
-    email: current.email,
-    emailVerified: current.emailVerified,
-    twoFactorEnabled: current.twoFactorEnabled,
-    role: current.role || 'user',
-    currentOrganizationId: current.currentOrganizationId || null,
-  };
-}
-
-function issueOneTimeToken(userId, type, ttlMs) {
-  const token = generateOpaqueToken();
-  authTokens.set(token, {
-    id: token,
-    userId,
-    type,
-    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
-    createdAt: nowIso(),
-  });
-  return token;
-}
-
-function consumeOneTimeToken(token, type) {
-  const record = authTokens.get(token);
-  if (!record || record.type !== type) return null;
-  authTokens.delete(token);
-  if (new Date(record.expiresAt).getTime() <= Date.now()) return null;
-  return record;
-}
-
-function pruneExpiredSessions() {
-  const now = Date.now();
-  for (const [id, session] of authSessions.entries()) {
-    if (session.revokedAt || new Date(session.expiresAt).getTime() <= now) {
-      authSessions.delete(id);
-    }
-  }
-}
-
-function clearAuthCookies(res) {
-  res.clearCookie(REFRESH_COOKIE, { path: '/' });
-  res.clearCookie(CSRF_COOKIE, { path: '/' });
-}
-
-function createSession(user, req, remember) {
-  pruneExpiredSessions();
-  const refreshToken = generateOpaqueToken();
-  const csrfToken = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, remember)).toISOString();
-  const session = {
-    id: uuidv4(),
-    userId: user.id,
-    refreshTokenHash: hashToken(refreshToken),
-    csrfToken,
-    createdAt: nowIso(),
-    lastUsedAt: nowIso(),
-    expiresAt,
-    revokedAt: null,
-    remember: Boolean(remember),
-    userAgent: getUserAgent(req),
-    ipAddress: getRequestIp(req),
-  };
-  authSessions.set(session.id, session);
-  return { refreshToken, csrfToken, session };
-}
-
-function rotateSession(session, req) {
-  const refreshToken = generateOpaqueToken();
-  const csrfToken = generateOpaqueToken();
-  session.refreshTokenHash = hashToken(refreshToken);
-  session.csrfToken = csrfToken;
-  session.lastUsedAt = nowIso();
-  const user = users.get(session.userId);
-  session.expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, session.remember)).toISOString();
-  session.userAgent = getUserAgent(req);
-  session.ipAddress = getRequestIp(req);
-  authSessions.set(session.id, session);
-  return { refreshToken, csrfToken, session };
-}
-
-function writeSessionCookies(res, refreshToken, csrfToken, expiresAt) {
-  res.cookie(REFRESH_COOKIE, refreshToken, getCookieOptions(expiresAt));
-  res.cookie(CSRF_COOKIE, csrfToken, getCsrfCookieOptions(expiresAt));
-}
-
-function buildAuthResponse(user, session) {
-  const { token, expiresAt } = signAccessToken(user, session.id);
-  return {
-    accessToken: token,
-    accessTokenExpiresAt: expiresAt,
-    user: publicUser(user),
-    csrfToken: session.csrfToken,
-    session: {
-      id: session.id,
-      createdAt: session.createdAt,
-      lastUsedAt: session.lastUsedAt,
-      expiresAt: session.expiresAt,
-      remember: session.remember,
-      userAgent: session.userAgent,
-      ipAddress: session.ipAddress,
-    },
-  };
-}
-
-function matchesRefreshToken(session, token) {
-  return session.refreshTokenHash === hashToken(token);
-}
-
-function validateCsrf(req, session) {
-  const header = req.get('x-csrf-token');
-  return Boolean(header && session && header === session.csrfToken);
-}
-
-function revokeSession(sessionId) {
-  const session = authSessions.get(sessionId);
-  if (!session) return null;
-  session.revokedAt = nowIso();
-  authSessions.set(session.id, session);
-  return session;
-}
-
-function revokeAllUserSessions(userId) {
-  for (const session of authSessions.values()) {
-    if (session.userId === userId && !session.revokedAt) {
-      session.revokedAt = nowIso();
-      authSessions.set(session.id, session);
-    }
-  }
-}
-
-function findUserByIdentifier(identifier) {
-  const normalized = identifier.toLowerCase();
-  const user = [...users.values()].find(
-    (item) => item.email === normalized || (item.username && item.username === normalized),
-  );
-  return ensureUserShape(user || null);
-}
 
 router.post('/register', registerRateLimit, async (req, res) => {
   const { name, email, password } = req.body ?? {};
@@ -287,13 +121,14 @@ router.post('/register', registerRateLimit, async (req, res) => {
     return res.status(409).json({ error: 'An account with this email already exists.' });
   }
 
+  const verificationRequired = !EMAIL_VERIFICATION_BYPASS;
   const user = {
     id: uuidv4(),
     name: String(name).trim(),
     email: normalizedEmail,
     passwordHash: await bcrypt.hash(String(password), 12),
     createdAt: nowIso(),
-    emailVerified: false,
+    emailVerified: !verificationRequired,
     failedLoginAttempts: 0,
     lockoutUntil: null,
     role: 'user',
@@ -302,7 +137,23 @@ router.post('/register', registerRateLimit, async (req, res) => {
     twoFactorTempSecret: null,
   };
   users.set(user.id, user);
-  ensureTenantBootstrapForUser(user);
+  const bootstrapOrganization = ensureTenantBootstrapForUser(user);
+
+  // Keep bootstrap membership as owner so a new account can manage billing/admin workflows.
+  if (bootstrapOrganization) {
+    const membership = [...organizationMemberships.values()].find(
+      (item) =>
+        item.userId === user.id &&
+        item.organizationId === bootstrapOrganization.id &&
+        item.status === 'active',
+    );
+    if (membership) {
+      membership.role = 'owner';
+      membership.billingAdmin = true;
+      membership.updatedAt = nowIso();
+      organizationMemberships.set(membership.id, membership);
+    }
+  }
 
   const mappedOrganization = findOrganizationByDomain(normalizedEmail);
   if (mappedOrganization) {
@@ -316,7 +167,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
         id: membershipId,
         organizationId: mappedOrganization.id,
         userId: user.id,
-        role: 'member',
+        role: 'editor',
         billingAdmin: false,
         status: 'active',
         createdAt: now,
@@ -328,14 +179,22 @@ router.post('/register', registerRateLimit, async (req, res) => {
     ensureWorkspaceForUser(user, mappedOrganization.id);
   }
 
-  const verificationToken = issueOneTimeToken(user.id, 'email-verification', EMAIL_TOKEN_TTL_MS);
-  const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
-  audit(req, 'register', 'success', user.id, { verificationRequired: true });
+  const verificationToken = verificationRequired
+    ? issueOneTimeToken(user.id, 'email-verification', EMAIL_TOKEN_TTL_MS)
+    : null;
+  const verificationLink = verificationToken
+    ? `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`
+    : null;
+  audit(req, 'register', 'success', user.id, { verificationRequired });
   res.status(201).json({
-    message: 'Account created. Verify your email to continue.',
-    verificationRequired: true,
+    message: verificationRequired
+      ? 'Account created. Verify your email to continue.'
+      : 'Account created successfully. You can now log in.',
+    verificationRequired,
     user: publicUser(user),
-    ...(DEV_MODE ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
+    ...(verificationToken && DEV_MODE
+      ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink }
+      : {}),
   });
 });
 
@@ -375,6 +234,7 @@ router.post('/resend-verification', authRateLimit, (req, res) => {
 });
 
 router.post('/login', loginRateLimit, async (req, res) => {
+  const authScope = getAuthScope(req);
   const { email, username, password, remember = false } = req.body ?? {};
   const identifier = String(email || username || '').toLowerCase();
   if (!identifier || !password) {
@@ -409,7 +269,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     });
   }
 
-  if (!user.emailVerified) {
+  if (!EMAIL_VERIFICATION_BYPASS && !user.emailVerified) {
     audit(req, 'login', 'failure', user.id, { reason: 'email-not-verified' });
     return res.status(403).json({ error: 'Please verify your email before signing in.' });
   }
@@ -450,12 +310,13 @@ router.post('/login', loginRateLimit, async (req, res) => {
   }
 
   const { refreshToken, csrfToken, session } = createSession(user, req, Boolean(remember));
-  writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt);
+  writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login', 'success', user.id, { sessionId: session.id });
   res.json(buildAuthResponse(user, session));
 });
 
 router.post('/login/2fa', loginRateLimit, (req, res) => {
+  const authScope = getAuthScope(req);
   const { tempToken, code } = req.body ?? {};
   if (!tempToken || !code) {
     return res.status(400).json({ error: 'tempToken and code are required.' });
@@ -488,20 +349,22 @@ router.post('/login/2fa', loginRateLimit, (req, res) => {
   }
 
   const { refreshToken, csrfToken, session } = createSession(user, req, Boolean(pending.remember));
-  writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt);
+  writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login-2fa', 'success', user.id, { sessionId: session.id });
   res.json(buildAuthResponse(user, session));
 });
 
 router.post('/refresh', authRateLimit, (req, res) => {
-  const refreshToken = req.cookies?.[REFRESH_COOKIE];
+  const authScope = getAuthScope(req);
+  const cookieNames = resolveCookieNames(authScope);
+  const refreshToken = req.cookies?.[cookieNames.refreshCookie];
   if (!refreshToken) {
     return res.status(401).json({ error: 'No refresh session available.' });
   }
 
   const session = [...authSessions.values()].find((item) => matchesRefreshToken(item, refreshToken));
   if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
-    clearAuthCookies(res);
+    clearAuthCookies(res, authScope);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
   if (!validateCsrf(req, session)) {
@@ -510,12 +373,12 @@ router.post('/refresh', authRateLimit, (req, res) => {
 
   const resolved = resolveUserFromSession(session.id);
   if (!resolved) {
-    clearAuthCookies(res);
+    clearAuthCookies(res, authScope);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
 
   if (!isOrgIpAllowedForUser(req, resolved.user)) {
-    clearAuthCookies(res);
+    clearAuthCookies(res, authScope);
     audit(req, 'session-refresh-ip-policy', 'failure', resolved.user.id, {
       reason: 'ip-not-allowlisted',
       organizationId: resolved.user.currentOrganizationId,
@@ -525,14 +388,15 @@ router.post('/refresh', authRateLimit, (req, res) => {
   }
 
   const rotated = rotateSession(resolved.session, req);
-  writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt);
+  writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt, authScope);
   audit(req, 'session-refresh', 'success', resolved.user.id, { sessionId: rotated.session.id });
   res.json(buildAuthResponse(resolved.user, rotated.session));
 });
 
 router.post('/logout', requireAuth, (req, res) => {
+  const authScope = getAuthScope(req);
   revokeSession(req.authSession.id);
-  clearAuthCookies(res);
+  clearAuthCookies(res, authScope);
   audit(req, 'logout', 'success', req.user.id, { sessionId: req.authSession.id });
   res.json({ message: 'Logged out successfully.' });
 });
@@ -561,19 +425,21 @@ router.get('/sessions', requireAuth, (req, res) => {
 });
 
 router.delete('/sessions/:sessionId', requireAuth, (req, res) => {
+  const authScope = getAuthScope(req);
   const session = authSessions.get(req.params.sessionId);
   if (!session || session.userId !== req.user.id) {
     return res.status(404).json({ error: 'Session not found.' });
   }
   revokeSession(session.id);
-  if (session.id === req.authSession.id) clearAuthCookies(res);
+  if (session.id === req.authSession.id) clearAuthCookies(res, authScope);
   audit(req, 'session-revoke', 'success', req.user.id, { sessionId: session.id });
   res.json({ message: 'Session revoked.' });
 });
 
 router.post('/sessions/revoke-all', requireAuth, (req, res) => {
+  const authScope = getAuthScope(req);
   revokeAllUserSessions(req.user.id);
-  clearAuthCookies(res);
+  clearAuthCookies(res, authScope);
   audit(req, 'session-revoke-all', 'success', req.user.id);
   res.json({ message: 'All sessions revoked.' });
 });

@@ -77,7 +77,7 @@ export default function BillingPortalPage({ token, userName }: BillingPortalPage
     void load();
   }, [load]);
 
-  async function handleCheckout(planId: 'free' | 'pro' | 'business' | 'enterprise') {
+  async function handleCheckout(planId: 'free' | 'pro' | 'enterprise' | 'onprem') {
     setBusyPlanId(planId);
     setError('');
     setMessage('');
@@ -99,7 +99,7 @@ export default function BillingPortalPage({ token, userName }: BillingPortalPage
     }
   }
 
-  async function handlePlanChange(planId: 'free' | 'pro' | 'business' | 'enterprise') {
+  async function handlePlanChange(planId: 'free' | 'pro' | 'enterprise' | 'onprem') {
     setBusyPlanId(planId);
     setError('');
     setMessage('');
@@ -213,13 +213,23 @@ export default function BillingPortalPage({ token, userName }: BillingPortalPage
               return (
                 <article key={plan.id} className={`rounded-2xl border p-4 ${active ? 'border-cyan-500 bg-cyan-50' : 'border-slate-200 bg-white'}`}>
                   <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{plan.name}</p>
-                  <p className="mt-2 text-2xl font-black text-slate-900">{formatCurrency(plan.priceMonthlyCents)}</p>
+                  <p className="mt-2 text-2xl font-black text-slate-900">{plan.displayPrice || formatCurrency(plan.priceMonthlyCents)}</p>
                   <p className="text-xs text-slate-500">per month</p>
                   <ul className="mt-3 space-y-1 text-xs text-slate-700">
-                    <li>Seats: {plan.limits.seats}</li>
-                    <li>Storage: {formatBytes(plan.limits.storageBytes)}</li>
-                    <li>AI: {plan.limits.aiRequestsPerMonth}/mo</li>
-                    <li>Collaborators: {plan.limits.collaborators}</li>
+                    {(plan.featureHighlights && plan.featureHighlights.length > 0
+                      ? plan.featureHighlights
+                      : [
+                        `Seats: ${plan.limits.seats}`,
+                        `Storage: ${formatBytes(plan.limits.storageBytes)}`,
+                        `AI: ${plan.limits.aiRequestsPerMonth}/mo`,
+                        `Collaborators: ${plan.limits.collaborators}`,
+                      ]
+                    ).map((item) => (
+                      <li key={item} className="flex items-start gap-1.5">
+                        <span className="text-cyan-600">✓</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
                   </ul>
                   <div className="mt-4 space-y-2">
                     <button

@@ -16,7 +16,6 @@ import {
   isNumberListAtOffset,
   isSpaceAfterLineAtOffset,
   isSpaceBeforeLineAtOffset,
-  insertRun,
   makeRun,
   replaceRangeWithRuns,
   runsToText,

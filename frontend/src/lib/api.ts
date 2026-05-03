@@ -53,14 +53,21 @@ export type OrganizationInvite = {
 };
 
 export type BillingPlan = {
-  id: 'free' | 'pro' | 'business' | 'enterprise';
+  id: 'free' | 'pro' | 'enterprise' | 'onprem';
   name: string;
   priceMonthlyCents: number;
+  displayPrice?: string;
+  featureHighlights?: string[];
   limits: {
     seats: number;
     storageBytes: number;
     aiRequestsPerMonth: number;
     collaborators: number;
+    documents?: number | null;
+    documentUpdatesPerMonth?: number | null;
+    versionHistoryDays?: number | null;
+    grammarAccessDays?: number | null;
+    aiAccessDays?: number | null;
   };
 };
 
@@ -105,10 +112,16 @@ export type BillingSnapshot = {
     storageBytes: number;
     aiRequestsPerMonth: number;
     collaborators: number;
+    documents?: number | null;
+    documentUpdatesPerMonth?: number | null;
+    versionHistoryDays?: number | null;
+    grammarAccessDays?: number | null;
+    aiAccessDays?: number | null;
   };
   usage: {
     monthKey: string;
     aiRequests: number;
+    documentUpdates?: number;
     assignedSeats: number;
     storageUsedBytes: number;
     collaboratorsAssigned: number;
@@ -198,6 +211,7 @@ export type VerificationPreview = {
 type FetchOptions = RequestInit & {
   token?: string;
   includeCsrf?: boolean;
+  authScope?: 'workspace' | 'admin';
 };
 
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
@@ -241,12 +255,14 @@ function getCookie(name: string) {
 }
 
 export async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
-  const { token, headers: extraHeaders, includeCsrf = false, ...rest } = options;
-  const csrfToken = includeCsrf ? getCookie('docsync_csrf') || getStoredCsrfToken() : '';
+  const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
+  const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
+  const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    ...(authScope === 'admin' ? { 'x-auth-scope': 'admin' } : {}),
     ...(extraHeaders as Record<string, string>),
   };
 
@@ -264,11 +280,13 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
 }
 
 export async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
-  const { token, headers: extraHeaders, includeCsrf = false, ...rest } = options;
-  const csrfToken = includeCsrf ? getCookie('docsync_csrf') || getStoredCsrfToken() : '';
+  const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
+  const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
+  const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
   const headers: Record<string, string> = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    ...(authScope === 'admin' ? { 'x-auth-scope': 'admin' } : {}),
     ...(extraHeaders as Record<string, string>),
   };
 
@@ -309,25 +327,29 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email }),
     }),
-  login: (email: string, password: string, remember: boolean) =>
+  login: (email: string, password: string, remember: boolean, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess | TwoFactorPending>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password, remember }),
+      authScope,
     }),
-  loginWithTwoFactor: (tempToken: string, code: string) =>
+  loginWithTwoFactor: (tempToken: string, code: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/login/2fa', {
       method: 'POST',
       body: JSON.stringify({ tempToken, code }),
+      authScope,
     }),
-  refresh: () =>
+  refresh: (authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/refresh', {
       method: 'POST',
       includeCsrf: true,
+      authScope,
     }),
-  logout: (token: string) =>
+  logout: (token: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<{ message: string }>('/api/auth/logout', {
       method: 'POST',
       token,
+      authScope,
     }),
   me: (token: string) =>
     apiFetch<{ user: AuthUser; session: AuthSessionSummary; csrfToken: string }>('/api/auth/me', {
@@ -687,7 +709,7 @@ export const billingApi = {
   checkout: (
     token: string,
     payload: {
-      planId: 'free' | 'pro' | 'business' | 'enterprise';
+      planId: 'free' | 'pro' | 'enterprise' | 'onprem';
       purchasedSeats?: number;
       successUrl?: string;
       cancelUrl?: string;
@@ -710,7 +732,7 @@ export const billingApi = {
     }),
   changeSubscription: (
     token: string,
-    payload: { planId: 'free' | 'pro' | 'business' | 'enterprise'; purchasedSeats?: number },
+    payload: { planId: 'free' | 'pro' | 'enterprise' | 'onprem'; purchasedSeats?: number },
   ) =>
     apiFetch<{ message: string; eventId: string }>('/api/billing/subscription/change', {
       method: 'POST',

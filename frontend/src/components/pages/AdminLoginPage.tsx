@@ -18,7 +18,7 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
     setLoading(true);
 
     try {
-      const result = await authApi.login(email.trim().toLowerCase(), password, false);
+      const result = await authApi.login(email.trim().toLowerCase(), password, false, 'admin');
 
       if ('requiresTwoFactor' in result) {
         setError('Two-factor authentication is not supported in the admin portal. Disable 2FA and try again.');
@@ -29,7 +29,7 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
 
       if (session.user.role !== 'admin' && session.user.role !== 'owner') {
         setError('Access denied. This portal is restricted to admin and owner accounts only.');
-        try { await authApi.logout(session.accessToken); } catch { /* ignore */ }
+        try { await authApi.logout(session.accessToken, 'admin'); } catch { /* ignore */ }
         return;
       }
 

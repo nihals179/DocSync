@@ -70,8 +70,9 @@ interface WorkspaceHomePageProps {
   onOpenDocument: (docId: string) => void;
   onOpenReadOnlyDocument?: (docId: string) => void;
   onCreateDocument: (title: string, content: string, workspaceId?: string | null) => Promise<void>;
+  onOpenProfile?: () => void;
   onOpenSecuritySettings?: () => void;
-  onOpenEnterpriseSecurity?: () => void;
+  onOpenSettingsDashboard?: () => void;
   onLogout?: () => void;
 }
 
@@ -81,8 +82,9 @@ export default function WorkspaceHomePage({
   onOpenDocument,
   onOpenReadOnlyDocument,
   onCreateDocument,
+  onOpenProfile,
   onOpenSecuritySettings,
-  onOpenEnterpriseSecurity,
+  onOpenSettingsDashboard,
   onLogout,
 }: WorkspaceHomePageProps) {
   const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
@@ -736,14 +738,14 @@ export default function WorkspaceHomePage({
                       <p className="text-sm font-bold text-slate-800">{userName}</p>
                       <p className="text-xs text-slate-500">Workspace Admin</p>
                     </div>
-                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenSecuritySettings?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenProfile?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>person</span>Profile
                     </button>
                     <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenSecuritySettings?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
-                      <span className="material-icons" style={{ fontSize: '1rem' }}>settings</span>Settings
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>shield</span>Security
                     </button>
-                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenEnterpriseSecurity?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
-                      <span className="material-icons" style={{ fontSize: '1rem' }}>shield</span>Enterprise Security
+                    <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenSettingsDashboard?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>settings_suggest</span>Settings Dashboard
                     </button>
                     <button type="button" onClick={() => setProfileMenuOpen(false)} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>help</span>Help &amp; Support
@@ -971,7 +973,7 @@ export default function WorkspaceHomePage({
             event.preventDefault();
             event.stopPropagation();
           }}
-          className="fixed z-[70] min-w-[170px] rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl"
+          className="fixed z-70 min-w-42.5 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
           aria-label="Document actions"
@@ -1013,7 +1015,7 @@ export default function WorkspaceHomePage({
       )}
 
       {workspaceModal && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 p-4">
+        <div className="fixed inset-0 z-80 flex items-center justify-center bg-slate-900/45 p-4">
           <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-2xl">
             {workspaceModal.type === 'create-workspace' && (
               <>
