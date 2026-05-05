@@ -49,12 +49,10 @@ class PersistentMap extends Map {
   delete(key) {
     const result = super.delete(key);
     if (hasDatabase()) {
-      void prisma.localStoreEntry.delete({
+      void prisma.localStoreEntry.deleteMany({
         where: {
-          mapName_entryKey: {
-            mapName: this.mapName,
-            entryKey: String(key),
-          },
+          mapName: this.mapName,
+          entryKey: String(key),
         },
       }).catch(() => {});
     }
