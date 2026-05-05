@@ -21,15 +21,13 @@ const authenticator = {
 };
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
 const {
   authSessions,
-  ensureTenantBootstrapForUser,
-  findOrganizationByDomain,
-  getOrganizationBillingState,
+  ensureUserBillingState,
   getOrganizationSecurityState,
-  organizationMemberships,
-  ensureWorkspaceForUser,
+  syncCurrentOrganizationFromMembership,
   users,
 } = require('../store');
 const { writeAuditLog, listAuditLogs } = require('../lib/audit');
@@ -93,9 +91,52 @@ function audit(req, action, status, userId = null, metadata = {}) {
   });
 }
 
-function hasActiveSubscription(organizationId) {
-  const billing = getOrganizationBillingState(organizationId);
-  return Boolean(billing?.subscriptionId);
+async function ensureUserPersistedToDb(user, billing) {
+  if (!process.env.DATABASE_URL) return;
+
+  await prisma.user.create({
+    data: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      passwordHash: user.passwordHash,
+      createdAt: new Date(user.createdAt),
+      accountType: user.accountType || 'individual',
+      emailVerified: Boolean(user.emailVerified),
+      failedLoginAttempts: Number(user.failedLoginAttempts || 0),
+      lockoutUntil: user.lockoutUntil ? new Date(user.lockoutUntil) : null,
+      role: user.role || 'user',
+      twoFactorEnabled: Boolean(user.twoFactorEnabled),
+      twoFactorSecret: user.twoFactorSecret || null,
+      twoFactorTempSecret: user.twoFactorTempSecret || null,
+      currentOrganizationId: user.currentOrganizationId || null,
+    },
+  });
+
+  await prisma.userBilling.upsert({
+    where: { userId: user.id },
+    update: {
+      planId: billing.planId,
+      status: billing.status,
+      trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
+      trialUsed: Boolean(billing.trialUsed),
+      subscriptionId: billing.subscriptionId || null,
+      customerId: billing.customerId || null,
+      currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
+      graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
+    },
+    create: {
+      userId: user.id,
+      planId: billing.planId,
+      status: billing.status,
+      trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
+      trialUsed: Boolean(billing.trialUsed),
+      subscriptionId: billing.subscriptionId || null,
+      customerId: billing.customerId || null,
+      currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
+      graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
+    },
+  });
 }
 
 
@@ -120,6 +161,13 @@ router.post('/register', registerRateLimit, async (req, res) => {
     audit(req, 'register', 'failure', existing.id, { reason: 'duplicate-email' });
     return res.status(409).json({ error: 'An account with this email already exists.' });
   }
+  if (process.env.DATABASE_URL) {
+    const existingDbUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingDbUser) {
+      audit(req, 'register', 'failure', existingDbUser.id, { reason: 'duplicate-email-db' });
+      return res.status(409).json({ error: 'An account with this email already exists.' });
+    }
+  }
 
   const verificationRequired = !EMAIL_VERIFICATION_BYPASS;
   const user = {
@@ -128,6 +176,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
     email: normalizedEmail,
     passwordHash: await bcrypt.hash(String(password), 12),
     createdAt: nowIso(),
+    accountType: 'individual',
     emailVerified: !verificationRequired,
     failedLoginAttempts: 0,
     lockoutUntil: null,
@@ -137,46 +186,13 @@ router.post('/register', registerRateLimit, async (req, res) => {
     twoFactorTempSecret: null,
   };
   users.set(user.id, user);
-  const bootstrapOrganization = ensureTenantBootstrapForUser(user);
-
-  // Keep bootstrap membership as owner so a new account can manage billing/admin workflows.
-  if (bootstrapOrganization) {
-    const membership = [...organizationMemberships.values()].find(
-      (item) =>
-        item.userId === user.id &&
-        item.organizationId === bootstrapOrganization.id &&
-        item.status === 'active',
-    );
-    if (membership) {
-      membership.role = 'owner';
-      membership.billingAdmin = true;
-      membership.updatedAt = nowIso();
-      organizationMemberships.set(membership.id, membership);
-    }
-  }
-
-  const mappedOrganization = findOrganizationByDomain(normalizedEmail);
-  if (mappedOrganization) {
-    const existingMembership = [...organizationMemberships.values()].find(
-      (membership) => membership.userId === user.id && membership.organizationId === mappedOrganization.id,
-    );
-    if (!existingMembership) {
-      const now = nowIso();
-      const membershipId = uuidv4();
-      organizationMemberships.set(membershipId, {
-        id: membershipId,
-        organizationId: mappedOrganization.id,
-        userId: user.id,
-        role: 'editor',
-        billingAdmin: false,
-        status: 'active',
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    user.currentOrganizationId = mappedOrganization.id;
-    users.set(user.id, user);
-    ensureWorkspaceForUser(user, mappedOrganization.id);
+  const billing = ensureUserBillingState(user);
+  try {
+    await ensureUserPersistedToDb(user, billing);
+  } catch (error) {
+    users.delete(user.id);
+    audit(req, 'register', 'failure', user.id, { reason: 'db-persist-failed', error: String(error?.message || error) });
+    return res.status(500).json({ error: 'Failed to create account. Please try again.' });
   }
 
   const verificationToken = verificationRequired
@@ -277,7 +293,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
   user.failedLoginAttempts = 0;
   user.lockoutUntil = null;
   users.set(user.id, user);
-  ensureTenantBootstrapForUser(user);
+  syncCurrentOrganizationFromMembership(user);
 
   if (!isOrgIpAllowedForUser(req, user)) {
     audit(req, 'login-ip-policy', 'failure', user.id, {

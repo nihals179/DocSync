@@ -6,13 +6,22 @@
   "scripts": {
     "test": "NODE_ENV=test node --test",
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:seed:admin": "node src/db/seed-admin.js",
+    "db:seed:plans": "node src/db/seed-plan-catalog.js",
+    "db:seed:test-users": "node src/db/seed-test-users.js",
+    "db:seed:all": "npm run db:seed:admin && npm run db:seed:plans && npm run db:seed:test-users"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@prisma/client": "^6.16.2",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -21,6 +30,7 @@
     "jsonwebtoken": "^9.0.3",
     "nodemon": "^3.1.14",
     "otplib": "^13.4.0",
+    "prisma": "^6.16.2",
     "qrcode": "^1.5.4",
     "uuid": "^13.0.0"
   },

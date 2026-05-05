@@ -1,0 +1,309 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model LocalStoreEntry {
+  mapName   String
+  entryKey  String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([mapName, entryKey])
+  @@map("local_store_entries")
+}
+
+model PlanCatalog {
+  id                String   @id
+  name              String
+  priceMonthlyCents Int
+  displayPrice      String
+  featureBasicEditor             Boolean  @default(false)
+  featureAiAssistant             Boolean  @default(false)
+  featureGrammarChecker          Boolean  @default(false)
+  featurePrioritySupport         Boolean  @default(false)
+  featureCommunitySupport        Boolean  @default(false)
+  featureSsoSaml                 Boolean  @default(false)
+  featureCustomRolesRbac         Boolean  @default(false)
+  featureAuditLogs               Boolean  @default(false)
+  featureSlaDedicatedSupport     Boolean  @default(false)
+  featureOnPremiseOption         Boolean  @default(false)
+  featureSelfHostedDeployment    Boolean  @default(false)
+  featurePrivateNetworkOnly      Boolean  @default(false)
+  featureCustomComplianceControls Boolean @default(false)
+  featureDedicatedSuccessTeam    Boolean  @default(false)
+  limitSeats                     Int     @default(0)
+  limitStorageBytes              BigInt  @default(0)
+  limitAiRequestsPerMonth        Int     @default(0)
+  limitCollaborators             Int     @default(0)
+  limitDocuments                 Int?
+  limitDocumentUpdatesPerMonth   Int?
+  limitVersionHistoryDays        Int?
+  limitGrammarAccessDays         Int?
+  limitAiAccessDays              Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("plan_catalog")
+}
+
+model User {
+  id                    String   @id
+  name                  String
+  email                 String   @unique
+  passwordHash          String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  accountType           String   @default("individual")
+  emailVerified         Boolean  @default(false)
+  failedLoginAttempts   Int      @default(0)
+  lockoutUntil          DateTime?
+  role                  String   @default("user")
+  twoFactorEnabled      Boolean  @default(false)
+  twoFactorSecret       String?
+  twoFactorTempSecret   String?
+  currentOrganizationId String?
+
+  @@map("users")
+}
+
+model Organization {
+  id          String   @id
+  name        String
+  ownerUserId String
+  billing     Json?
+  security    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("organizations")
+}
+
+model OrganizationMembership {
+  id             String   @id
+  organizationId String
+  userId         String
+  role           String
+  billingAdmin   Boolean  @default(false)
+  status         String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, userId])
+  @@map("organization_memberships")
+}
+
+model OrganizationInvite {
+  id              String   @id
+  token           String   @unique
+  organizationId  String
+  email           String
+  role            String
+  billingAdmin    Boolean  @default(false)
+  status          String
+  invitedByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+
+  @@map("organization_invites")
+}
+
+model AuthSession {
+  id               String   @id
+  userId           String
+  refreshTokenHash String
+  csrfToken        String
+  createdAt        DateTime @default(now())
+  lastUsedAt       DateTime
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  remember         Boolean  @default(false)
+  userAgent        String
+  ipAddress        String
+
+  @@map("auth_sessions")
+}
+
+model Invoice {
+  id             String   @id
+  organizationId String
+  provider       String
+  invoiceNumber  String?
+  amountCents    Int
+  currency       String
+  status         String
+  issuedAt       DateTime
+  dueAt          DateTime?
+  paidAt         DateTime?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("invoices")
+}
+
+model UserBilling {
+  userId             String   @id
+  planId             String
+  status             String
+  trialEndsAt        DateTime?
+  trialUsed          Boolean  @default(false)
+  subscriptionId     String?
+  customerId         String?
+  currentPeriodEndAt DateTime?
+  graceEndsAt        DateTime?
+  updatedAt          DateTime @updatedAt
+
+  @@map("user_billing")
+}
+
+model OrganizationUsage {
+  organizationId  String
+  monthKey        String
+  aiRequests      Int      @default(0)
+  documentUpdates Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@id([organizationId, monthKey])
+  @@map("organization_usage")
+}
+
+model UserUsage {
+  userId          String
+  monthKey        String
+  aiRequests      Int      @default(0)
+  documentUpdates Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@id([userId, monthKey])
+  @@map("user_usage")
+}
+
+model WebhookJob {
+  id            String   @id
+  eventId       String
+  provider      String
+  type          String
+  payload       Json
+  status        String
+  attempts      Int      @default(0)
+  maxAttempts   Int      @default(8)
+  nextAttemptAt DateTime
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([eventId])
+  @@map("webhook_jobs")
+}
+
+model ProcessedWebhookEvent {
+  eventId     String   @id
+  provider    String
+  processedAt DateTime @default(now())
+
+  @@map("processed_webhook_events")
+}
+
+model AuthToken {
+  id        String   @id
+  userId    String
+  type      String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("auth_tokens")
+}
+
+model AuditLog {
+  id             String   @id
+  userId         String?
+  organizationId String?
+  action         String
+  status         String
+  ipAddress      String?
+  userAgent      String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  @@index([userId])
+  @@index([organizationId])
+  @@map("audit_logs")
+}
+
+model Document {
+  id             String   @id
+  userId         String
+  organizationId String?
+  workspaceId    String?
+  title          String
+  content        String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId])
+  @@index([organizationId])
+  @@map("documents")
+}
+
+model Comment {
+  id        String   @id
+  docId     String
+  userId    String
+  text      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([docId])
+  @@map("comments")
+}
+
+model Version {
+  id        String   @id
+  docId     String
+  userId    String?
+  title     String?
+  content   String
+  savedAt   DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  @@index([docId])
+  @@map("versions")
+}
+
+model Todo {
+  id             String   @id
+  workspaceId    String?
+  organizationId String?
+  userId         String
+  title          String
+  completed      Boolean  @default(false)
+  dueAt          DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([organizationId])
+  @@map("todos")
+}
+
+model Workspace {
+  id             String   @id
+  name           String
+  ownerId        String
+  organizationId String?
+  memberIds      Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([organizationId])
+  @@map("workspaces")
+}

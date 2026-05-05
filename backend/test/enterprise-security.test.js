@@ -20,6 +20,7 @@ const {
   versions,
   webhookJobs,
   workspaces,
+  ensureTenantBootstrapForUser,
 } = require('../src/store');
 
 function clearStore() {
@@ -77,6 +78,7 @@ test('enterprise security settings support SSO providers, domains, and CSV audit
     name: 'Security Owner',
     email: 'owner@acme.com',
   });
+  ensureTenantBootstrapForUser(users.get(owner.user.id));
 
   const policyRes = await client
     .put('/api/organizations/current/security/policies')
@@ -146,6 +148,7 @@ test('ip allowlist blocks authenticated requests when address is not approved', 
     name: 'Allowlist Owner',
     email: 'allowlist@acme.com',
   });
+  ensureTenantBootstrapForUser(users.get(owner.user.id));
 
   await client
     .put('/api/organizations/current/security/policies')
@@ -189,6 +192,8 @@ test('ip allowlist blocks new login sessions from unapproved addresses', async (
     .set('x-forwarded-for', '10.10.10.10')
     .send({ email, password, remember: false })
     .expect(200);
+
+  ensureTenantBootstrapForUser(users.get(initialLogin.body.user.id));
 
   await client
     .put('/api/organizations/current/security/policies')

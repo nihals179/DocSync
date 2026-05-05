@@ -7,7 +7,7 @@ import Toolbar from './components/toolbar/Toolbar';
 import type { CursorFormat, RichEditorHandle, Run } from './components/editor';
 import { isPageSize, type PageSize } from './components/editor/pageConfig';
 import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, setUnauthorizedHandler, versionsApi, workspaceApi } from './lib/api';
-import { canvasRunsToHtml, canvasTextToHtml, htmlToCanvasText, htmlToRuns } from './lib/contentAdapter';
+import { canvasRunsToHtml, canvasTextToHtml, htmlToRuns } from './lib/contentAdapter';
 import { buildDocumentTree } from './lib/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from './lib/workspaceSelection';
 import type { AuthSuccess, AuthUser } from './lib/api';
@@ -1398,7 +1398,6 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
 
 function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId: string; userName: string }) {
   const navigate = useNavigate();
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocument[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => getInitialWorkspaceSelectionId());
@@ -1415,9 +1414,15 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
     }
   });
   const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
+  const viewerBaseFontStack = "Raleway, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
-  const viewerPlainText = useMemo(() => {
-    return htmlToCanvasText(currentDoc?.content ?? '');
+  const viewerHtml = useMemo(() => {
+    const raw = currentDoc?.content?.trim();
+    if (!raw) return '<p>No content available.</p>';
+    return raw.replace(
+      /font-family\s*:\s*(['"]?)(sans-serif|ui-sans-serif)(\1)/gi,
+      `font-family:${viewerBaseFontStack}`,
+    );
   }, [currentDoc?.content]);
 
   const filteredLeftDocs = useMemo(() => {
@@ -1557,113 +1562,6 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
     };
   }, [token, docId, selectedWorkspaceId, personalWorkspaceName]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || isLoading || error || !currentDoc) return;
-
-    const drawCanvas = () => {
-      const hostWidth = canvas.parentElement?.clientWidth ?? 0;
-      if (hostWidth <= 0) return;
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const dpi = window.devicePixelRatio || 1;
-      const padX = 20;
-      const padTop = 18;
-      const padBottom = 24;
-      const maxTextWidth = Math.max(hostWidth - padX * 2, 60);
-      const bodyText = viewerPlainText || 'No content available.';
-
-      const wrapText = (text: string, font: string) => {
-        ctx.font = font;
-        const lines: string[] = [];
-        const paragraphs = text.split('\n');
-        for (const paragraph of paragraphs) {
-          const trimmed = paragraph.trim();
-          if (!trimmed) {
-            lines.push('');
-            continue;
-          }
-          const words = trimmed.split(/\s+/);
-          let line = words[0] ?? '';
-          for (let i = 1; i < words.length; i += 1) {
-            const candidate = `${line} ${words[i]}`;
-            if (ctx.measureText(candidate).width <= maxTextWidth) {
-              line = candidate;
-            } else {
-              lines.push(line);
-              line = words[i] ?? '';
-            }
-          }
-          lines.push(line);
-        }
-        return lines;
-      };
-
-      const title = (currentDoc.title || 'Untitled').trim();
-      const metadataLine = `Modified ${modifiedAtLabel} by ${userName}`;
-      const titleLines = wrapText(title, '700 30px Raleway, sans-serif');
-      const metaLines = wrapText(metadataLine, '500 13px Raleway, sans-serif');
-      const bodyLines = wrapText(bodyText, '400 17px Raleway, sans-serif');
-
-      const titleLineHeight = 38;
-      const metaLineHeight = 20;
-      const bodyLineHeight = 30;
-      const titleHeight = Math.max(titleLines.length, 1) * titleLineHeight;
-      const metaHeight = Math.max(metaLines.length, 1) * metaLineHeight;
-      const bodyHeight = Math.max(bodyLines.length, 1) * bodyLineHeight;
-      const separatorGapTop = 8;
-      const metaGapToBody = 10;
-      const cssHeight = padTop + titleHeight + separatorGapTop + metaHeight + metaGapToBody + bodyHeight + padBottom;
-
-      canvas.style.width = `${hostWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-      canvas.width = Math.max(1, Math.floor(hostWidth * dpi));
-      canvas.height = Math.max(1, Math.floor(cssHeight * dpi));
-
-      ctx.setTransform(dpi, 0, 0, dpi, 0, 0);
-      ctx.clearRect(0, 0, hostWidth, cssHeight);
-
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, hostWidth, cssHeight);
-
-      ctx.fillStyle = '#0f172a';
-      ctx.font = '700 30px Raleway, sans-serif';
-      titleLines.forEach((line, index) => {
-        ctx.fillText(line, padX, padTop + (index + 1) * titleLineHeight - 8);
-      });
-
-      const dividerY = padTop + titleHeight + 2;
-      ctx.strokeStyle = '#e2e8f0';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padX, dividerY);
-      ctx.lineTo(hostWidth - padX, dividerY);
-      ctx.stroke();
-
-      ctx.fillStyle = '#64748b';
-      ctx.font = '500 13px Raleway, sans-serif';
-      const metaStartY = dividerY + separatorGapTop;
-      metaLines.forEach((line, index) => {
-        ctx.fillText(line, padX, metaStartY + (index + 1) * metaLineHeight - 8);
-      });
-
-      ctx.fillStyle = '#334155';
-      ctx.font = '400 17px Raleway, sans-serif';
-      const bodyStartY = metaStartY + metaHeight + metaGapToBody;
-      bodyLines.forEach((line, index) => {
-        ctx.fillText(line, padX, bodyStartY + (index + 1) * bodyLineHeight - 8);
-      });
-    };
-
-    drawCanvas();
-    window.addEventListener('resize', drawCanvas);
-    return () => {
-      window.removeEventListener('resize', drawCanvas);
-    };
-  }, [currentDoc, viewerPlainText, isLoading, error, modifiedAtLabel, userName]);
-
   return (
     <div className="flex h-screen overflow-hidden bg-linear-to-br from-slate-100 via-white to-cyan-50">
       <aside
@@ -1792,7 +1690,18 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
 
           {!isLoading && !error && currentDoc && (
             <article className="bg-white">
-              <canvas ref={canvasRef} className="block w-full" aria-label="Document canvas" />
+              <div className="px-4 py-5 sm:px-5">
+                <h2 className="text-3xl font-black tracking-tight text-slate-900">{(currentDoc.title || 'Untitled').trim()}</h2>
+                <p className="mt-2 text-xs text-slate-500">Modified {modifiedAtLabel} by {userName}</p>
+                <div className="mt-5 border-t border-slate-200 pt-5">
+                  <div
+                    className="docsync-viewer-content max-w-none"
+                    dangerouslySetInnerHTML={{
+                      __html: viewerHtml,
+                    }}
+                  />
+                </div>
+              </div>
             </article>
           )}
         </div>

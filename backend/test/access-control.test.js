@@ -20,6 +20,7 @@ const {
   versions,
   webhookJobs,
   workspaces,
+  ensureTenantBootstrapForUser,
 } = require('../src/store');
 
 function clearStore() {
@@ -81,6 +82,7 @@ test('RBAC enforcement across invite, doc, workspace, and membership APIs', asyn
     name: 'Owner User',
     email: 'owner@example.com',
   });
+  ensureTenantBootstrapForUser(users.get(owner.user.id));
 
   await client
     .patch('/api/billing/seats')
@@ -189,7 +191,7 @@ test('RBAC enforcement across invite, doc, workspace, and membership APIs', asyn
   await client
     .get(`/api/docs/${ownerDocId}`)
     .set(authHeader(viewer.token))
-    .expect(404);
+    .expect(403);
 });
 
 test('Tenant boundaries prevent cross-organization access', async () => {
@@ -199,10 +201,12 @@ test('Tenant boundaries prevent cross-organization access', async () => {
     name: 'Alpha Owner',
     email: 'alpha@example.com',
   });
+  ensureTenantBootstrapForUser(users.get(alpha.user.id));
   const beta = await registerVerifyLogin(client, {
     name: 'Beta Owner',
     email: 'beta@example.com',
   });
+  ensureTenantBootstrapForUser(users.get(beta.user.id));
 
   const alphaDocRes = await client
     .post('/api/docs')
@@ -237,6 +241,7 @@ test('Owner-only safeguards are enforced for owner membership changes', async ()
     name: 'Org Owner',
     email: 'org-owner@example.com',
   });
+  ensureTenantBootstrapForUser(users.get(owner.user.id));
 
   await client
     .patch('/api/billing/seats')

@@ -2,8 +2,8 @@ const { v4: uuidv4 } = require('uuid');
 const {
   authSessions,
   authTokens,
-  ensureTenantBootstrapForUser,
   getOrganizationSecurityState,
+  syncCurrentOrganizationFromMembership,
   users,
 } = require('../store');
 const {
@@ -53,6 +53,7 @@ function getOrgSessionDurationMs(user, remember) {
 
 function ensureUserShape(user) {
   if (!user) return null;
+  if (!user.accountType) user.accountType = 'individual';
   if (typeof user.emailVerified !== 'boolean') user.emailVerified = false;
   if (typeof user.failedLoginAttempts !== 'number') user.failedLoginAttempts = 0;
   if (user.lockoutUntil === undefined) user.lockoutUntil = null;
@@ -65,11 +66,12 @@ function ensureUserShape(user) {
 
 function publicUser(user) {
   const current = ensureUserShape(user);
-  ensureTenantBootstrapForUser(current);
+  syncCurrentOrganizationFromMembership(current);
   return {
     id: current.id,
     name: current.name,
     email: current.email,
+    accountType: current.accountType,
     emailVerified: current.emailVerified,
     twoFactorEnabled: current.twoFactorEnabled,
     role: current.role || 'user',

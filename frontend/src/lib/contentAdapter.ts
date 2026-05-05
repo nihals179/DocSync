@@ -1,4 +1,4 @@
-import { DEFAULT_RUN_FMT, buildTableToken, detectBulletPrefix, parseImageToken, parseTableToken, runsToText, type Run } from '../components/editor/textModel';
+import { DEFAULT_RUN_FMT, FONT_STACK, buildTableToken, detectBulletPrefix, parseImageToken, parseTableToken, runsToText, type Run } from '../components/editor/textModel';
 
 const TABLE_PLACEHOLDER_PREFIX = '__DOCSYNC_TABLE_BLOCK_';
 
@@ -131,7 +131,7 @@ function renderTableToken(token: string): string {
         ? cellRuns
             .map((run) => {
               const runStyle = [
-                `font-family:${run.fontFamily}`,
+                `font-family:${run.fontFamily}, ${FONT_STACK}`,
                 `font-size:${run.fontSize}px`,
                 `color:${run.color}`,
                 `font-weight:${run.bold ? 700 : 400}`,
@@ -282,7 +282,7 @@ function renderRunSpan(run: Run): string {
   }
 
   const styles: string[] = [
-    `font-family:${escapeHtml(run.fontFamily)}, sans-serif`,
+    `font-family:${escapeHtml(run.fontFamily)}, ${FONT_STACK}`,
     `font-size:${run.fontSize}px`,
     `line-height:${run.lineSpacing}`,
     `color:${escapeHtml(run.color)}`,

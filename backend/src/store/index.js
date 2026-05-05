@@ -7,7 +7,9 @@ const {
 	organizationInvites,
 	authSessions,
 	invoices,
+	userBilling,
 	organizationUsage,
+	userUsage,
 	webhookJobs,
 	processedWebhookEvents,
 	authTokens,
@@ -17,6 +19,7 @@ const {
 	versions,
 	todos,
 	workspaces,
+	initializePersistentMaps,
 } = require('./schemas');
 
 function nowIso() {
@@ -151,6 +154,72 @@ function getOrganizationBillingState(organizationId) {
 	return ensureOrganizationBillingState(organization);
 }
 
+function ensureUserBillingState(user) {
+	if (!user?.id) return null;
+	const existing = userBilling.get(user.id);
+	if (existing) {
+		if (!existing.planId || !PLAN_CATALOG[existing.planId]) existing.planId = 'free';
+		if (!existing.updatedAt) existing.updatedAt = nowIso();
+		userBilling.set(user.id, existing);
+		return existing;
+	}
+
+	const state = {
+		userId: user.id,
+		planId: 'free',
+		status: 'active',
+		trialEndsAt: null,
+		trialUsed: false,
+		subscriptionId: null,
+		customerId: null,
+		currentPeriodEndAt: null,
+		graceEndsAt: null,
+		updatedAt: nowIso(),
+	};
+	userBilling.set(user.id, state);
+	return state;
+}
+
+function getUserBillingState(userId) {
+	const user = users.get(userId);
+	if (!user) return null;
+	return ensureUserBillingState(user);
+}
+
+function refreshUserBillingStatus(userId) {
+	const billing = getUserBillingState(userId);
+	if (!billing) return null;
+	const nowMs = Date.now();
+
+	if ((billing.status === 'past_due' || billing.status === 'grace') && billing.graceEndsAt) {
+		if (new Date(billing.graceEndsAt).getTime() <= nowMs) {
+			billing.status = 'suspended';
+			billing.updatedAt = nowIso();
+		}
+	}
+
+	if (billing.status === 'trialing' && billing.trialEndsAt) {
+		if (new Date(billing.trialEndsAt).getTime() <= nowMs) {
+			billing.status = 'active';
+			billing.updatedAt = nowIso();
+		}
+	}
+
+	if (billing.status === 'canceled' && billing.currentPeriodEndAt) {
+		if (new Date(billing.currentPeriodEndAt).getTime() <= nowMs) {
+			billing.planId = 'free';
+			billing.status = 'active';
+			billing.subscriptionId = null;
+			billing.currentPeriodEndAt = null;
+			billing.graceEndsAt = null;
+			billing.updatedAt = nowIso();
+		}
+	}
+
+	userBilling.set(billing.userId, billing);
+	return billing;
+}
+
 function refreshBillingStatus(organizationId) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return null;
@@ -206,6 +275,20 @@ function getOrganizationUsage(organizationId) {
 	return usage;
 }
 
+function getUserUsage(userId) {
+	const monthKey = monthKeyFromDate(new Date());
+	const existing = userUsage.get(userId);
+	if (existing && existing.monthKey === monthKey) return existing;
+	const usage = {
+		userId,
+		monthKey,
+		aiRequests: existing && existing.monthKey === monthKey ? existing.aiRequests : 0,
+		documentUpdates: existing && existing.monthKey === monthKey ? (existing.documentUpdates || 0) : 0,
+	};
+	userUsage.set(userId, usage);
+	return usage;
+}
+
 function isWithinPlanAccessDays(organization, accessDays) {
 	if (!organization) return false;
 	if (accessDays === null || accessDays === undefined) return true;
@@ -222,6 +305,46 @@ function countOrganizationDocuments(organizationId) {
 		if (doc.organizationId === organizationId) total += 1;
 	}
 	return total;
+}
+
+function countUserDocuments(userId) {
+	let total = 0;
+	for (const doc of documents.values()) {
+		if (doc.userId === userId && !doc.organizationId) total += 1;
+	}
+	return total;
+}
+
+function getUserEntitlements(userId) {
+	const billing = refreshUserBillingStatus(userId) || getUserBillingState(userId);
+	if (!billing) return null;
+	const plan = getPlan(billing.planId);
+	const usage = getUserUsage(userId);
+
+	return {
+		billing,
+		plan,
+		limits: {
+			seatsPurchased: plan.limits.seats,
+			storageBytes: plan.limits.storageBytes,
+			aiRequestsPerMonth: plan.limits.aiRequestsPerMonth,
+			collaborators: plan.limits.collaborators,
+			documents: plan.limits.documents,
+			documentUpdatesPerMonth: plan.limits.documentUpdatesPerMonth,
+			versionHistoryDays: plan.limits.versionHistoryDays,
+			grammarAccessDays: plan.limits.grammarAccessDays,
+			aiAccessDays: plan.limits.aiAccessDays,
+		},
+		usage: {
+			monthKey: usage.monthKey,
+			aiRequests: usage.aiRequests,
+			documentUpdates: usage.documentUpdates || 0,
+			assignedSeats: 1,
+			storageUsedBytes: 0,
+			collaboratorsAssigned: 0,
+			documentsCount: countUserDocuments(userId),
+		},
+	};
 }
 
 function canCreateDocuments(organizationId, additionalDocuments = 1) {
@@ -507,7 +630,7 @@ function markWebhookJobFailed(jobId, errorMessage) {
 function ensureOrganizationForUser(user) {
 	const existingMembership = [...organizationMemberships.values()].find(
 		(membership) => membership.userId === user.id && membership.status === 'active',
-	);
+	); 
 
 	if (existingMembership) {
 		const existingOrg = organizations.get(existingMembership.organizationId);
@@ -544,6 +667,35 @@ function ensureOrganizationForUser(user) {
 	};
 	organizationMemberships.set(membership.id, membership);
 
+	user.currentOrganizationId = organization.id;
+	users.set(user.id, user);
+	return organization;
+}
+
+function syncCurrentOrganizationFromMembership(user) {
+	if (!user) return null;
+	const activeMemberships = [...organizationMemberships.values()].filter(
+		(membership) => membership.userId === user.id && membership.status === 'active',
+	);
+	if (!activeMemberships.length) {
+		user.currentOrganizationId = null;
+		users.set(user.id, user);
+		return null;
+	}
+
+	const existingCurrent = activeMemberships.find(
+		(membership) => membership.organizationId === user.currentOrganizationId,
+	);
+	const selectedMembership = existingCurrent || activeMemberships[0];
+	const organization = organizations.get(selectedMembership.organizationId) || null;
+	if (!organization) {
+		user.currentOrganizationId = null;
+		users.set(user.id, user);
+		return null;
+	}
+
+	ensureOrganizationBillingState(organization);
+	ensureOrganizationSecurityState(organization);
 	user.currentOrganizationId = organization.id;
 	users.set(user.id, user);
 	return organization;
@@ -601,7 +753,9 @@ module.exports = {
 	organizationInvites,
 	authSessions,
 	invoices,
+	userBilling,
 	organizationUsage,
+	userUsage,
 	webhookJobs,
 	processedWebhookEvents,
 	authTokens,
@@ -611,18 +765,23 @@ module.exports = {
 	versions,
 	todos,
 	workspaces,
+	initializePersistentMaps,
 	nowIso,
 	monthKeyFromDate,
 	getPlan,
 	getAllPlans,
 	normalizeDomain,
 	getOrganizationBillingState,
+	ensureUserBillingState,
+	getUserBillingState,
 	getOrganizationSecurityState,
 	findOrganizationByDomain,
 	updateOrganizationSecurityState,
 	refreshBillingStatus,
+	refreshUserBillingStatus,
 	isBillingWriteBlocked,
 	getOrganizationEntitlements,
+	getUserEntitlements,
 	canAssignSeats,
 	canAssignCollaborators,
 	calculateOrganizationStorageBytes,
@@ -643,5 +802,6 @@ module.exports = {
 	markWebhookJobFailed,
 	ensureOrganizationForUser,
 	ensureTenantBootstrapForUser,
+	syncCurrentOrganizationFromMembership,
 	ensureWorkspaceForUser,
 };
