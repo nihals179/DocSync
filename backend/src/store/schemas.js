@@ -11,10 +11,10 @@ const users = createPersistentMap('users');
 /** @type {Map<string, { id: string, name: string, ownerUserId: string, createdAt: string, updatedAt: string, billing?: Record<string, unknown> }>} */
 const organizations = createPersistentMap('organizations');
 
-/** @type {Map<string, { id: string, organizationId: string, userId: string, role: 'owner' | 'admin' | 'editor' | 'viewer', billingAdmin: boolean, status: 'active' | 'removed', createdAt: string, updatedAt: string }>} */
+/** @type {Map<string, { id: string, organizationId: string, userId: string, billingAdmin: boolean, status: 'active' | 'removed', createdAt: string, updatedAt: string }>} */
 const organizationMemberships = createPersistentMap('organizationMemberships');
 
-/** @type {Map<string, { id: string, token: string, organizationId: string, email: string, role: 'owner' | 'admin' | 'editor' | 'viewer', billingAdmin: boolean, status: 'pending' | 'accepted' | 'expired' | 'cancelled', invitedByUserId: string, createdAt: string, updatedAt: string, expiresAt: string, acceptedAt: string | null }>} */
+/** @type {Map<string, { id: string, token: string, organizationId: string, email: string, billingAdmin: boolean, status: 'pending' | 'accepted' | 'expired' | 'cancelled', invitedByUserId: string, createdAt: string, updatedAt: string, expiresAt: string, acceptedAt: string | null }>} */
 const organizationInvites = createPersistentMap('organizationInvites');
 
 /** @type {Map<string, { id: string, userId: string, refreshTokenHash: string, csrfToken: string, createdAt: string, lastUsedAt: string, expiresAt: string, revokedAt: string | null, remember: boolean, userAgent: string, ipAddress: string }>} */
@@ -47,6 +47,9 @@ const auditLogs = createPersistentMap('auditLogs');
 /** @type {Map<string, { id: string, title: string, content: string, userId: string, createdAt: string, updatedAt: string }>} */
 const documents = createPersistentMap('documents');
 
+/** @type {Map<string, { id: string, role: string, canAccessAdminBoard: boolean, canReviewSecurityAudit: boolean, canManageGlobalSettings: boolean, canManageMembers: boolean, canManageMemberBillingAdmin: boolean, canManageOrganizationBilling: boolean, canManageWorkspacesDocuments: boolean, canReadOrganizationResources: boolean, canUseAiGrammarByPlan: boolean, canManageBillingSettings: boolean, canViewInvoicesSubscription: boolean, createdAt: string, updatedAt: string }>} */
+const profiles = createPersistentMap('profiles');
+
 /** @type {Map<string, Array<{ id: string, text: string, userId: string, createdAt: string }>>} */
 const comments = createPersistentMap('comments');
 
@@ -74,6 +77,7 @@ module.exports = {
 	authTokens,
 	auditLogs,
 	documents,
+	profiles,
 	comments,
 	versions,
 	todos,

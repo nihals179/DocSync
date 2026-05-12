@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { organizationsApi, type OrganizationSecurityState, type SsoProvider } from '../../lib/api';
+import {
+  organizationsApi,
+  type EnterpriseEnvironmentResponse,
+  type OrganizationSecurityState,
+  type SsoProvider,
+} from '../../lib/api';
 
 interface EnterpriseSecuritySettingsPageProps {
   token: string;
@@ -44,6 +49,11 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(EMPTY_PROVIDER);
   const [simulateEmail, setSimulateEmail] = useState('');
   const [simulateResult, setSimulateResult] = useState('');
+  const [bootstrapping, setBootstrapping] = useState(false);
+  const [bootstrapResult, setBootstrapResult] = useState<EnterpriseEnvironmentResponse | null>(null);
+  const [bootstrapSeats, setBootstrapSeats] = useState(500);
+  const [bootstrapDomainsText, setBootstrapDomainsText] = useState('');
+  const [bootstrapWithProvider, setBootstrapWithProvider] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -155,6 +165,53 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
     }
   }
 
+  async function initializeEnterpriseEnvironment() {
+    setMessage('');
+    setError('');
+    setBootstrapping(true);
+    setBootstrapResult(null);
+
+    try {
+      const domains = bootstrapDomainsText
+        .split('\n')
+        .map((line) => line.trim().replace(/^@+/, '').toLowerCase())
+        .filter(Boolean);
+
+      const payload = {
+        purchasedSeats: Math.max(1, Number(bootstrapSeats) || 500),
+        domains,
+        ...(bootstrapWithProvider && providerDraft.name.trim().length > 0
+          ? {
+            ssoProvider: {
+              type: providerDraft.type,
+              name: providerDraft.name.trim(),
+              issuerUrl: providerDraft.issuerUrl.trim() || undefined,
+              ssoUrl: providerDraft.ssoUrl.trim() || undefined,
+              clientId: providerDraft.clientId.trim() || undefined,
+              clientSecret: providerDraft.clientSecret.trim() || undefined,
+              certificate: providerDraft.certificate.trim() || undefined,
+              enabled: providerDraft.enabled,
+            },
+          }
+          : {}),
+      };
+
+      const result = await organizationsApi.createEnterpriseEnvironment(token, payload);
+      setBootstrapResult(result);
+      setMessage(result.message);
+      setRequireMfa(result.security.requireMfa);
+      setSessionDurationHours(result.security.sessionDurationHours);
+      setIpAllowlistEnabled(result.security.ipAllowlistEnabled);
+      setIpAllowlistText(result.security.ipAllowlist.join('\n'));
+      setDomainText(result.security.domainMappings.join('\n'));
+      setSecurity(result.security);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to initialize enterprise environment.');
+    } finally {
+      setBootstrapping(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-8 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -176,6 +233,63 @@ export default function EnterpriseSecuritySettingsPage({ token, userName }: Ente
 
         {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
         {error && <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+
+        <section className="rounded-3xl bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-black text-slate-900">Enterprise environment setup</h2>
+              <p className="mt-2 text-sm text-slate-600">Initialize enterprise billing, security baseline, and optional SSO seed for this organization.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void initializeEnterpriseEnvironment()}
+              disabled={bootstrapping}
+              className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {bootstrapping ? 'Initializing...' : 'Initialize enterprise environment'}
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Purchased seats</p>
+              <input
+                type="number"
+                min={1}
+                value={bootstrapSeats}
+                onChange={(event) => setBootstrapSeats(Number(event.target.value))}
+                className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+              />
+            </div>
+            <label className="inline-flex items-center gap-2 self-end pb-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={bootstrapWithProvider}
+                onChange={(event) => setBootstrapWithProvider(event.target.checked)}
+              />
+              Include current SSO provider draft
+            </label>
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Initial domain mappings (one per line)</p>
+            <textarea
+              rows={3}
+              value={bootstrapDomainsText}
+              onChange={(event) => setBootstrapDomainsText(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+              placeholder="acme.com&#10;corp.acme.com"
+            />
+          </div>
+
+          {bootstrapResult ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              <p className="font-semibold">{bootstrapResult.organization.name} is now configured for enterprise mode.</p>
+              <p className="mt-1">Plan: {bootstrapResult.billing.planId} | Seats: {bootstrapResult.billing.purchasedSeats}</p>
+              <p className="mt-1">MFA required: {bootstrapResult.security.requireMfa ? 'Yes' : 'No'} | SSO providers: {bootstrapResult.security.ssoProviders.length}</p>
+            </div>
+          ) : null}
+        </section>
 
         <section className="rounded-3xl bg-white p-6 shadow-sm">
           <h2 className="text-xl font-black text-slate-900">Access policies</h2>

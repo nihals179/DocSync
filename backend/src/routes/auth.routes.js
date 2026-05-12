@@ -24,8 +24,9 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
 const {
-  authSessions,
+  ensureTenantBootstrapForUser,
   ensureUserBillingState,
+  ensureWorkspaceForUserProvisioned,
   getOrganizationSecurityState,
   syncCurrentOrganizationFromMembership,
   users,
@@ -51,9 +52,12 @@ const {
   clearAuthCookies,
   createSession,
   rotateSession,
+  getSessionById,
+  findSessionByRefreshToken,
+  listActiveSessionsForUser,
+  countActiveSessionsForUser,
   writeSessionCookies,
   buildAuthResponse,
-  matchesRefreshToken,
   validateCsrf,
   revokeSession,
   revokeAllUserSessions,
@@ -66,15 +70,9 @@ const {
   passwordResetRateLimit,
   registerRateLimit,
 } = require('../middleware/rate-limit');
+const { getAuthConfig } = require('../config/auth-config');
 
 const router = express.Router();
-const DEV_MODE = process.env.NODE_ENV !== 'production';
-const EMAIL_VERIFICATION_BYPASS = process.env.AUTH_BYPASS_EMAIL_VERIFICATION === 'true';
-const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
-const LOCKOUT_THRESHOLD = 5;
-const LOCKOUT_MS = 30 * 60 * 1000;
-const APP_NAME = 'DocSync';
 
 function audit(req, action, status, userId = null, metadata = {}) {
   const user = userId ? users.get(userId) : null;
@@ -141,6 +139,7 @@ async function ensureUserPersistedToDb(user, billing) {
 
 
 router.post('/register', registerRateLimit, async (req, res) => {
+  const authConfig = await getAuthConfig();
   const { name, email, password } = req.body ?? {};
   if (!name || !email || !password) {
     audit(req, 'register', 'failure', null, { reason: 'missing-fields' });
@@ -169,7 +168,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
     }
   }
 
-  const verificationRequired = !EMAIL_VERIFICATION_BYPASS;
+  const verificationRequired = !authConfig.emailVerificationBypass;
   const user = {
     id: uuidv4(),
     name: String(name).trim(),
@@ -188,7 +187,9 @@ router.post('/register', registerRateLimit, async (req, res) => {
   users.set(user.id, user);
   const billing = ensureUserBillingState(user);
   try {
+    const organization = ensureTenantBootstrapForUser(user);
     await ensureUserPersistedToDb(user, billing);
+    await ensureWorkspaceForUserProvisioned(user, organization.id);
   } catch (error) {
     users.delete(user.id);
     audit(req, 'register', 'failure', user.id, { reason: 'db-persist-failed', error: String(error?.message || error) });
@@ -196,7 +197,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
   }
 
   const verificationToken = verificationRequired
-    ? issueOneTimeToken(user.id, 'email-verification', EMAIL_TOKEN_TTL_MS)
+    ? issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs)
     : null;
   const verificationLink = verificationToken
     ? `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`
@@ -208,7 +209,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
       : 'Account created successfully. You can now log in.',
     verificationRequired,
     user: publicUser(user),
-    ...(verificationToken && DEV_MODE
+    ...(verificationToken && authConfig.devMode
       ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink }
       : {}),
   });
@@ -232,7 +233,8 @@ router.post('/verify-email', authRateLimit, (req, res) => {
   res.json({ message: 'Email verified successfully.' });
 });
 
-router.post('/resend-verification', authRateLimit, (req, res) => {
+router.post('/resend-verification', authRateLimit, async (req, res) => {
+  const authConfig = await getAuthConfig();
   const email = String(req.body?.email || '').toLowerCase();
   if (!email) return res.status(400).json({ error: 'Email is required.' });
   const user = [...users.values()].find((item) => item.email === email);
@@ -240,16 +242,17 @@ router.post('/resend-verification', authRateLimit, (req, res) => {
   ensureUserShape(user);
   if (user.emailVerified) return res.status(400).json({ error: 'Email already verified.' });
 
-  const verificationToken = issueOneTimeToken(user.id, 'email-verification', EMAIL_TOKEN_TTL_MS);
+  const verificationToken = issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
   const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
   audit(req, 'email-verification-resend', 'success', user.id);
   res.json({
     message: 'Verification email queued.',
-    ...(DEV_MODE ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
+    ...(authConfig.devMode ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
   });
 });
 
 router.post('/login', loginRateLimit, async (req, res) => {
+  const authConfig = await getAuthConfig();
   const authScope = getAuthScope(req);
   const { email, username, password, remember = false } = req.body ?? {};
   const identifier = String(email || username || '').toLowerCase();
@@ -272,8 +275,8 @@ router.post('/login', loginRateLimit, async (req, res) => {
   const valid = await bcrypt.compare(String(password), user.passwordHash);
   if (!valid) {
     user.failedLoginAttempts += 1;
-    if (user.failedLoginAttempts >= LOCKOUT_THRESHOLD) {
-      user.lockoutUntil = new Date(Date.now() + LOCKOUT_MS).toISOString();
+    if (user.failedLoginAttempts >= authConfig.lockoutThreshold) {
+      user.lockoutUntil = new Date(Date.now() + authConfig.lockoutMs).toISOString();
       audit(req, 'account-lockout', 'failure', user.id, { failedLoginAttempts: user.failedLoginAttempts });
     }
     users.set(user.id, user);
@@ -281,11 +284,11 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(user.lockoutUntil ? 423 : 401).json({
       error: user.lockoutUntil
         ? 'Too many failed attempts. Account locked for 30 minutes.'
-        : `Invalid credentials. ${Math.max(0, LOCKOUT_THRESHOLD - user.failedLoginAttempts)} attempts remaining.`,
+          : `Invalid credentials. ${Math.max(0, authConfig.lockoutThreshold - user.failedLoginAttempts)} attempts remaining.`,
     });
   }
 
-  if (!EMAIL_VERIFICATION_BYPASS && !user.emailVerified) {
+        if (!authConfig.emailVerificationBypass && !user.emailVerified) {
     audit(req, 'login', 'failure', user.id, { reason: 'email-not-verified' });
     return res.status(403).json({ error: 'Please verify your email before signing in.' });
   }
@@ -293,7 +296,23 @@ router.post('/login', loginRateLimit, async (req, res) => {
   user.failedLoginAttempts = 0;
   user.lockoutUntil = null;
   users.set(user.id, user);
+
+  // Legacy users may exist without org membership; bootstrap tenant context on login.
+  ensureTenantBootstrapForUser(user);
   syncCurrentOrganizationFromMembership(user);
+
+  if (user.currentOrganizationId) {
+    try {
+      await ensureWorkspaceForUserProvisioned(user, user.currentOrganizationId);
+    } catch (error) {
+      audit(req, 'login', 'failure', user.id, {
+        reason: 'workspace-provision-failed',
+        organizationId: user.currentOrganizationId,
+        error: String(error?.message || error),
+      });
+      return res.status(500).json({ error: 'Failed to provision your workspace. Please try again.' });
+    }
+  }
 
   if (!isOrgIpAllowedForUser(req, user)) {
     audit(req, 'login-ip-policy', 'failure', user.id, {
@@ -325,13 +344,13 @@ router.post('/login', loginRateLimit, async (req, res) => {
     });
   }
 
-  const { refreshToken, csrfToken, session } = createSession(user, req, Boolean(remember));
+  const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(remember));
   writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login', 'success', user.id, { sessionId: session.id });
   res.json(buildAuthResponse(user, session));
 });
 
-router.post('/login/2fa', loginRateLimit, (req, res) => {
+router.post('/login/2fa', loginRateLimit, async (req, res) => {
   const authScope = getAuthScope(req);
   const { tempToken, code } = req.body ?? {};
   if (!tempToken || !code) {
@@ -364,13 +383,13 @@ router.post('/login/2fa', loginRateLimit, (req, res) => {
     return res.status(401).json({ error: 'Invalid authentication code.' });
   }
 
-  const { refreshToken, csrfToken, session } = createSession(user, req, Boolean(pending.remember));
+  const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(pending.remember));
   writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login-2fa', 'success', user.id, { sessionId: session.id });
   res.json(buildAuthResponse(user, session));
 });
 
-router.post('/refresh', authRateLimit, (req, res) => {
+router.post('/refresh', authRateLimit, async (req, res) => {
   const authScope = getAuthScope(req);
   const cookieNames = resolveCookieNames(authScope);
   const refreshToken = req.cookies?.[cookieNames.refreshCookie];
@@ -378,7 +397,7 @@ router.post('/refresh', authRateLimit, (req, res) => {
     return res.status(401).json({ error: 'No refresh session available.' });
   }
 
-  const session = [...authSessions.values()].find((item) => matchesRefreshToken(item, refreshToken));
+  const session = await findSessionByRefreshToken(refreshToken);
   if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
     clearAuthCookies(res, authScope);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
@@ -387,7 +406,7 @@ router.post('/refresh', authRateLimit, (req, res) => {
     return res.status(403).json({ error: 'Invalid CSRF token.' });
   }
 
-  const resolved = resolveUserFromSession(session.id);
+  const resolved = await resolveUserFromSession(session.id);
   if (!resolved) {
     clearAuthCookies(res, authScope);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
@@ -403,15 +422,15 @@ router.post('/refresh', authRateLimit, (req, res) => {
     return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
   }
 
-  const rotated = rotateSession(resolved.session, req);
+  const rotated = await rotateSession(resolved.session, req);
   writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt, authScope);
   audit(req, 'session-refresh', 'success', resolved.user.id, { sessionId: rotated.session.id });
   res.json(buildAuthResponse(resolved.user, rotated.session));
 });
 
-router.post('/logout', requireAuth, (req, res) => {
+router.post('/logout', requireAuth, async (req, res) => {
   const authScope = getAuthScope(req);
-  revokeSession(req.authSession.id);
+  await revokeSession(req.authSession.id);
   clearAuthCookies(res, authScope);
   audit(req, 'logout', 'success', req.user.id, { sessionId: req.authSession.id });
   res.json({ message: 'Logged out successfully.' });
@@ -423,10 +442,8 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ user: publicUser(user), session: req.authSession, csrfToken: req.authSession.csrfToken });
 });
 
-router.get('/sessions', requireAuth, (req, res) => {
-  const sessions = [...authSessions.values()]
-    .filter((session) => session.userId === req.user.id && !session.revokedAt && new Date(session.expiresAt).getTime() > Date.now())
-    .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime())
+router.get('/sessions', requireAuth, async (req, res) => {
+  const sessions = (await listActiveSessionsForUser(req.user.id))
     .map((session) => ({
       id: session.id,
       createdAt: session.createdAt,
@@ -440,27 +457,28 @@ router.get('/sessions', requireAuth, (req, res) => {
   res.json({ sessions });
 });
 
-router.delete('/sessions/:sessionId', requireAuth, (req, res) => {
+router.delete('/sessions/:sessionId', requireAuth, async (req, res) => {
   const authScope = getAuthScope(req);
-  const session = authSessions.get(req.params.sessionId);
+  const session = await getSessionById(req.params.sessionId);
   if (!session || session.userId !== req.user.id) {
     return res.status(404).json({ error: 'Session not found.' });
   }
-  revokeSession(session.id);
+  await revokeSession(session.id);
   if (session.id === req.authSession.id) clearAuthCookies(res, authScope);
   audit(req, 'session-revoke', 'success', req.user.id, { sessionId: session.id });
   res.json({ message: 'Session revoked.' });
 });
 
-router.post('/sessions/revoke-all', requireAuth, (req, res) => {
+router.post('/sessions/revoke-all', requireAuth, async (req, res) => {
   const authScope = getAuthScope(req);
-  revokeAllUserSessions(req.user.id);
+  await revokeAllUserSessions(req.user.id);
   clearAuthCookies(res, authScope);
   audit(req, 'session-revoke-all', 'success', req.user.id);
   res.json({ message: 'All sessions revoked.' });
 });
 
-router.post('/forgot-password', passwordResetRateLimit, (req, res) => {
+router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
+  const authConfig = await getAuthConfig();
   const email = String(req.body?.email || '').toLowerCase();
   if (!email) return res.status(400).json({ error: 'Email is required.' });
 
@@ -470,12 +488,12 @@ router.post('/forgot-password', passwordResetRateLimit, (req, res) => {
     return res.json({ message: 'If an account exists for that email, a reset link has been generated.' });
   }
 
-  const resetToken = issueOneTimeToken(user.id, 'password-reset', RESET_TOKEN_TTL_MS);
+  const resetToken = issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
   const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
   audit(req, 'password-reset-request', 'success', user.id);
   res.json({
     message: 'If an account exists for that email, a reset link has been generated.',
-    ...(DEV_MODE ? { resetTokenPreview: resetToken, resetLinkPreview: resetLink } : {}),
+    ...(authConfig.devMode ? { resetTokenPreview: resetToken, resetLinkPreview: resetLink } : {}),
   });
 });
 
@@ -496,35 +514,35 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
   user.failedLoginAttempts = 0;
   user.lockoutUntil = null;
   users.set(user.id, user);
-  revokeAllUserSessions(user.id);
+  await revokeAllUserSessions(user.id);
   audit(req, 'password-reset', 'success', user.id);
   res.json({ message: 'Password updated successfully. Please sign in again.' });
 });
 
-router.get('/audit-logs', requireAuth, (req, res) => {
-  const logs = listAuditLogs({ userId: req.user.id, limit: 100 });
+router.get('/audit-logs', requireAuth, async (req, res) => {
+  const logs = await listAuditLogs({ userId: req.user.id, limit: 100 });
   res.json({ logs });
 });
 
-router.get('/security', requireAuth, (req, res) => {
+router.get('/security', requireAuth, async (req, res) => {
   const user = ensureUserShape(users.get(req.user.id));
   if (!user) return res.status(404).json({ error: 'User not found.' });
+  const activeSessions = await countActiveSessionsForUser(user.id);
   res.json({
     user: publicUser(user),
-    activeSessions: [...authSessions.values()].filter(
-      (session) => session.userId === user.id && !session.revokedAt && new Date(session.expiresAt).getTime() > Date.now(),
-    ).length,
+    activeSessions,
   });
 });
 
 router.post('/2fa/setup', requireAuth, async (req, res) => {
+  const authConfig = await getAuthConfig();
   const user = ensureUserShape(users.get(req.user.id));
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   const secret = authenticator.generateSecret();
   user.twoFactorTempSecret = secret;
   users.set(user.id, user);
-  const otpauth = authenticator.keyuri(user.email, APP_NAME, secret);
+  const otpauth = authenticator.keyuri(user.email, authConfig.appName, secret);
   const qrDataUrl = await QRCode.toDataURL(otpauth);
   audit(req, '2fa-setup', 'success', user.id);
   res.json({ secret, otpauth, qrDataUrl });

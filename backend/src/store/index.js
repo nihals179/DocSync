@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN } = require('./catalog');
 const {
 	users,
@@ -15,11 +16,12 @@ const {
 	authTokens,
 	auditLogs,
 	documents,
+	profiles,
 	comments,
 	versions,
 	todos,
 	workspaces,
-	initializePersistentMaps,
+	initializePersistentMaps: initializeSchemaPersistentMaps,
 } = require('./schemas');
 
 function nowIso() {
@@ -37,6 +39,118 @@ function getPlan(planId) {
 
 function getAllPlans() {
 	return Object.values(PLAN_CATALOG);
+}
+
+const PROFILE_TABLE_DEFAULTS = [
+	{
+		role: 'platform_admin',
+		canAccessAdminBoard: true,
+		canReviewSecurityAudit: true,
+		canManageGlobalSettings: true,
+		canManageMembers: false,
+		canManageMemberBillingAdmin: false,
+		canManageOrganizationBilling: false,
+		canManageWorkspacesDocuments: false,
+		canReadOrganizationResources: true,
+		canUseAiGrammarByPlan: true,
+		canManageBillingSettings: false,
+		canViewInvoicesSubscription: true,
+	},
+	{
+		role: 'organization_owner',
+		canAccessAdminBoard: false,
+		canReviewSecurityAudit: false,
+		canManageGlobalSettings: false,
+		canManageMembers: true,
+		canManageMemberBillingAdmin: true,
+		canManageOrganizationBilling: true,
+		canManageWorkspacesDocuments: true,
+		canReadOrganizationResources: true,
+		canUseAiGrammarByPlan: true,
+		canManageBillingSettings: true,
+		canViewInvoicesSubscription: true,
+	},
+	{
+		role: 'organization_member',
+		canAccessAdminBoard: false,
+		canReviewSecurityAudit: false,
+		canManageGlobalSettings: false,
+		canManageMembers: false,
+		canManageMemberBillingAdmin: false,
+		canManageOrganizationBilling: false,
+		canManageWorkspacesDocuments: true,
+		canReadOrganizationResources: true,
+		canUseAiGrammarByPlan: true,
+		canManageBillingSettings: false,
+		canViewInvoicesSubscription: false,
+	},
+	{
+		role: 'billing_admin',
+		canAccessAdminBoard: false,
+		canReviewSecurityAudit: false,
+		canManageGlobalSettings: false,
+		canManageMembers: false,
+		canManageMemberBillingAdmin: false,
+		canManageOrganizationBilling: true,
+		canManageWorkspacesDocuments: false,
+		canReadOrganizationResources: true,
+		canUseAiGrammarByPlan: false,
+		canManageBillingSettings: true,
+		canViewInvoicesSubscription: true,
+	},
+];
+
+function ensureProfileTableSeeded() {
+	if (profiles.size > 0) return;
+	const timestamp = nowIso();
+	for (const definition of PROFILE_TABLE_DEFAULTS) {
+		const id = uuidv4();
+		profiles.set(id, {
+			id,
+			role: definition.role,
+			canAccessAdminBoard: Boolean(definition.canAccessAdminBoard),
+			canReviewSecurityAudit: Boolean(definition.canReviewSecurityAudit),
+			canManageGlobalSettings: Boolean(definition.canManageGlobalSettings),
+			canManageMembers: Boolean(definition.canManageMembers),
+			canManageMemberBillingAdmin: Boolean(definition.canManageMemberBillingAdmin),
+			canManageOrganizationBilling: Boolean(definition.canManageOrganizationBilling),
+			canManageWorkspacesDocuments: Boolean(definition.canManageWorkspacesDocuments),
+			canReadOrganizationResources: Boolean(definition.canReadOrganizationResources),
+			canUseAiGrammarByPlan: Boolean(definition.canUseAiGrammarByPlan),
+			canManageBillingSettings: Boolean(definition.canManageBillingSettings),
+			canViewInvoicesSubscription: Boolean(definition.canViewInvoicesSubscription),
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		});
+	}
+}
+
+function getProfileTable() {
+	ensureProfileTableSeeded();
+	return [...profiles.values()]
+		.map((profile) => ({
+			id: profile.id,
+			role: profile.role,
+			canAccessAdminBoard: Boolean(profile.canAccessAdminBoard),
+			canReviewSecurityAudit: Boolean(profile.canReviewSecurityAudit),
+			canManageGlobalSettings: Boolean(profile.canManageGlobalSettings),
+			canManageMembers: Boolean(profile.canManageMembers),
+			canManageMemberBillingAdmin: Boolean(profile.canManageMemberBillingAdmin),
+			canManageOrganizationBilling: Boolean(profile.canManageOrganizationBilling),
+			canManageWorkspacesDocuments: Boolean(profile.canManageWorkspacesDocuments),
+			canReadOrganizationResources: Boolean(profile.canReadOrganizationResources),
+			canUseAiGrammarByPlan: Boolean(profile.canUseAiGrammarByPlan),
+			canManageBillingSettings: Boolean(profile.canManageBillingSettings),
+			canViewInvoicesSubscription: Boolean(profile.canViewInvoicesSubscription),
+			createdAt: profile.createdAt,
+			updatedAt: profile.updatedAt,
+		}))
+		.sort((a, b) => a.role.localeCompare(b.role));
+}
+
+async function initializePersistentMaps() {
+	await initializeSchemaPersistentMaps();
+	ensureProfileTableSeeded();
 }
 
 function normalizeDomain(value) {
@@ -421,8 +535,7 @@ function getCollaboratorCount(organizationId) {
 	return [...organizationMemberships.values()].filter(
 		(membership) =>
 			membership.organizationId === organizationId &&
-			membership.status === 'active' &&
-			membership.role !== 'viewer',
+			membership.status === 'active',
 	).length;
 }
 
@@ -659,7 +772,6 @@ function ensureOrganizationForUser(user) {
 		id: uuidv4(),
 		organizationId: organization.id,
 		userId: user.id,
-		role: 'owner',
 		billingAdmin: true,
 		status: 'active',
 		createdAt: now,
@@ -702,8 +814,8 @@ function syncCurrentOrganizationFromMembership(user) {
 }
 
 function ensureWorkspaceForUser(user, organizationId) {
-	const orgId = organizationId || ensureOrganizationForUser(user).id;
-	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === orgId);
+	const personalScopeId = user.id;
+	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
 	if (existing) return existing;
 
 	const now = nowIso();
@@ -712,12 +824,70 @@ function ensureWorkspaceForUser(user, organizationId) {
 		name: `${user.name}'s Workspace`,
 		ownerId: user.id,
 		memberIds: [user.id],
-		organizationId: orgId,
+		organizationId: personalScopeId,
 		createdAt: now,
 		updatedAt: now,
 	};
 	workspaces.set(workspace.id, workspace);
 	return workspace;
+}
+
+function mapWorkspaceRowToRecord(row) {
+	return {
+		id: row.id,
+		name: row.name,
+		ownerId: row.ownerId,
+		memberIds: Array.isArray(row.memberIds) ? row.memberIds : [row.ownerId],
+		organizationId: row.organizationId || null,
+		createdAt: new Date(row.createdAt).toISOString(),
+		updatedAt: new Date(row.updatedAt).toISOString(),
+	};
+}
+
+async function ensureWorkspaceForUserProvisioned(user, organizationId) {
+	const personalScopeId = user.id;
+	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
+
+	if (!process.env.DATABASE_URL) {
+		return existing || ensureWorkspaceForUser(user, organizationId);
+	}
+
+	let row = await prisma.workspace.findFirst({
+		where: {
+			ownerId: user.id,
+			organizationId: personalScopeId,
+		},
+		orderBy: {
+			createdAt: 'asc',
+		},
+	});
+
+	if (!row) {
+		const workspace = existing || {
+			id: uuidv4(),
+			name: `${user.name}'s Workspace`,
+			ownerId: user.id,
+			memberIds: [user.id],
+			organizationId: personalScopeId,
+			createdAt: nowIso(),
+			updatedAt: nowIso(),
+		};
+
+		row = await prisma.workspace.create({
+			data: {
+				id: workspace.id,
+				name: workspace.name,
+				ownerId: workspace.ownerId,
+				organizationId: workspace.organizationId,
+				memberIds: workspace.memberIds,
+				createdAt: new Date(workspace.createdAt),
+			},
+		});
+	}
+
+	const mapped = mapWorkspaceRowToRecord(row);
+	workspaces.set(mapped.id, mapped);
+	return mapped;
 }
 
 function hydrateLegacyResourcesForUser(user, organizationId) {
@@ -761,6 +931,7 @@ module.exports = {
 	authTokens,
 	auditLogs,
 	documents,
+	profiles,
 	comments,
 	versions,
 	todos,
@@ -804,4 +975,6 @@ module.exports = {
 	ensureTenantBootstrapForUser,
 	syncCurrentOrganizationFromMembership,
 	ensureWorkspaceForUser,
+	ensureWorkspaceForUserProvisioned,
+	getProfileTable,
 };

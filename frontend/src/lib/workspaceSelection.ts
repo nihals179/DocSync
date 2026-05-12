@@ -2,9 +2,9 @@ const WORKSPACE_SELECTION_STORAGE_KEY = 'docsync:selectedWorkspaceId';
 
 export function getInitialWorkspaceSelectionId() {
   try {
-    return localStorage.getItem(WORKSPACE_SELECTION_STORAGE_KEY) ?? 'all';
+    return localStorage.getItem(WORKSPACE_SELECTION_STORAGE_KEY) ?? '';
   } catch {
-    return 'all';
+    return '';
   }
 }
 

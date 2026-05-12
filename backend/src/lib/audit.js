@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 const { auditLogs, nowIso } = require('../store');
 
 const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
@@ -9,6 +10,30 @@ const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
 
 let auditFileReady = false;
 const THIS_FILE = path.resolve(__filename);
+
+function isDatabaseConfigured() {
+	return Boolean(process.env.DATABASE_URL);
+}
+
+function normalizeAuditEntry(entry) {
+	if (!entry) return null;
+	const metadata = entry.metadata && typeof entry.metadata === 'object' ? { ...entry.metadata } : {};
+	const source = metadata.__source || null;
+	if (source) delete metadata.__source;
+
+	return {
+		id: entry.id,
+		userId: entry.userId || null,
+		organizationId: entry.organizationId || null,
+		action: entry.action,
+		status: entry.status,
+		ipAddress: entry.ipAddress || null,
+		userAgent: entry.userAgent || null,
+		metadata,
+		source,
+		createdAt: entry.createdAt instanceof Date ? entry.createdAt.toISOString() : entry.createdAt,
+	};
+}
 
 function parseStackLine(line) {
 	const normalized = String(line || '').trim();
@@ -74,6 +99,12 @@ function writeAuditLog({
 }) {
 	if (!userId || !action) return null;
 	const source = getCallerLocation();
+	const metadataWithSource = source
+		? {
+			...(metadata || {}),
+			__source: source,
+		}
+		: (metadata || {});
 	const entry = {
 		id: uuidv4(),
 		userId,
@@ -82,16 +113,59 @@ function writeAuditLog({
 		status,
 		ipAddress,
 		userAgent,
-		metadata,
+		metadata: metadata || {},
 		createdAt: nowIso(),
 		source,
 	};
 	auditLogs.set(entry.id, entry);
-	appendAuditLogToFile(entry);
+
+	if (isDatabaseConfigured()) {
+		prisma.auditLog.create({
+			data: {
+				id: entry.id,
+				userId: entry.userId,
+				organizationId: entry.organizationId,
+				action: entry.action,
+				status: entry.status,
+				ipAddress: entry.ipAddress,
+				userAgent: entry.userAgent,
+				metadata: metadataWithSource,
+				createdAt: new Date(entry.createdAt),
+			},
+		}).catch(() => {
+			// Keep request path non-blocking if DB writes fail.
+		});
+	}
+
+	if (process.env.AUDIT_LOG_FILE_MIRROR === 'true') {
+		appendAuditLogToFile(entry);
+	}
+
 	return entry;
 }
 
-function listAuditLogs({ organizationId, userId, action, status, limit = 100 }) {
+async function listAuditLogs({ organizationId, userId, action, status, limit = 100 }) {
+	const cappedLimit = Math.min(1000, Math.max(1, Number(limit) || 100));
+
+	if (isDatabaseConfigured()) {
+		const rows = await prisma.auditLog.findMany({
+			where: {
+				...(organizationId ? { organizationId } : {}),
+				...(userId ? { userId } : {}),
+				...(action ? { action } : {}),
+				...(status ? { status } : {}),
+			},
+			orderBy: { createdAt: 'desc' },
+			take: cappedLimit,
+		});
+
+		return rows.map((row) => {
+			const normalized = normalizeAuditEntry(row);
+			auditLogs.set(normalized.id, normalized);
+			return normalized;
+		});
+	}
+
 	const rows = [...auditLogs.values()].filter((entry) => {
 		if (organizationId && entry.organizationId !== organizationId) return false;
 		if (userId && entry.userId !== userId) return false;
@@ -101,7 +175,7 @@ function listAuditLogs({ organizationId, userId, action, status, limit = 100 }) 
 	});
 
 	rows.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-	return rows.slice(0, Math.min(1000, Math.max(1, Number(limit) || 100)));
+	return rows.slice(0, cappedLimit);
 }
 
 function toAuditCsv(entries) {

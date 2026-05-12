@@ -72,6 +72,38 @@ test.beforeEach(() => {
   clearStore();
 });
 
+test('enterprise environment bootstrap applies enterprise billing and security baseline', async () => {
+  const client = request(app);
+  const owner = await registerVerifyLogin(client, {
+    name: 'Enterprise Owner',
+    email: 'enterprise-owner@acme.com',
+  });
+  ensureTenantBootstrapForUser(users.get(owner.user.id));
+
+  const bootstrapRes = await client
+    .post('/api/organizations/current/enterprise/environment')
+    .set(authHeader(owner.token))
+    .send({
+      domains: ['acme.com', '@corp.acme.com'],
+      purchasedSeats: 650,
+      ssoProvider: {
+        type: 'saml',
+        name: 'Okta SAML',
+        issuerUrl: 'https://idp.acme.com',
+        ssoUrl: 'https://idp.acme.com/sso',
+      },
+    })
+    .expect(201);
+
+  assert.equal(bootstrapRes.body.billing.planId, 'enterprise');
+  assert.equal(bootstrapRes.body.billing.purchasedSeats, 650);
+  assert.equal(bootstrapRes.body.security.requireMfa, true);
+  assert.equal(bootstrapRes.body.security.domainMappings.includes('acme.com'), true);
+  assert.equal(bootstrapRes.body.security.ssoProviders.length, 1);
+  assert.equal(bootstrapRes.body.security.ssoProviders[0].type, 'saml');
+  assert.equal(bootstrapRes.body.entitlements.plan.id, 'enterprise');
+});
+
 test('enterprise security settings support SSO providers, domains, and CSV audit export', async () => {
   const client = request(app);
   const owner = await registerVerifyLogin(client, {

@@ -94,7 +94,7 @@ export default function OrganizationAuditConsolePage({ token, userName }: Organi
               <input
                 value={actionFilter}
                 onChange={(event) => setActionFilter(event.target.value)}
-                placeholder="organization.member.role.update"
+                placeholder="organization.member.update"
                 className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
               />
             </div>

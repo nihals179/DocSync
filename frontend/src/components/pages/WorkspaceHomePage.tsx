@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import ThemeListbox from '../common/ThemeListbox';
 import { docsApi, templatesApi, versionsApi, workspaceApi } from '../../lib/api';
 import { buildDocumentTree } from '../../lib/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../../lib/workspaceSelection';
@@ -87,8 +88,6 @@ export default function WorkspaceHomePage({
   onOpenSettingsDashboard,
   onLogout,
 }: WorkspaceHomePageProps) {
-  const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
-
   const [docs, setDocs] = useState<DocSummary[]>([]);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -135,20 +134,16 @@ export default function WorkspaceHomePage({
           templatesApi.list(token),
         ]);
         if (ignore) return;
-        // Backend provides an auto-created personal workspace (e.g. "Admin's Workspace").
-        // UI already represents personal scope as "My Workspace", so hide the duplicate.
-        const visibleWorkspaces = availableWorkspaces.filter(
-          (workspace) => workspace.name.trim().toLowerCase() !== personalWorkspaceName,
-        );
-        setWorkspaces(visibleWorkspaces);
+        setWorkspaces(availableWorkspaces);
         setDocs(list);
         setTemplates(availableTemplates);
 
-        // Fallback to personal workspace if saved selection no longer exists.
+        // Fallback to a real workspace if saved selection no longer exists.
         const savedSelection = selectedWorkspaceIdRef.current;
-        if (savedSelection !== 'all' && !visibleWorkspaces.some((workspace) => workspace.id === savedSelection)) {
-          selectedWorkspaceIdRef.current = 'all';
-          setSelectedWorkspaceId('all');
+        const fallbackWorkspaceId = availableWorkspaces[0]?.id ?? '';
+        if (!availableWorkspaces.some((workspace) => workspace.id === savedSelection)) {
+          selectedWorkspaceIdRef.current = fallbackWorkspaceId;
+          setSelectedWorkspaceId(fallbackWorkspaceId);
         }
 
         const recentDocs = list.slice(0, 4);
@@ -181,15 +176,13 @@ export default function WorkspaceHomePage({
     return () => {
       ignore = true;
     };
-  }, [token, personalWorkspaceName]);
+  }, [token]);
 
   const filteredDocs = useMemo(() => {
     let result = docs;
 
     // Filter by selected workspace
-    if (selectedWorkspaceId === 'all') {
-      result = result.filter((d) => !d.workspaceId);
-    } else {
+    if (selectedWorkspaceId) {
       result = result.filter((d) => d.workspaceId === selectedWorkspaceId);
     }
 
@@ -219,9 +212,7 @@ export default function WorkspaceHomePage({
   async function createFromTemplate(template: Template) {
     try {
       setCreatingTemplate(template.id);
-      const currentWorkspaceId = selectedWorkspaceIdRef.current;
-      const targetWorkspaceId = currentWorkspaceId === 'all' ? null : currentWorkspaceId;
-      await onCreateDocument(template.title, template.content, targetWorkspaceId);
+      await onCreateDocument(template.title, template.content, selectedWorkspaceIdRef.current || null);
     } finally {
       setCreatingTemplate(null);
     }
@@ -230,9 +221,7 @@ export default function WorkspaceHomePage({
   async function createBlankDoc() {
     try {
       setCreatingTemplate('blank');
-      const currentWorkspaceId = selectedWorkspaceIdRef.current;
-      const targetWorkspaceId = currentWorkspaceId === 'all' ? null : currentWorkspaceId;
-      await onCreateDocument('Untitled', '', targetWorkspaceId);
+      await onCreateDocument('Untitled', '', selectedWorkspaceIdRef.current || null);
     } finally {
       setCreatingTemplate(null);
     }
@@ -256,10 +245,7 @@ export default function WorkspaceHomePage({
 
   // Get the active workspace for the book title
   const activeWorkspace = useMemo(() => {
-    if (selectedWorkspaceId === 'all' || !selectedWorkspaceId) {
-      return { id: 'personal', name: 'My Workspace' };
-    }
-    return workspaces.find((w) => w.id === selectedWorkspaceId) || { id: 'personal', name: 'My Workspace' };
+    return workspaces.find((w) => w.id === selectedWorkspaceId) || workspaces[0] || { id: '', name: 'Workspace' };
   }, [selectedWorkspaceId, workspaces]);
 
   // Create book-like navigation structure
@@ -272,7 +258,7 @@ export default function WorkspaceHomePage({
   const docTree = useMemo(() => buildDocumentTree(bookNavigation) as DocNode[], [bookNavigation]);
 
   const workspaceOptions = useMemo(
-    () => [{ id: 'all', name: 'My Workspace' }, ...workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))],
+    () => workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name })),
     [workspaces],
   );
 
@@ -302,7 +288,7 @@ export default function WorkspaceHomePage({
   }
 
   function getWorkspaceTransferOptions(currentWorkspaceId: string | null) {
-    const available = workspaceOptions.filter((w) => (w.id === 'all' ? null : w.id) !== currentWorkspaceId);
+    const available = workspaceOptions.filter((workspace) => workspace.id !== currentWorkspaceId);
     return available;
   }
 
@@ -400,7 +386,7 @@ export default function WorkspaceHomePage({
     let insertIndex = 0;
 
     if (mode === 'root') {
-      destinationWorkspaceId = selectedWorkspaceId === 'all' ? null : selectedWorkspaceId;
+      destinationWorkspaceId = selectedWorkspaceId || null;
       destinationParentId = null;
       destinationSiblings = docs
         .filter(
@@ -680,23 +666,17 @@ export default function WorkspaceHomePage({
                 <span className="hidden text-lg font-black text-cyan-700 sm:inline">DocSync</span>
               </div>
 
-              <div className="relative shrink-0">
-                <select
-                  id="workspace-selector"
+              <div className="w-40 shrink-0">
+                <ThemeListbox
                   value={selectedWorkspaceId}
-                  onChange={(e) => {
-                    selectedWorkspaceIdRef.current = e.target.value;
-                    setSelectedWorkspaceId(e.target.value);
+                  options={workspaceOptions}
+                  onChange={(nextValue) => {
+                    selectedWorkspaceIdRef.current = nextValue;
+                    setSelectedWorkspaceId(nextValue);
                   }}
-                  className="cursor-pointer appearance-none rounded-full bg-cyan-50 py-2 pl-4 pr-10 text-sm font-medium text-cyan-900 focus:outline-none"
-                >
-                  <option value="all">My Workspace</option>
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                  ))}
-                </select>
-                <span className="material-icons pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-cyan-600" style={{ fontSize: '1.2rem' }}>expand_more</span>
-              </div>
+                  placeholder="Select workspace"
+                />
+              </div> 
 
               <div className="relative w-full max-w-sm">
                 <span className="material-icons absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '1.2rem' }}>search</span>
@@ -1070,21 +1050,20 @@ export default function WorkspaceHomePage({
                   {workspaceModal.action === 'copy' ? 'Copy To Workspace' : 'Move To Workspace'}
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">Choose a target workspace.</p>
-                <select
-                  value={workspaceModal.targetId}
-                  onChange={(event) =>
-                    setWorkspaceModal((prev) =>
-                      prev && prev.type === 'transfer-workspace'
-                        ? { ...prev, targetId: event.target.value, error: undefined }
-                        : prev,
-                    )
-                  }
-                  className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 outline-none focus:border-cyan-400"
-                >
-                  {workspaceModal.options.map((option) => (
-                    <option key={option.id} value={option.id}>{option.name}</option>
-                  ))}
-                </select>
+                <div className="mt-3">
+                  <ThemeListbox
+                    value={workspaceModal.targetId}
+                    options={workspaceModal.options}
+                    onChange={(nextValue) =>
+                      setWorkspaceModal((prev) =>
+                        prev && prev.type === 'transfer-workspace'
+                          ? { ...prev, targetId: nextValue, error: undefined }
+                          : prev,
+                      )
+                    }
+                    placeholder="Choose workspace"
+                  />
+                </div>
                 {workspaceModal.error && <p className="mt-2 text-xs text-red-600">{workspaceModal.error}</p>}
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -1097,7 +1076,7 @@ export default function WorkspaceHomePage({
                   <button
                     type="button"
                     onClick={() => {
-                      const targetWorkspaceId = workspaceModal.targetId === 'all' ? null : workspaceModal.targetId;
+                      const targetWorkspaceId = workspaceModal.targetId;
                       if (workspaceModal.action === 'copy') {
                         void copyDocToWorkspace(workspaceModal.docId, targetWorkspaceId);
                       } else {

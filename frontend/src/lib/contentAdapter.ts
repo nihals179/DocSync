@@ -1,6 +1,7 @@
 import { DEFAULT_RUN_FMT, FONT_STACK, buildTableToken, detectBulletPrefix, parseImageToken, parseTableToken, runsToText, type Run } from '../components/editor/textModel';
 
 const TABLE_PLACEHOLDER_PREFIX = '__DOCSYNC_TABLE_BLOCK_';
+const INLINE_STYLE_FONT_STACK = FONT_STACK.replace(/"/g, "'");
 
 function decodeHtmlEntities(value: string): string {
   if (!value) return '';
@@ -28,6 +29,18 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function serializeFontFamilyForStyle(family: string): string {
+  // Quote user-selected family as CSS (not HTML entity text) so names with
+  // spaces or apostrophes stay parseable in style="font-family:...".
+  const cssFamily = `'${family.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  const htmlSafeCssFamily = cssFamily
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  return `${htmlSafeCssFamily}, ${INLINE_STYLE_FONT_STACK}`;
 }
 
 function replaceDocsyncHtmlTokens(value: string): string {
@@ -131,13 +144,14 @@ function renderTableToken(token: string): string {
         ? cellRuns
             .map((run) => {
               const runStyle = [
-                `font-family:${run.fontFamily}, ${FONT_STACK}`,
+                `font-family:${serializeFontFamilyForStyle(run.fontFamily)}`,
                 `font-size:${run.fontSize}px`,
-                `color:${run.color}`,
+                `line-height:${run.lineSpacing ?? 1.5}`,
+                `color:${escapeHtml(run.color)}`,
                 `font-weight:${run.bold ? 700 : 400}`,
                 `font-style:${run.italic ? 'italic' : 'normal'}`,
                 `text-decoration:${run.underline ? 'underline' : 'none'}`,
-                run.highlightColor ? `background-color:${run.highlightColor}` : '',
+                run.highlightColor ? `background-color:${escapeHtml(run.highlightColor)}` : '',
               ]
                 .filter(Boolean)
                 .join('; ');
@@ -266,10 +280,12 @@ function stripLeadingChars(runs: Run[], count: number): Run[] {
 }
 
 function headingTagFromFontSize(fontSize: number): string {
-  if (fontSize >= 38) return 'h1';
-  if (fontSize >= 30) return 'h2';
-  if (fontSize >= 24) return 'h3';
-  if (fontSize >= 20) return 'h4';
+  // Match editor heading presets more closely for stable round-trips:
+  // h1=40, h2=28, h3=22, h4=20.
+  if (fontSize >= 36) return 'h1';
+  if (fontSize >= 26) return 'h2';
+  if (fontSize >= 21) return 'h3';
+  if (fontSize >= 19) return 'h4';
   return 'p';
 }
 
@@ -281,15 +297,18 @@ function renderRunSpan(run: Run): string {
     return renderInlineTextWithImageTokens(run.text);
   }
 
+  // Always emit font-weight, font-style and text-decoration even for their
+  // "off" values so that h1-h4 heading bold / italic / underline can never
+  // bleed through to child spans that don't explicitly reset them.
   const styles: string[] = [
-    `font-family:${escapeHtml(run.fontFamily)}, ${FONT_STACK}`,
+    `font-family:${serializeFontFamilyForStyle(run.fontFamily)}`,
     `font-size:${run.fontSize}px`,
     `line-height:${run.lineSpacing}`,
     `color:${escapeHtml(run.color)}`,
+    `font-weight:${run.bold ? 700 : 400}`,
+    `font-style:${run.italic ? 'italic' : 'normal'}`,
+    `text-decoration:${run.underline ? 'underline' : 'none'}`,
   ];
-  if (run.bold) styles.push('font-weight:700');
-  if (run.italic) styles.push('font-style:italic');
-  if (run.underline) styles.push('text-decoration:underline');
   if (run.highlightColor) styles.push(`background-color:${escapeHtml(run.highlightColor)}`);
 
   const text = escapeHtml(run.text);
@@ -313,7 +332,21 @@ export function canvasRunsToHtml(runs: Run[]): string {
   const lines = splitRunsByLines(runs);
   const blocks: string[] = [];
 
-  type BulletItem = { indent: number; html: string };
+  type BulletItem = {
+    indent: number;
+    html: string;
+    textAlign: 'left' | 'center' | 'right';
+    // Full run formatting encoded on <li> so the prefix marker run ("\u2022 " / "1. ")
+    // inherits correct font/size/color when the HTML is parsed back to canvas runs.
+    fontSize: number;
+    fontFamily: string;
+    lineSpacing: number;
+    color: string;
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    highlightColor: string | null;
+  };
   type BulletGroup = { tag: 'ul' | 'ol'; olType: '1' | 'a'; items: BulletItem[] };
   let bulletGroup: BulletGroup | null = null;
 
@@ -325,22 +358,35 @@ export function canvasRunsToHtml(runs: Run[]): string {
         : `ol type="${bulletGroup.olType}" style="padding-left:20px; margin:4px 0;"`;
     const closeTag = bulletGroup.tag;
     const liItems = bulletGroup.items
-      .map(
-        (item) =>
-          `<li style="margin-left:${item.indent * 20}px">${item.html}</li>`,
-      )
+      .map((item) => {
+        // Encode the full run formatting directly on the <li> so that walkBlock's
+        // patchStyle({ ...BASE }, liEl) recovers it for the prefix marker run.
+        const liStyles: string[] = [
+          `margin-left:${item.indent * 20}px`,
+          `font-family:${serializeFontFamilyForStyle(item.fontFamily)}`,
+          `font-size:${item.fontSize}px`,
+          `line-height:${item.lineSpacing}`,
+          `color:${escapeHtml(item.color)}`,
+          `font-weight:${item.bold ? 700 : 400}`,
+          `font-style:${item.italic ? 'italic' : 'normal'}`,
+          `text-decoration:${item.underline ? 'underline' : 'none'}`,
+        ];
+        if (item.textAlign !== 'left') liStyles.push(`text-align:${item.textAlign}`);
+        if (item.highlightColor) liStyles.push(`background-color:${escapeHtml(item.highlightColor)}`);
+        return `<li style="${liStyles.join('; ')}">${item.html}</li>`;
+      })
       .join('');
     blocks.push(`<${openTag}>${liItems}</${closeTag}>`);
     bulletGroup = null;
   };
 
-  for (const lineRuns of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const lineRuns = lines[lineIndex];
     const lineText = lineRuns.map((r) => r.text).join('');
 
-    // Blank line — emit a spacer paragraph to preserve spacing
+    // Blank line — do not emit spacer blocks.
     if (!lineText.trim()) {
       flushBulletGroup();
-      blocks.push('<p style="margin:0; line-height:1.5;">&nbsp;</p>');
       continue;
     }
 
@@ -357,34 +403,126 @@ export function canvasRunsToHtml(runs: Run[]): string {
 
     if (bullet.hasBullet) {
       const level = Math.max(0, Math.floor(bullet.indentLen / 2));
-      const contentRuns = stripLeadingChars(lineRuns, bullet.prefixLen);
-      const contentHtml = contentRuns.map(renderRunSpan).join('');
+      let contentRuns = stripLeadingChars(lineRuns, bullet.prefixLen);
+      let contentHtml = contentRuns.map(renderRunSpan).join('');
       const isOrdered =
         bullet.listType === 'number' || bullet.listType === 'letter';
       const tag: 'ul' | 'ol' = isOrdered ? 'ol' : 'ul';
       const olType: '1' | 'a' = bullet.listType === 'letter' ? 'a' : '1';
 
+      // Use the first non-whitespace run for formatting — it carries font/size/color
+      // for the whole line including the prefix marker ("• " / "1. ").
+      let firstRun = lineRuns.find((r) => r.text.trim());
+
+      // Absorb the next non-bullet, non-blank line when this item has no content.
+      // This repairs the broken <li></li> + <p>text</p> pattern that can be stored
+      // in the DB from earlier buggy serializations.
+      if (!contentHtml) {
+        for (let peek = lineIndex + 1; peek < lines.length; peek++) {
+          const peekRuns = lines[peek];
+          const peekText = peekRuns.map((r) => r.text).join('');
+          if (!peekText.trim()) continue; // skip blank separator lines
+          if (!detectBulletPrefix(peekText).hasBullet) {
+            contentHtml = peekRuns.map(renderRunSpan).join('');
+            const peekFirst = peekRuns.find((r) => r.text.trim());
+            if (peekFirst) firstRun = peekFirst;
+            lineIndex = peek; // mark peeked line as consumed
+          }
+          break; // only absorb at most one following line
+        }
+      }
+
       if (!bulletGroup) {
         bulletGroup = { tag, olType, items: [] };
-      } else if (bulletGroup.tag !== tag) {
+      } else if (bulletGroup.tag !== tag || (tag === 'ol' && bulletGroup.olType !== olType)) {
+        // Also flush when olType changes (e.g. numeric list followed by lettered list)
         flushBulletGroup();
         bulletGroup = { tag, olType, items: [] };
       }
-      bulletGroup.items.push({ indent: level, html: contentHtml });
+      bulletGroup.items.push({
+        indent: level,
+        html: contentHtml,
+        textAlign: firstRun?.textAlign ?? 'left',
+        fontSize: firstRun?.fontSize ?? 16,
+        fontFamily: firstRun?.fontFamily ?? 'Raleway',
+        lineSpacing: firstRun?.lineSpacing ?? 1.5,
+        color: firstRun?.color ?? '#1e293b',
+        bold: firstRun?.bold ?? false,
+        italic: firstRun?.italic ?? false,
+        underline: firstRun?.underline ?? false,
+        highlightColor: firstRun?.highlightColor ?? null,
+      });
     } else {
       flushBulletGroup();
       const headingTag = headingTagFromFontSize(firstRunFontSize);
-      const marginLeft = bullet.indentLen > 0 ? bullet.indentLen * 8 : 0;
-      const styleAttr = marginLeft > 0 ? ` style="margin-left:${marginLeft}px"` : '';
-      const contentRuns =
-        bullet.indentLen > 0 ? stripLeadingChars(lineRuns, bullet.indentLen) : lineRuns;
-      const contentHtml = contentRuns.map(renderRunSpan).join('');
+      const textAlign = lineRuns.find((r) => r.text.trim())?.textAlign ?? 'left';
+      const styleProps: string[] = [];
+      if (textAlign !== 'left') styleProps.push(`text-align:${textAlign}`);
+      const styleAttr = styleProps.length > 0 ? ` style="${styleProps.join('; ')}"` : '';
+      // Keep leading spaces as run content — converting them to margin-left loses
+      // the content on round-trip because patchStyle does not read margin-left for
+      // block (p/h*) elements.
+      const contentHtml = lineRuns.map(renderRunSpan).join('');
       blocks.push(`<${headingTag}${styleAttr}>${contentHtml}</${headingTag}>`);
     }
   }
 
   flushBulletGroup();
   return blocks.join('');
+}
+
+function normalizeMalformedFontFamilyQuotes(html: string): string {
+  if (!html) return html;
+
+  // HTML source editing often introduces invalid style attributes like:
+  // style="font-family:Montserrat, "Segoe UI", Roboto; ..."
+  // Convert quoted family names inside font-family declarations to single quotes
+  // so the DOM parser does not terminate the attribute early.
+  let normalized = html;
+  let prev = '';
+  while (normalized !== prev) {
+    prev = normalized;
+    normalized = normalized.replace(
+      /font-family\s*:\s*([^;]*?)"([^"]+)"([^;]*)(;|$)/gi,
+      (_m, before: string, family: string, after: string, suffix: string) => `font-family:${before}'${family}'${after}${suffix}`,
+    );
+  }
+
+  return normalized;
+}
+
+function normalizeInlineTextNode(value: string): string {
+  if (!value) return '';
+  const text = value.replace(/\u00a0/g, ' ');
+  if (!text) return '';
+
+  // Ignore formatting whitespace introduced by pretty-printed HTML source
+  // (indentation/newlines between tags) so it does not become real content.
+  if (text.trim().length === 0) {
+    return /[\n\r\t]/.test(text) ? '' : ' ';
+  }
+
+  // Strip leading/trailing newline+indent sequences that pretty-printing inserts
+  // around text nodes — these are never intentional in editor content.
+  if (/^[\n\r]|[\n\r]$/.test(text)) {
+    const stripped = text.replace(/^[\n\r\t ]+|[\n\r\t ]+$/g, '');
+    return stripped || text;
+  }
+
+  return text;
+}
+
+function normalizeColor(color: string): string {
+  // Convert browser-normalized rgb()/rgba() back to hex for a stable round-trip.
+  const rgb = color.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (rgb) {
+    return '#' + [rgb[1], rgb[2], rgb[3]].map((v) => parseInt(v, 10).toString(16).padStart(2, '0')).join('');
+  }
+  const rgba = color.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/i);
+  if (rgba && parseFloat(rgba[4]) > 0) {
+    return '#' + [rgba[1], rgba[2], rgba[3]].map((v) => parseInt(v, 10).toString(16).padStart(2, '0')).join('');
+  }
+  return color;
 }
 
 /**
@@ -395,7 +533,8 @@ export function canvasRunsToHtml(runs: Run[]): string {
 export function htmlToRuns(html: string): Run[] {
   if (!html || !html.trim()) return [];
 
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const sanitizedHtml = normalizeMalformedFontFamilyQuotes(html);
+  const doc = new DOMParser().parseFromString(sanitizedHtml, 'text/html');
 
   const BASE: Run = {
     text: '',
@@ -428,9 +567,16 @@ export function htmlToRuns(html: string): Run[] {
       const lh = parseFloat(s.lineHeight);
       if (!isNaN(lh) && lh > 0) out.lineSpacing = lh;
     }
-    if (s.color) out.color = s.color;
+    if (s.color) out.color = normalizeColor(s.color);
+    // background-color is not inheritable in CSS, so highlight should reset to
+    // null unless the current element explicitly sets a non-transparent color.
+    out.highlightColor = null;
     const bg = s.backgroundColor;
-    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') out.highlightColor = bg;
+    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+      out.highlightColor = normalizeColor(bg);
+    }
+    const ta = s.textAlign;
+    if (ta === 'left' || ta === 'center' || ta === 'right') out.textAlign = ta;
     if (s.fontWeight === '700' || s.fontWeight === 'bold') out.bold = true;
     else if (s.fontWeight === '400' || s.fontWeight === 'normal') out.bold = false;
     if (s.fontStyle === 'italic') out.italic = true;
@@ -458,6 +604,46 @@ export function htmlToRuns(html: string): Run[] {
     runs.push({ ...fmt, text });
   }
 
+  function trimLeadingWhitespaceFromRuns(startIndex: number) {
+    let i = startIndex;
+    while (i < runs.length) {
+      const current = runs[i];
+      const trimmed = current.text.replace(/^[\r\n\t ]+/, '');
+      if (trimmed.length === 0) {
+        runs.splice(i, 1);
+        continue;
+      }
+      if (trimmed !== current.text) {
+        runs[i] = { ...current, text: trimmed };
+      }
+      break;
+    }
+  }
+
+  function letterMarkerFromIndex(index: number): string {
+    if (!Number.isFinite(index) || index <= 0) return 'a';
+    let n = Math.floor(index);
+    let out = '';
+    while (n > 0) {
+      n -= 1;
+      out = String.fromCharCode(97 + (n % 26)) + out;
+      n = Math.floor(n / 26);
+    }
+    return out || 'a';
+  }
+
+  function orderedPrefixForIndex(index: number, listType: string): string {
+    if (listType === 'a') return `${letterMarkerFromIndex(index)}. `;
+    if (listType === 'A') return `${letterMarkerFromIndex(index).toUpperCase()}. `;
+    return `${index}. `;
+  }
+
+  function listIndentLevelFromLi(liEl: HTMLElement): number {
+    const marginLeft = Number.parseFloat(liEl.style.marginLeft);
+    if (!Number.isFinite(marginLeft) || marginLeft <= 0) return 0;
+    return Math.max(0, Math.round(marginLeft / 20));
+  }
+
   function inferBorderWidth(el: HTMLElement, fallback: number): number {
     const widthFromProp = parseFloat(el.style.borderWidth);
     if (!Number.isNaN(widthFromProp) && Number.isFinite(widthFromProp)) {
@@ -472,7 +658,9 @@ export function htmlToRuns(html: string): Run[] {
   }
 
   function inferBorderColor(el: HTMLElement, fallback: string | null): string | null {
-    if (el.style.borderColor) return el.style.borderColor;
+    // el.style.borderColor is derived from the `border` shorthand by the browser
+    // CSSOM and comes back as rgb(...) — normalize it back to hex.
+    if (el.style.borderColor) return normalizeColor(el.style.borderColor);
     return fallback;
   }
 
@@ -500,7 +688,7 @@ export function htmlToRuns(html: string): Run[] {
 
     function collectCellRuns(node: Node, fmt: Run, bucket: Run[]) {
       if (node.nodeType === Node.TEXT_NODE) {
-        const text = (node.textContent ?? '').replace(/\u00a0/g, ' ');
+        const text = normalizeInlineTextNode(node.textContent ?? '');
         if (text) bucket.push({ ...fmt, text });
         return;
       }
@@ -629,7 +817,7 @@ export function htmlToRuns(html: string): Run[] {
 
   function walkInline(node: Node, fmt: Run) {
     if (node.nodeType === Node.TEXT_NODE) {
-      const text = (node.textContent ?? '').replace(/\u00a0/g, ' ');
+      const text = normalizeInlineTextNode(node.textContent ?? '');
       if (text) pushRun(text, fmt);
       return;
     }
@@ -671,7 +859,7 @@ export function htmlToRuns(html: string): Run[] {
     }
   }
 
-  function walkBlock(el: Element) {
+  function walkBlock(el: Element, inheritedListDepth = 0) {
     const tag = el.tagName.toLowerCase();
     const htmlEl = el as HTMLElement;
 
@@ -695,24 +883,34 @@ export function htmlToRuns(html: string): Run[] {
 
     if (tag === 'ul' || tag === 'ol') {
       let counter = 0;
+      const listTypeAttr = tag === 'ol' ? (htmlEl.getAttribute('type') || '1') : '';
+      const startAttr = tag === 'ol' ? Number.parseInt(htmlEl.getAttribute('start') || '1', 10) : 1;
+      const startIndex = Number.isFinite(startAttr) && startAttr > 0 ? startAttr : 1;
       for (const child of Array.from(el.children)) {
         if (child.tagName.toLowerCase() !== 'li') continue;
         counter++;
         const liEl = child as HTMLElement;
         const fmt = patchStyle({ ...BASE }, liEl);
-        const prefix = tag === 'ul' ? '• ' : `${counter}. `;
+        const styleDepth = listIndentLevelFromLi(liEl);
+        const effectiveDepth = Math.max(inheritedListDepth, styleDepth);
+        const indentPrefix = effectiveDepth > 0 ? '  '.repeat(effectiveDepth) : '';
+        const orderedIndex = startIndex + counter - 1;
+        const marker = tag === 'ul' ? '• ' : orderedPrefixForIndex(orderedIndex, listTypeAttr);
+        const prefix = `${indentPrefix}${marker}`;
         pushRun(prefix, fmt);
+        const contentStartIndex = runs.length;
         for (const c of Array.from(liEl.childNodes)) {
           // nested list — walk as block so items get proper prefixes (WHATWG §4.4.6/§4.4.8)
           if (
             c.nodeType === Node.ELEMENT_NODE &&
             ['ul', 'ol'].includes((c as HTMLElement).tagName.toLowerCase())
           ) {
-            walkBlock(c as Element);
+            walkBlock(c as Element, effectiveDepth + 1);
           } else {
             walkInline(c, fmt);
           }
         }
+        trimLeadingWhitespaceFromRuns(contentStartIndex);
         pushRun('\n', fmt);
       }
       return;
@@ -748,7 +946,7 @@ export function htmlToRuns(html: string): Run[] {
 
     // <blockquote> — block quotation, recurse its block children (WHATWG §4.4.4)
     if (tag === 'blockquote') {
-      for (const child of Array.from(el.children)) walkBlock(child);
+      for (const child of Array.from(el.children)) walkBlock(child, inheritedListDepth);
       return;
     }
 
@@ -784,7 +982,7 @@ export function htmlToRuns(html: string): Run[] {
           for (const c of Array.from((child as HTMLElement).childNodes)) walkInline(c, capFmt);
           pushRun('\n', capFmt);
         } else {
-          walkBlock(child);
+          walkBlock(child, inheritedListDepth);
         }
       }
       return;
@@ -819,7 +1017,7 @@ export function htmlToRuns(html: string): Run[] {
           for (const c of Array.from((child as HTMLElement).childNodes)) walkInline(c, sumFmt);
           pushRun('\n', sumFmt);
         } else {
-          walkBlock(child);
+          walkBlock(child, inheritedListDepth);
         }
       }
       return;
@@ -852,7 +1050,7 @@ export function htmlToRuns(html: string): Run[] {
         } else if (child.nodeType === Node.ELEMENT_NODE) {
           if (BLOCK_TAGS.has((child as HTMLElement).tagName.toLowerCase())) {
             flushInline();
-            walkBlock(child as Element);
+            walkBlock(child as Element, inheritedListDepth);
           } else {
             inlineBuf.push(child);
           }

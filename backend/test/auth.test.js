@@ -301,6 +301,50 @@ test('POST /login - valid credentials return accessToken, csrfToken, and set coo
   assert.ok(res.body.session?.id, 'session id should be present');
 });
 
+test('POST /login - legacy personal account without tenant membership is auto-bootstrapped', async () => {
+  const client = request(app);
+  const email = 'legacy-personal@example.com';
+  const password = 'Password123!';
+
+  const registerRes = await client
+    .post('/api/auth/register')
+    .send({ name: 'Legacy Personal', email, password })
+    .expect(201);
+
+  await client
+    .post('/api/auth/verify-email')
+    .send({ token: registerRes.body.verificationTokenPreview })
+    .expect(200);
+
+  const legacyUser = [...users.values()].find((item) => item.email === email);
+  assert.ok(legacyUser);
+
+  legacyUser.currentOrganizationId = null;
+  users.set(legacyUser.id, legacyUser);
+
+  for (const [id, membership] of organizationMemberships.entries()) {
+    if (membership.userId === legacyUser.id) organizationMemberships.delete(id);
+  }
+  for (const [id, workspace] of workspaces.entries()) {
+    if (workspace.ownerId === legacyUser.id) workspaces.delete(id);
+  }
+  for (const [id, organization] of organizations.entries()) {
+    if (organization.ownerUserId === legacyUser.id) organizations.delete(id);
+  }
+
+  const loginRes = await client
+    .post('/api/auth/login')
+    .send({ email, password, remember: false })
+    .expect(200);
+
+  const workspacesRes = await client
+    .get('/api/workspaces')
+    .set(authHeader(loginRes.body.accessToken))
+    .expect(200);
+
+  assert.equal(workspacesRes.body.workspaces.some((workspace) => workspace.ownerId === legacyUser.id), true);
+});
+
 test('POST /login - missing credentials returns 400', async () => {
   await request(app).post('/api/auth/login').send({}).expect(400);
   await request(app).post('/api/auth/login').send({ email: 'x@x.com' }).expect(400);

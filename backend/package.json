@@ -6,15 +6,19 @@
   "scripts": {
     "test": "NODE_ENV=test node --test",
     "start": "node index.js",
-    "dev": "nodemon index.js",
+    "dev": "node ./node_modules/nodemon/bin/nodemon.js --inspect=0 index.js",
+    "dev:debug": "node ./node_modules/nodemon/bin/nodemon.js --inspect=0 index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed:admin": "node src/db/seed-admin.js",
     "db:seed:plans": "node src/db/seed-plan-catalog.js",
+    "db:seed:templates": "node src/db/seed-templates.js",
     "db:seed:test-users": "node src/db/seed-test-users.js",
-    "db:seed:all": "npm run db:seed:admin && npm run db:seed:plans && npm run db:seed:test-users"
+    "db:seed:all": "npm run db:seed:admin && npm run db:seed:plans && npm run db:seed:templates && npm run db:seed:test-users",
+    "db:import:audit-logs": "node src/db/import-audit-logs.js",
+    "db:backfill:workspaces": "node src/db/backfill-workspaces.js"
   },
   "keywords": [],
   "author": "",
@@ -33,6 +37,7 @@
     "otplib": "^13.4.0",
     "prisma": "^6.16.2",
     "qrcode": "^1.5.4",
+    "redis": "^5.12.1",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

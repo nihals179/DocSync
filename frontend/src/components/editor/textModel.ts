@@ -437,7 +437,7 @@ export function detectBulletPrefix(para: string): {
   const marker = para[i] ?? '';
   const dot = para[i + 1] ?? '';
   const hasSpace = para[i + 2] === ' ';
-  if ((/[0-9]/.test(marker) || /[a-z]/i.test(marker)) && dot === '.') {
+  if ((/[0-9]/.test(marker) || /[a-z]/i.test(marker)) && dot === '.' && hasSpace) {
     const listType = /[0-9]/.test(marker) ? 'number' : 'letter';
     return {
       hasBullet: true,

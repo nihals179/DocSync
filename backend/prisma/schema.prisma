@@ -88,7 +88,6 @@ model OrganizationMembership {
   id             String   @id
   organizationId String
   userId         String
-  role           String
   billingAdmin   Boolean  @default(false)
   status         String
   createdAt      DateTime @default(now())
@@ -98,12 +97,43 @@ model OrganizationMembership {
   @@map("organization_memberships")
 }
 
+model Profile {
+  id                             String   @id
+  role                           String   @unique
+  canAccessAdminBoard            Boolean  @default(false)
+  canReviewSecurityAudit         Boolean  @default(false)
+  canManageGlobalSettings        Boolean  @default(false)
+  canManageMembers               Boolean  @default(false)
+  canManageMemberBillingAdmin    Boolean  @default(false)
+  canManageOrganizationBilling   Boolean  @default(false)
+  canManageWorkspacesDocuments   Boolean  @default(false)
+  canReadOrganizationResources   Boolean  @default(false)
+  canUseAiGrammarByPlan          Boolean  @default(false)
+  canManageBillingSettings       Boolean  @default(false)
+  canViewInvoicesSubscription    Boolean  @default(false)
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
+
+  @@map("profiles")
+}
+
+model Template {
+  id          String   @id
+  title       String
+  description String
+  icon        String
+  content     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("templates")
+}
+
 model OrganizationInvite {
   id              String   @id
   token           String   @unique
   organizationId  String
   email           String
-  role            String
   billingAdmin    Boolean  @default(false)
   status          String
   invitedByUserId String
@@ -220,6 +250,17 @@ model AuthToken {
   createdAt DateTime @default(now())
 
   @@map("auth_tokens")
+}
+
+model AppConfig {
+  scope     String   @default("auth")
+  key       String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([scope, key])
+  @@map("app_config")
 }
 
 model AuditLog {

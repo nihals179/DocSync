@@ -1,105 +1,28 @@
 const { organizations, organizationMemberships, users } = require('../store');
 
-const ROLE_OWNER = 'owner';
-const ROLE_ADMIN = 'admin';
-const ROLE_EDITOR = 'editor';
-const ROLE_VIEWER = 'viewer';
-
-const VALID_ROLES = new Set([ROLE_OWNER, ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER]);
-
-const PERMISSIONS_BY_ROLE = {
-  [ROLE_OWNER]: new Set([
-    'organization.read',
-    'organization.member.invite',
-    'organization.member.manage',
-    'organization.invite.read',
-    'workspace.read',
-    'workspace.create',
-    'workspace.update',
-    'workspace.delete',
-    'document.read',
-    'document.create',
-    'document.update',
-    'document.delete',
-    'document.comment.read',
-    'document.comment.write',
-    'document.comment.delete',
-    'document.version.read',
-    'document.version.write',
-    'document.version.restore',
-    'document.version.delete',
-    'document.todo.read',
-    'document.todo.write',
-    'document.todo.delete',
-    'ai.use',
-    'grammar.use',
-  ]),
-  [ROLE_ADMIN]: new Set([
-    'organization.read',
-    'organization.member.invite',
-    'organization.member.manage',
-    'organization.invite.read',
-    'workspace.read',
-    'workspace.create',
-    'workspace.update',
-    'workspace.delete',
-    'document.read',
-    'document.create',
-    'document.update',
-    'document.delete',
-    'document.comment.read',
-    'document.comment.write',
-    'document.comment.delete',
-    'document.version.read',
-    'document.version.write',
-    'document.version.restore',
-    'document.version.delete',
-    'document.todo.read',
-    'document.todo.write',
-    'document.todo.delete',
-    'ai.use',
-    'grammar.use',
-  ]),
-  [ROLE_EDITOR]: new Set([
-    'organization.read',
-    'workspace.read',
-    'workspace.create',
-    'workspace.update',
-    'document.read',
-    'document.create',
-    'document.update',
-    'document.comment.read',
-    'document.comment.write',
-    'document.version.read',
-    'document.version.write',
-    'document.version.restore',
-    'document.todo.read',
-    'document.todo.write',
-    'ai.use',
-    'grammar.use',
-  ]),
-  [ROLE_VIEWER]: new Set([
-    'organization.read',
-    'workspace.read',
-    'document.read',
-    'document.comment.read',
-    'document.version.read',
-    'document.todo.read',
-    'ai.use',
-    'grammar.use',
-  ]),
-};
-
-function normalizeRole(role) {
-  const value = String(role || '').toLowerCase();
-  return VALID_ROLES.has(value) ? value : null;
-}
-
-function getActiveMembership(userId, organizationId) {
-  return [...organizationMemberships.values()].find(
-    (membership) => membership.userId === userId && membership.organizationId === organizationId && membership.status === 'active',
-  ) || null;
-}
+const MEMBER_PERMISSIONS = new Set([
+  'organization.read',
+  'workspace.read',
+  'workspace.create',
+  'workspace.update',
+  'workspace.delete',
+  'document.read',
+  'document.create',
+  'document.update',
+  'document.delete',
+  'document.comment.read',
+  'document.comment.write',
+  'document.comment.delete',
+  'document.version.read',
+  'document.version.write',
+  'document.version.restore',
+  'document.version.delete',
+  'document.todo.read',
+  'document.todo.write',
+  'document.todo.delete',
+  'ai.use',
+  'grammar.use',
+]);
 
 function getUserOrganizations(userId) {
   return [...organizationMemberships.values()]
@@ -151,18 +74,26 @@ function resolveOrganizationContext(req, res, next) {
 
 function hasPermission(membership, permission) {
   if (!membership) return false;
-  const role = normalizeRole(membership.role);
-  if (!role) return false;
-  const allowed = PERMISSIONS_BY_ROLE[role];
-  return Boolean(allowed && allowed.has(permission));
+  if (membership.status !== 'active') return false;
+  return MEMBER_PERMISSIONS.has(permission);
+}
+
+function isOrganizationOwner(req) {
+  return req.organization?.ownerUserId === req.user?.id;
 }
 
 function requirePermission(permission) {
   return (req, res, next) => {
+    if (permission === 'organization.member.invite' || permission === 'organization.member.manage' || permission === 'organization.invite.read') {
+      if (!isOrganizationOwner(req)) {
+        return res.status(403).json({ error: 'Permission denied.' });
+      }
+      return next();
+    }
+
     const billingAction = permission === 'organization.billing.manage';
     if (billingAction) {
-      const role = normalizeRole(req.membership?.role);
-      const isOwner = role === ROLE_OWNER;
+      const isOwner = isOrganizationOwner(req);
       if (!isOwner && !req.membership?.billingAdmin) {
         return res.status(403).json({ error: 'Permission denied.' });
       }
@@ -177,15 +108,7 @@ function requirePermission(permission) {
 }
 
 module.exports = {
-  ROLE_OWNER,
-  ROLE_ADMIN,
-  ROLE_EDITOR,
-  ROLE_VIEWER,
-  VALID_ROLES,
-  normalizeRole,
-  getActiveMembership,
   getUserOrganizations,
   resolveOrganizationContext,
-  hasPermission,
   requirePermission,
 };

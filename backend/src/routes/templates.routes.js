@@ -1,9 +1,35 @@
 const express = require('express');
+const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 
 const router = express.Router();
+const TEMPLATE_CACHE_TTL_MS = Number(process.env.TEMPLATE_CACHE_TTL_MS || 60_000);
+
+const templateCache = {
+  items: null,
+  expiresAt: 0,
+};
+
+function cloneTemplates(list) {
+  return list.map((template) => ({ ...template }));
+}
+
+function readTemplateCache() {
+  if (!templateCache.items) return null;
+  if (Date.now() >= templateCache.expiresAt) {
+    templateCache.items = null;
+    templateCache.expiresAt = 0;
+    return null;
+  }
+  return cloneTemplates(templateCache.items);
+}
+
+function writeTemplateCache(list) {
+  templateCache.items = cloneTemplates(list);
+  templateCache.expiresAt = Date.now() + TEMPLATE_CACHE_TTL_MS;
+}
 
 const TEMPLATES = [
   {
@@ -368,8 +394,36 @@ const TEMPLATES = [
   },
 ];
 
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), (_req, res) => {
-  res.json({ templates: TEMPLATES });
+router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (_req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.json({ templates: TEMPLATES });
+  }
+
+  const cachedTemplates = readTemplateCache();
+  if (cachedTemplates) {
+    return res.json({ templates: cachedTemplates });
+  }
+
+  try {
+    const dbTemplates = await prisma.template.findMany({
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        icon: true,
+        content: true,
+      },
+      orderBy: { title: 'asc' },
+    });
+
+    writeTemplateCache(dbTemplates);
+
+    return res.json({ templates: dbTemplates });
+  } catch {
+    return res.json({ templates: TEMPLATES });
+  }
 });
+
+router.TEMPLATES = TEMPLATES;
 
 module.exports = router;

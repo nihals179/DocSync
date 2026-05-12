@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth');
 const { resolveOrganizationContext, requirePermission } = require('../middleware/rbac');
@@ -8,7 +9,11 @@ const {
 	canAssignCollaborators,
 	canAssignSeats,
   findOrganizationByDomain,
+  getOrganizationBillingState,
+  getOrganizationEntitlements,
   getOrganizationSecurityState,
+  getPlan,
+  organizations,
   organizationMemberships,
   updateOrganizationSecurityState,
   users,
@@ -56,12 +61,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function normalizeImportedRole(input) {
-  const value = String(input || '').toLowerCase().trim();
-  if (value === 'owner' || value === 'admin' || value === 'editor' || value === 'viewer') return value;
-  return 'viewer';
-}
-
 function sanitizeImportedUser(row) {
   const email = String(row?.email || '').trim().toLowerCase();
   const hasValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -70,7 +69,6 @@ function sanitizeImportedUser(row) {
   return {
     email,
     name: displayName,
-    role: normalizeImportedRole(row?.role),
   };
 }
 
@@ -86,6 +84,104 @@ router.get('/current/security', requirePermission('organization.read'), (req, re
       ssoProviders: security.ssoProviders.map(sanitizeProvider),
       updatedAt: security.updatedAt,
     },
+  });
+});
+
+router.post('/current/enterprise/environment', requirePermission('organization.member.manage'), (req, res) => {
+  const organization = organizations.get(req.organization.id);
+  if (!organization) return res.status(404).json({ error: 'Organization not found.' });
+
+  const enterprisePlan = getPlan('enterprise');
+  const existingBilling = getOrganizationBillingState(req.organization.id) || {};
+  const requestedSeats = Number(req.body?.purchasedSeats);
+  const purchasedSeats = Number.isFinite(requestedSeats) && requestedSeats > 0
+    ? Math.floor(requestedSeats)
+    : Math.max(Number(existingBilling.purchasedSeats || 0), enterprisePlan.limits.seats);
+
+  const now = nowIso();
+  organization.billing = {
+    ...existingBilling,
+    planId: 'enterprise',
+    status: 'active',
+    purchasedSeats,
+    trialUsed: true,
+    trialEndsAt: null,
+    updatedAt: now,
+  };
+  organizations.set(organization.id, organization);
+
+  const domains = Array.isArray(req.body?.domains)
+    ? req.body.domains.map((value) => String(value || '').toLowerCase().trim().replace(/^@+/, '')).filter(Boolean)
+    : [];
+
+  const requestedProvider = req.body?.ssoProvider && typeof req.body.ssoProvider === 'object'
+    ? req.body.ssoProvider
+    : null;
+  let createdProvider = null;
+
+  const security = updateOrganizationSecurityState(req.organization.id, (current) => {
+    const nextProviders = [...current.ssoProviders];
+    if (requestedProvider && String(requestedProvider.name || '').trim()) {
+      createdProvider = ensureProviderShape({
+        id: uuidv4(),
+        ...requestedProvider,
+        createdAt: now,
+        updatedAt: now,
+      });
+      nextProviders.push(createdProvider);
+    }
+
+    return {
+      ...current,
+      requireMfa: req.body?.requireMfa === undefined ? true : Boolean(req.body.requireMfa),
+      sessionDurationHours: req.body?.sessionDurationHours == null
+        ? 8
+        : Math.min(24, Math.max(1, Number(req.body.sessionDurationHours) || 8)),
+      ipAllowlistEnabled: typeof req.body?.ipAllowlistEnabled === 'boolean'
+        ? req.body.ipAllowlistEnabled
+        : current.ipAllowlistEnabled,
+      ipAllowlist: Array.isArray(req.body?.ipAllowlist)
+        ? req.body.ipAllowlist.map((ip) => String(ip || '').trim()).filter(Boolean)
+        : current.ipAllowlist,
+      domainMappings: domains.length
+        ? [...new Set([...current.domainMappings, ...domains])]
+        : current.domainMappings,
+      ssoProviders: nextProviders,
+    };
+  });
+
+  const entitlements = getOrganizationEntitlements(req.organization.id);
+
+  writeAuditLog({
+    userId: req.user.id,
+    organizationId: req.organization.id,
+    action: 'organization.enterprise.environment.create',
+    metadata: {
+      planId: organization.billing.planId,
+      seatsPurchased: organization.billing.purchasedSeats,
+      requireMfa: security.requireMfa,
+      domainCount: security.domainMappings.length,
+      createdSsoProviderId: createdProvider?.id || null,
+    },
+  });
+
+  res.status(201).json({
+    message: 'Enterprise environment initialized.',
+    organization: {
+      id: organization.id,
+      name: organization.name,
+    },
+    billing: organization.billing,
+    security: {
+      requireMfa: security.requireMfa,
+      sessionDurationHours: security.sessionDurationHours,
+      ipAllowlistEnabled: security.ipAllowlistEnabled,
+      ipAllowlist: security.ipAllowlist,
+      domainMappings: security.domainMappings,
+      ssoProviders: security.ssoProviders.map(sanitizeProvider),
+      updatedAt: security.updatedAt,
+    },
+    entitlements,
   });
 });
 
@@ -286,11 +382,6 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
       continue;
     }
 
-    if (parsed.role === 'owner' && req.membership.role !== 'owner') {
-      failed.push({ email: parsed.email, reason: 'Only owner can import members with owner role.' });
-      continue;
-    }
-
     let user = [...users.values()].find((item) => item.email === parsed.email) || null;
     let existingMembership = user
       ? [...organizationMemberships.values()].find(
@@ -307,9 +398,7 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
       }
     }
 
-    const hadCollaborator = existingMembership && existingMembership.status === 'active' && existingMembership.role !== 'viewer';
-    const needsCollaborator = parsed.role !== 'viewer' && !hadCollaborator;
-    if (needsCollaborator) {
+    if (!existingMembership || existingMembership.status !== 'active') {
       const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
       if (!collaboratorCheck.allowed) {
         failed.push({ email: parsed.email, reason: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
@@ -324,6 +413,7 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
         email: parsed.email,
         passwordHash: await bcrypt.hash(uuidv4(), 12),
         createdAt: nowIso(),
+        accountType: 'individual',
         emailVerified: true,
         failedLoginAttempts: 0,
         lockoutUntil: null,
@@ -336,36 +426,46 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
       users.set(user.id, user);
     }
 
-    if (existingMembership && existingMembership.status === 'active' && existingMembership.role === parsed.role) {
-      skipped.push({ email: parsed.email, reason: 'Already an active member with same role.' });
+    if (existingMembership && existingMembership.status === 'active') {
+      skipped.push({ email: parsed.email, reason: 'Already an active member.' });
       continue;
     }
 
     if (existingMembership) {
       existingMembership.status = 'active';
-      existingMembership.role = parsed.role;
       existingMembership.updatedAt = nowIso();
       organizationMemberships.set(existingMembership.id, existingMembership);
-      imported.push({ email: parsed.email, role: parsed.role, status: 'updated' });
+      imported.push({ email: parsed.email, status: 'updated' });
     } else {
       existingMembership = {
         id: uuidv4(),
         organizationId: req.organization.id,
         userId: user.id,
-        role: parsed.role,
         billingAdmin: false,
         status: 'active',
         createdAt: nowIso(),
         updatedAt: nowIso(),
       };
       organizationMemberships.set(existingMembership.id, existingMembership);
-      imported.push({ email: parsed.email, role: parsed.role, status: 'created' });
+      imported.push({ email: parsed.email, status: 'created' });
     }
 
     if (!user.currentOrganizationId) {
       user.currentOrganizationId = req.organization.id;
-      users.set(user.id, user);
     }
+
+    const orgBilling = getOrganizationBillingState(req.organization.id);
+    if (orgBilling?.planId === 'enterprise') {
+      user.accountType = 'Enterprise';
+      if (process.env.DATABASE_URL) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { accountType: 'Enterprise' },
+        });
+      }
+    }
+
+    users.set(user.id, user);
   }
 
   writeAuditLog({
@@ -396,8 +496,8 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
   });
 });
 
-router.get('/current/audit-logs', requirePermission('organization.read'), (req, res) => {
-  const logs = listAuditLogs({
+router.get('/current/audit-logs', requirePermission('organization.read'), async (req, res) => {
+  const logs = await listAuditLogs({
     organizationId: req.organization.id,
     userId: req.query.userId ? String(req.query.userId) : undefined,
     action: req.query.action ? String(req.query.action) : undefined,
@@ -407,8 +507,8 @@ router.get('/current/audit-logs', requirePermission('organization.read'), (req, 
   res.json({ logs });
 });
 
-router.get('/current/audit-logs/export.csv', requirePermission('organization.read'), (req, res) => {
-  const logs = listAuditLogs({
+router.get('/current/audit-logs/export.csv', requirePermission('organization.read'), async (req, res) => {
+  const logs = await listAuditLogs({
     organizationId: req.organization.id,
     userId: req.query.userId ? String(req.query.userId) : undefined,
     action: req.query.action ? String(req.query.action) : undefined,

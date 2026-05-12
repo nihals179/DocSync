@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-do
 import Header from './components/features/layout/Header';
 import RichEditor from './components/editor/RichEditor';
 import Toolbar from './components/toolbar/Toolbar';
+import ThemeListbox from './components/common/ThemeListbox';
 import type { CursorFormat, RichEditorHandle, Run } from './components/editor';
 import { isPageSize, type PageSize } from './components/editor/pageConfig';
 import { authApi, clearPersistedCsrfToken, docsApi, persistCsrfToken, setUnauthorizedHandler, versionsApi, workspaceApi } from './lib/api';
@@ -97,8 +98,14 @@ function prettyPrintHtml(html: string): string {
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     if (m[2] !== undefined) {
-      const text = m[2].trim();
-      if (text) parts.push(ind() + text);
+      const text = m[2];
+      // Drop only formatting-only whitespace; preserve intentional spaces.
+      if (text.trim().length === 0 && /[\n\r\t]/.test(text)) continue;
+      // Indent text lines only when doing so is safe (no intentional edge spaces).
+      if (text) {
+        const hasEdgeSpaces = /^\s|\s$/.test(text);
+        parts.push(hasEdgeSpaces ? text : ind() + text);
+      }
     } else {
       const inner = m[1];
       if (inner.startsWith('/')) {
@@ -164,7 +171,7 @@ function colorizeHtml(html: string): string {
 }
 
 // ─── Editor view (all hooks live here, never behind a conditional) ────────────
-function EditorView({ token, docId, userName }: { token: string; docId: string; userName: string }) {
+function EditorView({ token, docId }: { token: string; docId: string }) {
 
   const navigate = useNavigate();
 
@@ -302,8 +309,6 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     setCurrentRuns(runs);
   }, []);
 
-  const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
-
   useEffect(() => {
     selectedWorkspaceIdRef.current = selectedWorkspaceId;
     persistWorkspaceSelectionId(selectedWorkspaceId);
@@ -324,22 +329,23 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     workspaceApi
       .list(token)
       .then(({ workspaces: available }) => {
-        const visible = available.filter((w) => w.name.trim().toLowerCase() !== personalWorkspaceName);
-        setWorkspaces(visible);
+        setWorkspaces(available);
         const currentWorkspaceId = selectedWorkspaceIdRef.current;
-        if (currentWorkspaceId !== 'all' && !visible.some((w) => w.id === currentWorkspaceId)) {
-          setSelectedWorkspaceId('all');
+        const fallbackWorkspaceId = available[0]?.id ?? '';
+        if (!available.some((w) => w.id === currentWorkspaceId)) {
+          setSelectedWorkspaceId(fallbackWorkspaceId);
         }
       })
       .catch((error: unknown) => {
         console.error('Failed to load workspaces.', error);
       });
-  }, [token, personalWorkspaceName]);
+  }, [token]);
 
   const filteredLeftDocs = useMemo(() => {
     let result = savedDocuments;
-    if (selectedWorkspaceId === 'all') result = result.filter((d) => !d.workspaceId);
-    else result = result.filter((d) => d.workspaceId === selectedWorkspaceId);
+    if (selectedWorkspaceId) {
+      result = result.filter((d) => d.workspaceId === selectedWorkspaceId);
+    }
 
     const q = navSearchQuery.trim().toLowerCase();
     if (q) result = result.filter((d) => `${d.title} ${d.preview}`.toLowerCase().includes(q));
@@ -349,12 +355,11 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
   const leftDocTree = useMemo(() => buildDocumentTree(filteredLeftDocs) as EditorDocNode[], [filteredLeftDocs]);
 
   const activeWorkspaceName = useMemo(() => {
-    if (selectedWorkspaceId === 'all') return 'My Workspace';
-    return workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? 'My Workspace';
+    return workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? workspaces[0]?.name ?? 'Workspace';
   }, [selectedWorkspaceId, workspaces]);
 
   const workspaceOptions = useMemo(
-    () => [{ id: 'all', name: 'My Workspace' }, ...workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))],
+    () => workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name })),
     [workspaces],
   );
 
@@ -422,7 +427,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     const doc = savedDocuments.find((d) => d.id === docIdValue);
     if (!doc) return;
 
-    const options = workspaceOptions.filter((w) => (w.id === 'all' ? null : w.id) !== (doc.workspaceId ?? null));
+    const options = workspaceOptions.filter((workspace) => workspace.id !== (doc.workspaceId ?? null));
     if (options.length === 0) {
       setWorkspaceModal({
         type: 'info',
@@ -487,7 +492,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     let insertIndex = 0;
 
     if (mode === 'root') {
-      destinationWorkspaceId = selectedWorkspaceId === 'all' ? null : selectedWorkspaceId;
+      destinationWorkspaceId = selectedWorkspaceId || null;
       destinationParentId = null;
       destinationSiblings = savedDocuments
         .filter(
@@ -700,9 +705,54 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
   const [htmlPanelSize, setHtmlPanelSize] = useState<number>(500); // px — width (right) or height (bottom)
   const [htmlEditMode, setHtmlEditMode] = useState(false);
   const [htmlSourceText, setHtmlSourceText] = useState('');
+  const [htmlSourceSnapshot, setHtmlSourceSnapshot] = useState('');
+  const htmlHistoryRef = useRef<string[]>([]);
+  const htmlHistoryIndexRef = useRef(-1);
+  const [htmlCanUndo, setHtmlCanUndo] = useState(false);
+  const [htmlCanRedo, setHtmlCanRedo] = useState(false);
   const htmlResizingRef = useRef(false);
   const htmlResizeStartRef = useRef(0);
   const htmlResizeStartSizeRef = useRef(0);
+
+  const syncHtmlHistoryFlags = useCallback(() => {
+    setHtmlCanUndo(htmlHistoryIndexRef.current > 0);
+    setHtmlCanRedo(
+      htmlHistoryIndexRef.current >= 0 &&
+      htmlHistoryIndexRef.current < htmlHistoryRef.current.length - 1,
+    );
+  }, []);
+
+  const seedHtmlHistory = useCallback((value: string) => {
+    htmlHistoryRef.current = [value];
+    htmlHistoryIndexRef.current = 0;
+    syncHtmlHistoryFlags();
+  }, [syncHtmlHistoryFlags]);
+
+  const pushHtmlHistory = useCallback((value: string) => {
+    const base = htmlHistoryRef.current.slice(0, htmlHistoryIndexRef.current + 1);
+    const last = base[base.length - 1];
+    if (last === value) return;
+    const next = [...base, value].slice(-200);
+    htmlHistoryRef.current = next;
+    htmlHistoryIndexRef.current = next.length - 1;
+    syncHtmlHistoryFlags();
+  }, [syncHtmlHistoryFlags]);
+
+  const undoHtmlHistory = useCallback(() => {
+    if (htmlHistoryIndexRef.current <= 0) return;
+    htmlHistoryIndexRef.current -= 1;
+    const value = htmlHistoryRef.current[htmlHistoryIndexRef.current] ?? '';
+    setHtmlSourceText(value);
+    syncHtmlHistoryFlags();
+  }, [syncHtmlHistoryFlags]);
+
+  const redoHtmlHistory = useCallback(() => {
+    if (htmlHistoryIndexRef.current >= htmlHistoryRef.current.length - 1) return;
+    htmlHistoryIndexRef.current += 1;
+    const value = htmlHistoryRef.current[htmlHistoryIndexRef.current] ?? '';
+    setHtmlSourceText(value);
+    syncHtmlHistoryFlags();
+  }, [syncHtmlHistoryFlags]);
 
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const startHtmlResize = useCallback((e: React.MouseEvent) => {
@@ -784,6 +834,16 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
     () => prettyPrintHtml(renderedHtml || '<p></p>'),
     [renderedHtml],
   );
+  const refreshHtmlPanel = useCallback(() => {
+    if (htmlEditMode) {
+      const restored = htmlSourceSnapshot || prettyRenderedHtml;
+      setHtmlSourceText(restored);
+      seedHtmlHistory(restored);
+      return;
+    }
+    setHtmlSourceSnapshot(prettyRenderedHtml);
+    setHtmlSourceText(prettyRenderedHtml);
+  }, [htmlEditMode, htmlSourceSnapshot, prettyRenderedHtml, seedHtmlHistory]);
   const showFullscreenEditor = isFullscreenEditor || (activeTool === 'html' && htmlDock === 'bottom');
 
   useEffect(() => {
@@ -889,19 +949,12 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                   className="w-full rounded-lg bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
                 />
               </div>
-              <div className="relative">
-                <select
-                  value={selectedWorkspaceId}
-                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                  className="w-full cursor-pointer appearance-none rounded-lg bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
-                >
-                  <option value="all">My Workspace</option>
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                  ))}
-                </select>
-                <span className="material-icons pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>expand_more</span>
-              </div>
+              <ThemeListbox
+                value={selectedWorkspaceId}
+                options={workspaceOptions}
+                onChange={(nextValue) => setSelectedWorkspaceId(nextValue)}
+                  placeholder="Select workspace"
+              />
             </div>
 
             <p className="mb-1 shrink-0 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
@@ -1145,7 +1198,9 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                       title={htmlEditMode ? 'Switch to view mode' : 'Edit HTML source'}
                       onClick={() => {
                         if (!htmlEditMode) {
+                          setHtmlSourceSnapshot(prettyRenderedHtml);
                           setHtmlSourceText(prettyRenderedHtml);
+                          seedHtmlHistory(prettyRenderedHtml);
                         }
                         setHtmlEditMode((v) => !v);
                       }}
@@ -1157,6 +1212,24 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                     >
                       <span className="material-icons" style={{ fontSize: '0.8rem' }}>{htmlEditMode ? 'visibility' : 'edit'}</span>
                       {htmlEditMode ? 'View' : 'Edit'}
+                    </button>
+                    <button
+                      type="button"
+                      title="Undo"
+                      onClick={undoHtmlHistory}
+                      disabled={!htmlEditMode || !htmlCanUndo}
+                      className="flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>undo</span>
+                    </button>
+                    <button
+                      type="button"
+                      title="Redo"
+                      onClick={redoHtmlHistory}
+                      disabled={!htmlEditMode || !htmlCanRedo}
+                      className="flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>redo</span>
                     </button>
                     {/* Dock: right */}
                     <button
@@ -1204,6 +1277,16 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                       <span className="material-icons" style={{ fontSize: '0.8rem' }}>content_copy</span>
                       Copy
                     </button>
+                    {/* Refresh */}
+                    <button
+                      type="button"
+                      title="Refresh HTML from document"
+                      onClick={refreshHtmlPanel}
+                      className="flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-100"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.8rem' }}>refresh</span>
+                      Refresh
+                    </button>
                     {/* Close */}
                     <button
                       type="button"
@@ -1227,8 +1310,24 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                       <textarea
                         className="flex-1 resize-none bg-transparent font-mono text-[12.5px] leading-6 text-slate-100 outline-none px-4 py-3 placeholder-slate-600"
                         style={{ tabSize: 2 }}
+                        wrap="off"
                         value={htmlSourceText}
-                        onChange={(e) => setHtmlSourceText(e.target.value)}
+                        onChange={(e) => {
+                          const nextValue = e.target.value;
+                          setHtmlSourceText(nextValue);
+                          pushHtmlHistory(nextValue);
+                        }}
+                        onKeyDown={(event) => {
+                          const modifier = event.metaKey || event.ctrlKey;
+                          if (!modifier || event.altKey) return;
+                          if (event.key.toLowerCase() !== 'z') return;
+                          event.preventDefault();
+                          if (event.shiftKey) {
+                            redoHtmlHistory();
+                          } else {
+                            undoHtmlHistory();
+                          }
+                        }}
                         spellCheck={false}
                         placeholder="<p>Paste or type HTML here…</p>"
                       />
@@ -1239,7 +1338,9 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                         <button
                           type="button"
                           onClick={() => {
-                            setHtmlSourceText(prettyRenderedHtml);
+                            const restored = htmlSourceSnapshot || prettyRenderedHtml;
+                            setHtmlSourceText(restored);
+                            seedHtmlHistory(restored);
                             setHtmlEditMode(false);
                           }}
                           className="rounded px-3 py-1 text-[12px] font-medium text-slate-400 hover:bg-white/10 hover:text-slate-200"
@@ -1247,8 +1348,20 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                         <button
                           type="button"
                           onClick={() => {
+                            if (htmlSourceText === htmlSourceSnapshot) {
+                              setHtmlEditMode(false);
+                              return;
+                            }
+
                             const runs = htmlToRuns(htmlSourceText);
-                            editorRef.current?.setRuns(runs);
+                            const normalizedHtml = canvasRunsToHtml(runs);
+                            const nextPretty = prettyPrintHtml(normalizedHtml || '<p></p>');
+                            if (normalizedHtml !== renderedHtml) {
+                              editorRef.current?.setRuns(runs);
+                            }
+                            setHtmlSourceSnapshot(nextPretty);
+                            setHtmlSourceText(nextPretty);
+                            seedHtmlHistory(nextPretty);
                             setHtmlEditMode(false);
                           }}
                           className="rounded bg-cyan-500 px-3 py-1 text-[12px] font-medium text-white hover:bg-cyan-400"
@@ -1259,7 +1372,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                     /* ── View mode: syntax-highlighted ── */
                     <>
                   <div
-                    className="shrink-0 select-none px-3 py-3 text-right font-mono text-[12px] leading-6 text-slate-700"
+                    className="shrink-0 select-none px-3 py-3 text-right font-mono text-[12px] leading-6 text-cyan-700"
                     style={{ borderRight: '1px solid rgba(99,120,180,0.1)', minWidth: '2.8rem' }}
                     aria-hidden="true"
                   >
@@ -1332,21 +1445,20 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                   {workspaceModal.action === 'copy' ? 'Copy To Workspace' : 'Move To Workspace'}
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">Choose a target workspace.</p>
-                <select
-                  value={workspaceModal.targetId}
-                  onChange={(event) =>
-                    setWorkspaceModal((prev) =>
-                      prev && prev.type === 'transfer-workspace'
-                        ? { ...prev, targetId: event.target.value, error: undefined }
-                        : prev,
-                    )
-                  }
-                  className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 outline-none focus:border-cyan-400"
-                >
-                  {workspaceModal.options.map((option) => (
-                    <option key={option.id} value={option.id}>{option.name}</option>
-                  ))}
-                </select>
+                <div className="mt-3">
+                  <ThemeListbox
+                    value={workspaceModal.targetId}
+                    options={workspaceModal.options}
+                    onChange={(nextValue) =>
+                      setWorkspaceModal((prev) =>
+                        prev && prev.type === 'transfer-workspace'
+                          ? { ...prev, targetId: nextValue, error: undefined }
+                          : prev,
+                      )
+                    }
+                    placeholder="Choose workspace"
+                  />
+                </div>
                 {workspaceModal.error && <p className="mt-2 text-xs text-red-600">{workspaceModal.error}</p>}
                 <div className="mt-4 flex justify-end gap-2">
                   <button
@@ -1359,7 +1471,7 @@ function EditorView({ token, docId, userName }: { token: string; docId: string; 
                   <button
                     type="button"
                     onClick={() => {
-                      const targetWorkspaceId = workspaceModal.targetId === 'all' ? null : workspaceModal.targetId;
+                      const targetWorkspaceId = workspaceModal.targetId;
                       if (workspaceModal.action === 'copy') {
                         void copyDocToWorkspace(workspaceModal.docId, targetWorkspaceId);
                       } else {
@@ -1413,7 +1525,6 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
       return false;
     }
   });
-  const personalWorkspaceName = `${userName}'s Workspace`.toLowerCase();
   const viewerBaseFontStack = "Raleway, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
   const viewerHtml = useMemo(() => {
@@ -1427,8 +1538,9 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
 
   const filteredLeftDocs = useMemo(() => {
     let result = savedDocuments;
-    if (selectedWorkspaceId === 'all') result = result.filter((d) => !d.workspaceId);
-    else result = result.filter((d) => d.workspaceId === selectedWorkspaceId);
+    if (selectedWorkspaceId) {
+      result = result.filter((d) => d.workspaceId === selectedWorkspaceId);
+    }
 
     const query = navSearchQuery.trim().toLowerCase();
     if (query) {
@@ -1458,9 +1570,13 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
   }, [currentDocSummary?.updatedAt]);
 
   const activeWorkspaceName = useMemo(() => {
-    if (selectedWorkspaceId === 'all') return 'My Workspace';
-    return workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? 'My Workspace';
+    return workspaces.find((w) => w.id === selectedWorkspaceId)?.name ?? workspaces[0]?.name ?? 'Workspace';
   }, [selectedWorkspaceId, workspaces]);
+
+  const workspaceOptions = useMemo(
+    () => workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name })),
+    [workspaces],
+  );
 
   function toggleExpanded(id: string) {
     setExpandedNodes((prev) => {
@@ -1543,10 +1659,10 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
         if (ignore) return;
         setSavedDocuments(docs);
         setCurrentDoc(doc);
-        const visible = available.filter((workspace) => workspace.name.trim().toLowerCase() !== personalWorkspaceName);
-        setWorkspaces(visible);
-        if (selectedWorkspaceId !== 'all' && !visible.some((workspace) => workspace.id === selectedWorkspaceId)) {
-          setSelectedWorkspaceId('all');
+        setWorkspaces(available);
+        const fallbackWorkspaceId = available[0]?.id ?? '';
+        if (!available.some((workspace) => workspace.id === selectedWorkspaceId)) {
+          setSelectedWorkspaceId(fallbackWorkspaceId);
         }
       } catch (e) {
         if (ignore) return;
@@ -1560,7 +1676,7 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
     return () => {
       ignore = true;
     };
-  }, [token, docId, selectedWorkspaceId, personalWorkspaceName]);
+  }, [token, docId, selectedWorkspaceId]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-linear-to-br from-slate-100 via-white to-cyan-50">
@@ -1626,19 +1742,12 @@ function ReadOnlyDocumentView({ token, docId, userName }: { token: string; docId
                   className="w-full rounded-lg bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-700 placeholder-slate-400 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
                 />
               </div>
-              <div className="relative">
-                <select
-                  value={selectedWorkspaceId}
-                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
-                  className="w-full cursor-pointer appearance-none rounded-lg bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400"
-                >
-                  <option value="all">My Workspace</option>
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                  ))}
-                </select>
-                <span className="material-icons pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '0.9rem' }}>expand_more</span>
-              </div>
+              <ThemeListbox
+                value={selectedWorkspaceId}
+                options={workspaceOptions}
+                onChange={(nextValue) => setSelectedWorkspaceId(nextValue)}
+                placeholder="Select workspace"
+              />
             </div>
 
             <p className="mb-1 shrink-0 px-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
@@ -2088,7 +2197,7 @@ function App() {
       <Route
         path="/editor/:docId"
         element={
-          session ? <EditorRoute token={session.accessToken} userName={session.user.name} /> : <Navigate to="/auth" replace />
+          session ? <EditorRoute token={session.accessToken} /> : <Navigate to="/auth" replace />
         }
       />
       <Route
@@ -2110,10 +2219,10 @@ function App() {
   );
 }
 
-function EditorRoute({ token, userName }: { token: string; userName: string }) {
+function EditorRoute({ token }: { token: string }) {
   const { docId = '' } = useParams();
   if (!docId) return <Navigate to="/workspace" replace />;
-  return <EditorView token={token} docId={docId} userName={userName} />;
+  return <EditorView token={token} docId={docId} />;
 }
 
 function ReadOnlyDocumentRoute({ token, userName }: { token: string; userName: string }) {

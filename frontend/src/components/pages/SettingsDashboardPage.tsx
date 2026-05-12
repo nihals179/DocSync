@@ -83,7 +83,6 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
           docsApi.list(token),
         ]);
         if (cancelled) return;
-        const role = context.membership.role;
         const status = context.membership.status;
         setOrganization(context.organization);
         setMembership(context.membership);
@@ -91,7 +90,7 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
         setBillingSnapshot({ ...entitlements.entitlements, invoices: [] });
         setRecentAudit(audit.logs);
         setDocumentsCount(Array.isArray(docs.docs) ? docs.docs.length : 0);
-        setCanOpenAdminConsole(status === 'active' && (role === 'owner' || role === 'admin'));
+        setCanOpenAdminConsole(status === 'active');
       } catch (loadError) {
         if (!cancelled) {
           setCanOpenAdminConsole(false);
@@ -184,7 +183,7 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
                 {organizationRequired ? (organization?.name || 'Organization') : `${userName}'s Account`}
               </p>
               {organizationRequired ? (
-                <p className="text-xs text-slate-600">Role: {membership?.role || 'unknown'} • Status: {membership?.status || 'unknown'}</p>
+                <p className="text-xs text-slate-600">Status: {membership?.status || 'unknown'}</p>
               ) : (
                 <p className="text-xs text-slate-600">Personal workspace mode for {billingSnapshot?.plan?.name || 'Starter'}.</p>
               )}
@@ -225,7 +224,6 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
                   {organizationRequired ? (
                     <>
                       <p className="mt-1 text-sm text-slate-600">Organization: {organization?.name || 'Unavailable'}</p>
-                      <p className="mt-1 text-sm text-slate-600">Role: {membership?.role || 'unknown'}</p>
                       <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
                     </>
                   ) : (
@@ -402,7 +400,6 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
                 <article className="bg-white px-6 py-5">
                   <h3 className="text-base font-black text-slate-900">Organization Context</h3>
                   <p className="mt-2 text-sm text-slate-600">Organization: {organization?.name || 'Unavailable'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Role: {membership?.role || 'unknown'}</p>
                   <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
                 </article>
               </section>

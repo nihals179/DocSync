@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
 const {
   PLAN_CATALOG,
@@ -13,7 +14,9 @@ const {
   markWebhookJobProcessed,
   markWebhookJobProcessing,
   nowIso,
+  organizationMemberships,
   organizations,
+  users,
   upsertInvoice,
 } = require('../store');
 
@@ -24,6 +27,27 @@ function ensureOrganization(organizationId) {
   const organization = organizations.get(organizationId);
   if (!organization) return null;
   return organization;
+}
+
+function promoteOrganizationMembersToEnterprise(organizationId) {
+  const activeMemberUserIds = [...organizationMemberships.values()]
+    .filter((membership) => membership.organizationId === organizationId && membership.status === 'active')
+    .map((membership) => membership.userId);
+
+  for (const userId of activeMemberUserIds) {
+    const user = users.get(userId);
+    if (!user) continue;
+    if (user.accountType !== 'Enterprise') {
+      user.accountType = 'Enterprise';
+      users.set(user.id, user);
+    }
+  }
+
+  if (!process.env.DATABASE_URL || activeMemberUserIds.length === 0) return;
+  void prisma.user.updateMany({
+    where: { id: { in: activeMemberUserIds } },
+    data: { accountType: 'Enterprise' },
+  }).catch(() => {});
 }
 
 function applySubscriptionState({ organizationId, planId, purchasedSeats, subscriptionId, customerId, trialDays = 0, periodDays = 30 }) {
@@ -53,6 +77,9 @@ function applySubscriptionState({ organizationId, planId, purchasedSeats, subscr
   }
 
   billing.graceEndsAt = null;
+  if (plan.id === 'enterprise') {
+    promoteOrganizationMembersToEnterprise(organizationId);
+  }
   organizations.set(organization.id, organization);
   return billing;
 }
@@ -237,7 +264,6 @@ function startBillingWebhookWorker() {
   workerHandle = setInterval(() => {
     processDueWebhookJobs(50).catch(() => {});
   }, 5000);
-  if (typeof workerHandle.unref === 'function') workerHandle.unref();
 }
 
 module.exports = {

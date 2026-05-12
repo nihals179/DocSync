@@ -140,3 +140,44 @@ body {
   max-width: 100%;
   height: auto;
 }
+
+.docsync-theme-select-wrap {
+  position: relative;
+}
+
+.docsync-theme-select-wrap::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  right: 0.85rem;
+  top: 50%;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-right: 2px solid #0e7490;
+  border-bottom: 2px solid #0e7490;
+  transform: translateY(-65%) rotate(45deg);
+}
+
+.docsync-theme-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid #bae6fd;
+  background: linear-gradient(180deg, #ffffff 0%, #f0f9ff 100%);
+  color: #0f172a;
+  padding: 0.62rem 2.25rem 0.62rem 0.85rem;
+  font-size: 0.875rem;
+  line-height: 1.2rem;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.docsync-theme-select:hover {
+  border-color: #67e8f9;
+}
+
+.docsync-theme-select:focus {
+  border-color: #06b6d4;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2);
+}

@@ -22,7 +22,6 @@ export type OrganizationMembership = {
   id: string;
   organizationId: string;
   userId: string;
-  role: 'owner' | 'admin' | 'editor' | 'viewer';
   billingAdmin: boolean;
   status: 'active' | 'removed';
   createdAt: string;
@@ -34,7 +33,6 @@ export type OrganizationMember = {
   userId: string;
   email: string;
   name: string;
-  role: 'owner' | 'admin' | 'editor' | 'viewer';
   billingAdmin: boolean;
   status: 'active' | 'removed';
   createdAt: string;
@@ -44,7 +42,6 @@ export type OrganizationMember = {
 export type OrganizationInvite = {
   id: string;
   email: string;
-  role: 'owner' | 'admin' | 'editor' | 'viewer';
   billingAdmin: boolean;
   status: 'pending' | 'accepted' | 'expired' | 'cancelled';
   createdAt: string;
@@ -150,6 +147,47 @@ export type OrganizationSecurityState = {
   domainMappings: string[];
   ssoProviders: SsoProvider[];
   updatedAt: string;
+};
+
+export type EnterpriseEnvironmentPayload = {
+  purchasedSeats?: number;
+  requireMfa?: boolean;
+  sessionDurationHours?: number;
+  ipAllowlistEnabled?: boolean;
+  ipAllowlist?: string[];
+  domains?: string[];
+  ssoProvider?: {
+    type: 'oidc' | 'saml' | 'ldap';
+    name: string;
+    issuerUrl?: string;
+    ssoUrl?: string;
+    clientId?: string;
+    clientSecret?: string;
+    certificate?: string;
+    enabled?: boolean;
+  };
+};
+
+export type EnterpriseEnvironmentResponse = {
+  message: string;
+  organization: {
+    id: string;
+    name: string;
+  };
+  billing: {
+    planId: string;
+    status: string;
+    purchasedSeats: number;
+    trialEndsAt: string | null;
+    trialUsed: boolean;
+    subscriptionId: string | null;
+    customerId: string | null;
+    currentPeriodEndAt: string | null;
+    graceEndsAt: string | null;
+    updatedAt: string;
+  };
+  security: OrganizationSecurityState;
+  entitlements: Omit<BillingSnapshot, 'invoices'> | null;
 };
 
 export type OrganizationAuditLog = {
@@ -568,7 +606,7 @@ export const organizationsApi = {
     apiFetch<{ invites: OrganizationInvite[] }>('/api/organizations/current/invites', {
       token,
     }),
-  inviteMember: (token: string, payload: { email: string; role: 'owner' | 'admin' | 'editor' | 'viewer'; billingAdmin?: boolean }) =>
+  inviteMember: (token: string, payload: { email: string; billingAdmin?: boolean }) =>
     apiFetch<{ invite: OrganizationInvite }>('/api/organizations/current/invites', {
       method: 'POST',
       token,
@@ -583,7 +621,7 @@ export const organizationsApi = {
   updateMember: (
     token: string,
     membershipId: string,
-    patch: { role?: 'owner' | 'admin' | 'editor' | 'viewer'; billingAdmin?: boolean },
+    patch: { billingAdmin?: boolean },
   ) =>
     apiFetch<{ member: OrganizationMember }>(`/api/organizations/current/members/${membershipId}`, {
       method: 'PATCH',
@@ -602,6 +640,12 @@ export const organizationsApi = {
   getSecurity: (token: string) =>
     apiFetch<{ security: OrganizationSecurityState }>('/api/organizations/current/security', {
       token,
+    }),
+  createEnterpriseEnvironment: (token: string, payload: EnterpriseEnvironmentPayload) =>
+    apiFetch<EnterpriseEnvironmentResponse>('/api/organizations/current/enterprise/environment', {
+      method: 'POST',
+      token,
+      body: JSON.stringify(payload),
     }),
   updateSecurityPolicies: (
     token: string,

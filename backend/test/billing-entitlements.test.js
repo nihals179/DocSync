@@ -161,7 +161,7 @@ test('seat management prevents over-assignment for new invites', async () => {
   const inviteRes = await client
     .post('/api/organizations/current/invites')
     .set(authHeader(owner.token))
-    .send({ email: 'new-member@example.com', role: 'viewer' })
+    .send({ email: 'new-member@example.com' })
     .expect(402);
 
   assert.equal(inviteRes.body.code, 'seat_limit_exceeded');

@@ -17,11 +17,7 @@ import {
   type SsoProvider,
 } from '../../lib/api';
 
-const ROLE_OPTIONS = ['owner', 'admin', 'editor', 'viewer'] as const;
-
-type RoleValue = (typeof ROLE_OPTIONS)[number];
-
-type MemberDrafts = Record<string, { role: RoleValue; billingAdmin: boolean }>;
+type MemberDrafts = Record<string, { billingAdmin: boolean }>;
 
 type AdminView = 'dashboard' | 'members' | 'invites' | 'documents' | 'versions' | 'usage' | 'licenses' | 'billing' | 'audit' | 'enterpriseSecurity' | 'fileRepository';
 
@@ -66,13 +62,6 @@ interface OrganizationAdminPageProps {
   userName: string;
   onAdminLogout: () => void;
 }
-
-const ROLE_COLORS: Record<string, string> = {
-  owner: 'bg-violet-100 text-violet-700',
-  admin: 'bg-cyan-100 text-cyan-700',
-  editor: 'bg-blue-100 text-blue-700',
-  viewer: 'bg-slate-100 text-slate-600',
-};
 
 function initials(name: string) {
   return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
@@ -138,12 +127,11 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     purchasedSeats: 0,
   });
 
-  const [memberFilters, setMemberFilters] = useState({ member: '', role: '', billing: '' });
-  const [inviteDraft, setInviteDraft] = useState<{ email: string; role: RoleValue }>({
+  const [memberFilters, setMemberFilters] = useState({ member: '', billing: '' });
+  const [inviteDraft, setInviteDraft] = useState<{ email: string }>({
     email: '',
-    role: 'viewer',
   });
-  const [inviteFilters, setInviteFilters] = useState({ email: '', role: '', billing: '', expires: '', status: '' });
+  const [inviteFilters, setInviteFilters] = useState({ email: '', billing: '', expires: '', status: '' });
   const [documentFilters, setDocumentFilters] = useState({ title: '', preview: '', updated: '' });
   const [versionFilters, setVersionFilters] = useState({ document: '', versions: '', lastSaved: '' });
 
@@ -173,10 +161,10 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
   const [auditStatusFilter, setAuditStatusFilter] = useState('');
   const [auditLimit, setAuditLimit] = useState(200);
 
-  const canManageMembers = useMemo(() => {
-    const role = membership?.role;
-    return role === 'owner' || role === 'admin';
-  }, [membership]);
+  const canManageMembers = useMemo(
+    () => membership?.status === 'active',
+    [membership?.status],
+  );
 
   const aiUsagePct = useMemo(
     () => toPercent(adminInsights.aiUsed, adminInsights.aiLimit),
@@ -258,11 +246,10 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         const billingLabel = member.billingAdmin ? 'yes' : 'no';
         return (
           contains(`${member.name} ${member.email}`, memberFilters.member) &&
-          contains(member.role, memberFilters.role) &&
           contains(billingLabel, memberFilters.billing)
         );
       }),
-    [memberFilters.billing, memberFilters.member, memberFilters.role, members],
+    [memberFilters.billing, memberFilters.member, members],
   );
 
   const filteredInvites = useMemo(
@@ -272,13 +259,12 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         const billingLabel = invite.billingAdmin ? 'yes' : 'no';
         return (
           contains(invite.email, inviteFilters.email) &&
-          contains(invite.role, inviteFilters.role) &&
           contains(billingLabel, inviteFilters.billing) &&
           contains(expires, inviteFilters.expires) &&
           contains(invite.status, inviteFilters.status)
         );
       }),
-    [inviteFilters.billing, inviteFilters.email, inviteFilters.expires, inviteFilters.role, inviteFilters.status, invites],
+    [inviteFilters.billing, inviteFilters.email, inviteFilters.expires, inviteFilters.status, invites],
   );
 
   const filteredDocuments = useMemo(
@@ -356,7 +342,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
       setInvites(invitesRes.invites);
       setMemberDrafts(
         membersRes.members.reduce<MemberDrafts>((acc, member) => {
-          acc[member.id] = { role: member.role, billingAdmin: member.billingAdmin };
+          acc[member.id] = { billingAdmin: member.billingAdmin };
           return acc;
         }, {}),
       );
@@ -540,7 +526,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setError('');
     try {
       const { member } = await organizationsApi.updateMember(token, memberId, {
-        role: draft.role,
         billingAdmin: draft.billingAdmin,
       });
       setMembers((prev) => prev.map((item) => (item.id === member.id ? member : item)));
@@ -579,10 +564,9 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     try {
       const { invite } = await organizationsApi.inviteMember(token, {
         email,
-        role: inviteDraft.role,
       });
       setInvites((prev) => [invite, ...prev]);
-      setInviteDraft({ email: '', role: 'viewer' });
+      setInviteDraft({ email: '' });
       setMessage('Invite sent.');
       setActiveView('invites');
     } catch (err) {
@@ -796,7 +780,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                   <div className="space-y-4 p-6">
                     <section className="rounded-none border border-slate-200 bg-white p-5">
                       <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Active Organization</p>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+                      <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                         <select
                           value={currentOrganizationId}
                           onChange={(e) => void handleSwitchOrganization(e.target.value)}
@@ -806,9 +790,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                             <option key={org.id} value={org.id}>{org.name}</option>
                           ))}
                         </select>
-                        <span className={`inline-flex justify-center rounded-none px-3 py-1 text-xs font-bold ${ROLE_COLORS[membership?.role ?? ''] ?? 'bg-slate-100 text-slate-600'}`}>
-                          {membership?.role ?? 'unknown'}
-                        </span>
                         <span className={`inline-flex justify-center rounded-none px-3 py-1 text-xs font-bold ${membership?.billingAdmin ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
                           {membership?.billingAdmin ? 'Billing Admin' : 'Standard Access'}
                         </span>
@@ -839,7 +820,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
                 {activeView === 'members' && (
                   <div className="overflow-x-auto">
-                    <div className="grid gap-2 border-b border-slate-200 bg-cyan-50/50 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+                    <div className="grid gap-2 border-b border-slate-200 bg-cyan-50/50 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <input
                         value={inviteDraft.email}
                         onChange={(e) => setInviteDraft((prev) => ({ ...prev, email: e.target.value }))}
@@ -847,14 +828,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         disabled={!canManageMembers}
                         className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500 disabled:bg-slate-100 disabled:text-slate-400"
                       />
-                      <select
-                        value={inviteDraft.role}
-                        onChange={(e) => setInviteDraft((prev) => ({ ...prev, role: e.target.value as RoleValue }))}
-                        disabled={!canManageMembers}
-                        className="rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500 disabled:bg-slate-100 disabled:text-slate-400"
-                      >
-                        {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
                       <button
                         type="button"
                         onClick={() => void handleInviteMember()}
@@ -864,17 +837,11 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         Invite member
                       </button>
                     </div>
-                    <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-3">
+                    <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-2">
                       <input
                         value={memberFilters.member}
                         onChange={(e) => setMemberFilters((prev) => ({ ...prev, member: e.target.value }))}
                         placeholder="Search member/email"
-                        className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
-                      />
-                      <input
-                        value={memberFilters.role}
-                        onChange={(e) => setMemberFilters((prev) => ({ ...prev, role: e.target.value }))}
-                        placeholder="Search role"
                         className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
                       />
                       <input
@@ -888,15 +855,14 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                       <thead>
                         <tr className="border-b border-slate-200 text-left">
                           <th className="px-6 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Member</th>
-                          <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Role</th>
                           <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Billing</th>
                           <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredMembers.map((member) => {
-                          const draft = memberDrafts[member.id] ?? { role: member.role, billingAdmin: member.billingAdmin };
-                          const isOwner = member.role === 'owner';
+                          const draft = memberDrafts[member.id] ?? { billingAdmin: member.billingAdmin };
+                          const isOwner = member.userId === activeOrganization?.ownerUserId;
                           const canEdit = canManageMembers && !(isOwner && membership?.userId !== member.userId);
                           return (
                             <tr key={member.id} className="transition-colors hover:bg-cyan-50/40">
@@ -910,19 +876,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                                     <p className="text-xs text-slate-500">{member.email}</p>
                                   </div>
                                 </div>
-                              </td>
-                              <td className="px-4 py-4">
-                                <select
-                                  value={draft.role}
-                                  onChange={(e) => {
-                                    const role = e.target.value as RoleValue;
-                                    setMemberDrafts((prev) => ({ ...prev, [member.id]: { ...draft, role } }));
-                                  }}
-                                  disabled={!canEdit}
-                                  className="rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 outline-none focus:border-cyan-500 disabled:bg-slate-100 disabled:text-slate-400"
-                                >
-                                  {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                                </select>
                               </td>
                               <td className="px-4 py-4">
                                 <label className="inline-flex cursor-pointer items-center gap-2">
@@ -964,7 +917,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         })}
                         {filteredMembers.length === 0 && (
                           <tr>
-                            <td className="px-4 py-8 text-center text-sm text-slate-500" colSpan={4}>No members match these filters.</td>
+                            <td className="px-4 py-8 text-center text-sm text-slate-500" colSpan={3}>No members match these filters.</td>
                           </tr>
                         )}
                       </tbody>
@@ -980,17 +933,11 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
-                      <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-5">
+                      <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-4">
                         <input
                           value={inviteFilters.email}
                           onChange={(e) => setInviteFilters((prev) => ({ ...prev, email: e.target.value }))}
                           placeholder="Search email"
-                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
-                        />
-                        <input
-                          value={inviteFilters.role}
-                          onChange={(e) => setInviteFilters((prev) => ({ ...prev, role: e.target.value }))}
-                          placeholder="Search role"
                           className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
                         />
                         <input
@@ -1016,7 +963,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         <thead>
                           <tr className="border-b border-slate-200 text-left">
                             <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Email</th>
-                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Role</th>
                             <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Billing</th>
                             <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Expires</th>
                             <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Status</th>
@@ -1026,11 +972,6 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                           {filteredInvites.map((invite) => (
                             <tr key={invite.id} className="align-top hover:bg-slate-50">
                               <td className="px-4 py-3 font-medium text-slate-800">{invite.email}</td>
-                              <td className="px-4 py-3">
-                                <span className={`rounded-none px-2 py-0.5 text-xs font-bold ${ROLE_COLORS[invite.role] ?? 'bg-slate-100 text-slate-600'}`}>
-                                  {invite.role}
-                                </span>
-                              </td>
                               <td className="px-4 py-3 text-xs text-slate-600">{invite.billingAdmin ? 'Yes' : 'No'}</td>
                               <td className="px-4 py-3 text-xs text-slate-600">{formatDate(invite.expiresAt)}</td>
                               <td className="px-4 py-3">
@@ -1040,7 +981,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                           ))}
                           {filteredInvites.length === 0 && (
                             <tr>
-                              <td className="px-4 py-8 text-center text-sm text-slate-500" colSpan={5}>No invites match these filters.</td>
+                              <td className="px-4 py-8 text-center text-sm text-slate-500" colSpan={4}>No invites match these filters.</td>
                             </tr>
                           )}
                         </tbody>
@@ -1327,7 +1268,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         <input
                           value={auditActionFilter}
                           onChange={(event) => setAuditActionFilter(event.target.value)}
-                          placeholder="Action filter (e.g. organization.member.role.update)"
+                          placeholder="Action filter (e.g. organization.member.update)"
                           className="w-full rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
                         />
                         <input

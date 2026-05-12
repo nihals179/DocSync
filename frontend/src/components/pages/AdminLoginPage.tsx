@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { authApi, type AuthSuccess } from '../../lib/api';
+import { authApi, organizationsApi, type AuthSuccess } from '../../lib/api';
 
 interface AdminLoginPageProps {
   onAuthSuccess: (session: AuthSuccess) => void;
@@ -27,7 +27,17 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
 
       const session = result as AuthSuccess;
 
-      if (session.user.role !== 'admin' && session.user.role !== 'owner') {
+      let hasAdminAccess = session.user.role === 'admin' || session.user.role === 'owner';
+      if (!hasAdminAccess) {
+        try {
+          const context = await organizationsApi.current(session.accessToken);
+          hasAdminAccess = context.membership.status === 'active';
+        } catch {
+          hasAdminAccess = false;
+        }
+      }
+
+      if (!hasAdminAccess) {
         setError('Access denied. This portal is restricted to admin and owner accounts only.');
         try { await authApi.logout(session.accessToken, 'admin'); } catch { /* ignore */ }
         return;

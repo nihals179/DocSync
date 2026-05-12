@@ -20,8 +20,25 @@ const { startBillingWebhookWorker } = require('./billing/service');
 
 const app = express();
 
+const allowedOrigins = new Set([
+	'http://localhost:5173',
+	'http://localhost:5174',
+	'http://127.0.0.1:5173',
+	'http://127.0.0.1:5174',
+	'http://localhost:4173',
+	'http://127.0.0.1:4173',
+]);
+
+if (process.env.FRONTEND_URL) {
+	allowedOrigins.add(process.env.FRONTEND_URL);
+}
+
 app.use(cors({
-	origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+	origin(origin, cb) {
+		if (!origin) return cb(null, true);
+		if (allowedOrigins.has(origin)) return cb(null, true);
+		return cb(new Error(`CORS blocked for origin: ${origin}`));
+	},
 	credentials: true,
 }));
 app.use(cookieParser());

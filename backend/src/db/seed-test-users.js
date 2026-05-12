@@ -1,6 +1,14 @@
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('./client');
+const {
+  initializePersistentMaps,
+  users,
+  userBilling,
+  userUsage,
+  organizations,
+  organizationMemberships,
+} = require('../store');
 
 const TEST_PASSWORD = process.env.SEED_TEST_PASSWORD || 'Password123!';
 
@@ -36,7 +44,7 @@ async function upsertUserWithBilling({
   const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
   const userId = existing?.id || uuidv4();
 
-  await prisma.user.upsert({
+  const persistedUser = await prisma.user.upsert({
     where: { email: normalizedEmail },
     update: {
       name,
@@ -69,7 +77,7 @@ async function upsertUserWithBilling({
     },
   });
 
-  await prisma.userBilling.upsert({
+  const persistedBilling = await prisma.userBilling.upsert({
     where: { userId },
     update: {
       planId,
@@ -94,7 +102,8 @@ async function upsertUserWithBilling({
     },
   });
 
-  await prisma.userUsage.upsert({
+  const currentMonthKey = monthKeyFromDate(new Date());
+  const persistedUsage = await prisma.userUsage.upsert({
     where: { userId_monthKey: { userId, monthKey: monthKeyFromDate(new Date()) } },
     update: {
       aiRequests: Number(aiRequests || 0),
@@ -102,10 +111,49 @@ async function upsertUserWithBilling({
     },
     create: {
       userId,
-      monthKey: monthKeyFromDate(new Date()),
+      monthKey: currentMonthKey,
       aiRequests: Number(aiRequests || 0),
       documentUpdates: Number(documentUpdates || 0),
     },
+  });
+
+  users.set(userId, {
+    id: persistedUser.id,
+    name: persistedUser.name,
+    email: persistedUser.email,
+    passwordHash: persistedUser.passwordHash,
+    createdAt: new Date(persistedUser.createdAt).toISOString(),
+    accountType: persistedUser.accountType,
+    emailVerified: persistedUser.emailVerified,
+    failedLoginAttempts: persistedUser.failedLoginAttempts,
+    lockoutUntil: persistedUser.lockoutUntil ? new Date(persistedUser.lockoutUntil).toISOString() : null,
+    role: persistedUser.role,
+    twoFactorEnabled: persistedUser.twoFactorEnabled,
+    twoFactorSecret: persistedUser.twoFactorSecret,
+    twoFactorTempSecret: persistedUser.twoFactorTempSecret,
+    currentOrganizationId: persistedUser.currentOrganizationId || null,
+  });
+
+  userBilling.set(userId, {
+    userId: persistedBilling.userId,
+    planId: persistedBilling.planId,
+    status: persistedBilling.status,
+    trialEndsAt: persistedBilling.trialEndsAt ? new Date(persistedBilling.trialEndsAt).toISOString() : null,
+    trialUsed: persistedBilling.trialUsed,
+    subscriptionId: persistedBilling.subscriptionId,
+    customerId: persistedBilling.customerId,
+    currentPeriodEndAt: persistedBilling.currentPeriodEndAt
+      ? new Date(persistedBilling.currentPeriodEndAt).toISOString()
+      : null,
+    graceEndsAt: persistedBilling.graceEndsAt ? new Date(persistedBilling.graceEndsAt).toISOString() : null,
+    updatedAt: nowIso(),
+  });
+
+  userUsage.set(userId, {
+    userId: persistedUsage.userId,
+    monthKey: persistedUsage.monthKey,
+    aiRequests: persistedUsage.aiRequests,
+    documentUpdates: persistedUsage.documentUpdates,
   });
 
   return { userId, email: normalizedEmail, planId, billingStatus };
@@ -116,19 +164,16 @@ async function upsertEnterpriseMembers() {
     {
       name: 'Enterprise Owner User',
       email: 'test.enterprise.owner@docsync.local',
-      role: 'owner',
       billingAdmin: true,
     },
     {
       name: 'Enterprise Admin User',
       email: 'test.enterprise.admin@docsync.local',
-      role: 'admin',
       billingAdmin: true,
     },
     {
       name: 'Enterprise Editor User',
       email: 'test.enterprise.editor@docsync.local',
-      role: 'editor',
       billingAdmin: false,
     },
   ];
@@ -147,14 +192,14 @@ async function upsertEnterpriseMembers() {
       aiRequests: 100,
       documentUpdates: 300,
     });
-    seededUsers.push({ ...seeded, role: member.role, billingAdmin: member.billingAdmin });
+    seededUsers.push({ ...seeded, billingAdmin: member.billingAdmin });
   }
 
-  const owner = seededUsers.find((member) => member.role === 'owner');
+  const owner = seededUsers[0];
   const organizationId = 'org_test_enterprise_shared';
   const now = nowIso();
 
-  await prisma.organization.upsert({
+  const persistedOrganization = await prisma.organization.upsert({
     where: { id: organizationId },
     update: {
       name: 'Test Enterprise Shared Org',
@@ -210,8 +255,18 @@ async function upsertEnterpriseMembers() {
     },
   });
 
+  organizations.set(organizationId, {
+    id: persistedOrganization.id,
+    name: persistedOrganization.name,
+    ownerUserId: persistedOrganization.ownerUserId,
+    billing: persistedOrganization.billing,
+    security: persistedOrganization.security,
+    createdAt: new Date(persistedOrganization.createdAt).toISOString(),
+    updatedAt: new Date(persistedOrganization.updatedAt).toISOString(),
+  });
+
   for (const member of seededUsers) {
-    await prisma.organizationMembership.upsert({
+    const persistedMembership = await prisma.organizationMembership.upsert({
       where: {
         organizationId_userId: {
           organizationId,
@@ -219,7 +274,6 @@ async function upsertEnterpriseMembers() {
         },
       },
       update: {
-        role: member.role,
         billingAdmin: member.billingAdmin,
         status: 'active',
       },
@@ -227,16 +281,48 @@ async function upsertEnterpriseMembers() {
         id: uuidv4(),
         organizationId,
         userId: member.userId,
-        role: member.role,
         billingAdmin: member.billingAdmin,
         status: 'active',
       },
     });
 
-    await prisma.user.update({
+    organizationMemberships.set(persistedMembership.id, {
+      id: persistedMembership.id,
+      organizationId: persistedMembership.organizationId,
+      userId: persistedMembership.userId,
+      billingAdmin: persistedMembership.billingAdmin,
+      status: persistedMembership.status,
+      createdAt: new Date(persistedMembership.createdAt).toISOString(),
+      updatedAt: new Date(persistedMembership.updatedAt).toISOString(),
+    });
+
+    const updatedUser = await prisma.user.update({
       where: { id: member.userId },
       data: { currentOrganizationId: organizationId },
     });
+
+    const existingMapUser = users.get(member.userId);
+    if (existingMapUser) {
+      existingMapUser.currentOrganizationId = organizationId;
+      users.set(member.userId, existingMapUser);
+    } else {
+      users.set(member.userId, {
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        passwordHash: updatedUser.passwordHash,
+        createdAt: new Date(updatedUser.createdAt).toISOString(),
+        accountType: updatedUser.accountType,
+        emailVerified: updatedUser.emailVerified,
+        failedLoginAttempts: updatedUser.failedLoginAttempts,
+        lockoutUntil: updatedUser.lockoutUntil ? new Date(updatedUser.lockoutUntil).toISOString() : null,
+        role: updatedUser.role,
+        twoFactorEnabled: updatedUser.twoFactorEnabled,
+        twoFactorSecret: updatedUser.twoFactorSecret,
+        twoFactorTempSecret: updatedUser.twoFactorTempSecret,
+        currentOrganizationId: organizationId,
+      });
+    }
   }
 
   return {
@@ -246,6 +332,8 @@ async function upsertEnterpriseMembers() {
 }
 
 async function seedTestUsers() {
+  await initializePersistentMaps();
+
   const users = [
     {
       name: 'Free Verified User',
@@ -322,7 +410,7 @@ async function seedTestUsers() {
   }
   console.log(`Seeded enterprise organization: ${enterpriseSetup.organizationId}`);
   for (const member of enterpriseSetup.members) {
-    console.log(`- ${member.email} | orgRole=${member.role}`);
+    console.log(`- ${member.email}`);
   }
   console.log(`Password for all test users: ${TEST_PASSWORD}`);
 }

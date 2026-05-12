@@ -1,0 +1,46 @@
+-- Ensure config table uses a generic name.
+DO $$
+BEGIN
+  IF to_regclass('public.auth_config') IS NOT NULL AND to_regclass('public.app_config') IS NULL THEN
+    ALTER TABLE "auth_config" RENAME TO "app_config";
+  END IF;
+END $$;
+
+-- Create table if neither old nor new table exists.
+CREATE TABLE IF NOT EXISTS "app_config" (
+  "id" TEXT NOT NULL DEFAULT 'default',
+  "appName" TEXT NOT NULL DEFAULT 'DocSync',
+  "devMode" BOOLEAN NOT NULL DEFAULT true,
+  "emailVerificationBypass" BOOLEAN NOT NULL DEFAULT false,
+  "emailTokenTtlMs" INTEGER NOT NULL DEFAULT 86400000,
+  "resetTokenTtlMs" INTEGER NOT NULL DEFAULT 3600000,
+  "lockoutThreshold" INTEGER NOT NULL DEFAULT 5,
+  "lockoutMs" INTEGER NOT NULL DEFAULT 1800000,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL,
+  CONSTRAINT "app_config_pkey" PRIMARY KEY ("id")
+);
+
+INSERT INTO "app_config" (
+  "id",
+  "appName",
+  "devMode",
+  "emailVerificationBypass",
+  "emailTokenTtlMs",
+  "resetTokenTtlMs",
+  "lockoutThreshold",
+  "lockoutMs",
+  "updatedAt"
+)
+VALUES (
+  'default',
+  'DocSync',
+  true,
+  false,
+  86400000,
+  3600000,
+  5,
+  1800000,
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT ("id") DO NOTHING;
