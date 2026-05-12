@@ -40,8 +40,6 @@ import {
 } from './useEditorDraw';
 import { useEditorInput } from './useEditorInput';
 
-export type { CursorFormat, RichEditorHandle } from './types';
-
 type RichEditorProps = {
   initialContent?: string;
   onContentChange?: (html: string) => void;

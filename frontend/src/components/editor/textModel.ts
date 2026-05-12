@@ -59,7 +59,7 @@ export function runsToText(runs: Run[]): string {
   return runs.map((r) => r.text).join('');
 }
 
-export function formatsEqual(a: RunFmt, b: RunFmt): boolean {
+function formatsEqual(a: RunFmt, b: RunFmt): boolean {
   return (
     a.bold === b.bold &&
     a.italic === b.italic &&
@@ -74,7 +74,7 @@ export function formatsEqual(a: RunFmt, b: RunFmt): boolean {
   );
 }
 
-export function mergeAdjacentRuns(runs: Run[]): Run[] {
+function mergeAdjacentRuns(runs: Run[]): Run[] {
   const result: Run[] = [];
   for (const run of runs) {
     const last = result[result.length - 1];
@@ -89,7 +89,7 @@ export function mergeAdjacentRuns(runs: Run[]): Run[] {
   return result.length > 0 ? result : [makeRun('', { ...DEFAULT_RUN_FMT })];
 }
 
-export function splitRunsAt(runs: Run[], at: number): [Run[], Run[]] {
+function splitRunsAt(runs: Run[], at: number): [Run[], Run[]] {
   const left: Run[] = [];
   const right: Run[] = [];
   let pos = 0;
@@ -1369,7 +1369,7 @@ export function buildPageBreakToken(): string {
 }
 
 /** Returns absolute [start,end) ranges for all page break tokens in the flat text. */
-export function getPageBreakTokenRanges(text: string): Array<{ start: number; end: number }> {
+function getPageBreakTokenRanges(text: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   let searchFrom = 0;
   while (searchFrom < text.length) {

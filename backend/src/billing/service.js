@@ -21,7 +21,6 @@ const {
 } = require('../store');
 
 let workerStarted = false;
-let workerHandle = null;
 
 function ensureOrganization(organizationId) {
   const organization = organizations.get(organizationId);
@@ -261,16 +260,14 @@ function buildBillingSnapshot(organizationId) {
 function startBillingWebhookWorker() {
   if (workerStarted) return;
   workerStarted = true;
-  workerHandle = setInterval(() => {
+  setInterval(() => {
     processDueWebhookJobs(50).catch(() => {});
   }, 5000);
 }
 
 module.exports = {
-  applySubscriptionState,
   buildBillingSnapshot,
   createCheckoutSession,
-  processBillingEvent,
   processDueWebhookJobs,
   queueBillingEvent,
   startBillingWebhookWorker,

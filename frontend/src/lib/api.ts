@@ -292,7 +292,7 @@ function getCookie(name: string) {
   return match ? decodeURIComponent(match.split('=').slice(1).join('=')) : '';
 }
 
-export async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
+async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
   const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
@@ -317,7 +317,7 @@ export async function apiFetch<T = unknown>(path: string, options: FetchOptions 
   return data as T;
 }
 
-export async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
+async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
   const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';

@@ -200,11 +200,6 @@ async function requireAuth(req, res, next) {
 }
 
 module.exports = {
-  JWT_SECRET,
-  REFRESH_COOKIE,
-  CSRF_COOKIE,
-  ADMIN_REFRESH_COOKIE,
-  ADMIN_CSRF_COOKIE,
   getAuthScope,
   resolveCookieNames,
   hashToken,

@@ -202,7 +202,7 @@ function replaceTableTokensWithPlaceholders(text: string): { normalized: string;
   return { normalized, tables };
 }
 
-export function htmlToCanvasText(value: string): string {
+function htmlToCanvasText(value: string): string {
   if (!value) return '';
   const withDocsyncTokens = replaceDocsyncHtmlTokens(value);
   return decodeHtmlEntities(

@@ -4,12 +4,12 @@ type ImageAtOffset = Pick<ImageTokenMeta, 'wrap'> & { start: number; end: number
 
 export const isBreakLineWrap = (wrap: ImageWrap) => wrap === 'break';
 
-export const getBreakTextTopOffset = (text: string, imageStart: number): number => {
+const getBreakTextTopOffset = (text: string, imageStart: number): number => {
   const prevLineBreak = text.lastIndexOf('\n', imageStart - 1);
   return prevLineBreak >= 0 ? prevLineBreak : imageStart;
 };
 
-export const getBreakTextWriteOffset = (text: string, imageEnd: number): number =>
+const getBreakTextWriteOffset = (text: string, imageEnd: number): number =>
   text[imageEnd] === '\n' ? imageEnd + 1 : imageEnd;
 
 export const resolveBreakLineInsertOffset = (

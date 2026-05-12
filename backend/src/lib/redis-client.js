@@ -19,15 +19,36 @@ async function getRedisClient() {
       url: redisUrl,
       socket: {
         connectTimeout: 1000,
+        reconnectStrategy: () => false,
       },
     });
 
-    // Avoid crashing the process on transient Redis errors.
     client.on('error', () => {});
 
-    redisClientPromise = client.connect()
-      .then(() => client)
+    const connectPromise = client.connect().then(() => client);
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve(null), 1200);
+    });
+
+    redisClientPromise = Promise.race([connectPromise, timeoutPromise])
+      .then((connectedClient) => {
+        if (!connectedClient) {
+          try {
+            client.destroy();
+          } catch {
+            // noop
+          }
+          redisClientPromise = null;
+          return null;
+        }
+        return connectedClient;
+      })
       .catch(() => {
+        try {
+          client.destroy();
+        } catch {
+          // noop
+        }
         redisClientPromise = null;
         return null;
       });

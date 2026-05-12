@@ -402,7 +402,6 @@ module.exports = {
   countActiveSessionsForUser,
   writeSessionCookies,
   buildAuthResponse,
-  matchesRefreshToken,
   validateCsrf,
   revokeSession,
   revokeAllUserSessions,

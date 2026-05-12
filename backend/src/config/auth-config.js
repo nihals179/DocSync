@@ -123,6 +123,5 @@ async function getAuthConfig() {
 }
 
 module.exports = {
-  DEFAULT_AUTH_CONFIG,
   getAuthConfig,
 };

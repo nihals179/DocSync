@@ -25,7 +25,7 @@ import {
 } from './image/imageWrapMode';
 
 // ── Visual layout types ───────────────────────────────────────────────────────
-export type VisualSegment = {
+type VisualSegment = {
   text: string;
   x: number;
   fmt: RunFmt;
@@ -263,7 +263,7 @@ export function getTableRenderMetrics(
  * Word-wrap the runs of a single paragraph into visual lines with
  * x-positioned segments. Purely functional — no side-effects.
  */
-export function layoutParagraph(
+function layoutParagraph(
   ctx: CanvasRenderingContext2D,
   paraRuns: Run[],
   maxWidth: number,
@@ -566,7 +566,7 @@ export function layoutParagraph(
 }
 
 /** Slice runs covering [offset, offset+len) and return as a fresh array */
-export function extractParaRuns(
+function extractParaRuns(
   runs: Run[],
   offset: number,
   len: number,
