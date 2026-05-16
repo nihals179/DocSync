@@ -380,9 +380,6 @@ async function ensureOrganizationBillingState(organization) {
 	let billing = null;
 	if (isDatabaseConfigured()) {
 		billing = await readOrganizationBillingStateFromDb(organization.id);
-	} else {
-		const existing = organizationBilling.get(organization.id);
-		billing = normalizeOrganizationBillingState(existing || null, organization.id);
 	}
 
 	if (!billing) {
@@ -391,8 +388,6 @@ async function ensureOrganizationBillingState(organization) {
 			await writeOrganizationBillingStateToDb(organization.id, billing);
 		}
 	}
-
-	organizationBilling.set(organization.id, billing);
 	return billing;
 }
 
@@ -540,8 +535,8 @@ function getOrganizationUsage(organizationId) {
 	const usage = {
 		organizationId,
 		monthKey,
-		aiRequests: existing && existing.monthKey === monthKey ? existing.aiRequests : 0,
-		documentUpdates: existing && existing.monthKey === monthKey ? (existing.documentUpdates || 0) : 0,
+		aiRequests: 0,
+		documentUpdates: 0,
 	};
 	organizationUsage.set(organizationId, usage);
 	return usage;
@@ -554,8 +549,8 @@ function getUserUsage(userId) {
 	const usage = {
 		userId,
 		monthKey,
-		aiRequests: existing && existing.monthKey === monthKey ? existing.aiRequests : 0,
-		documentUpdates: existing && existing.monthKey === monthKey ? (existing.documentUpdates || 0) : 0,
+		aiRequests: 0,
+		documentUpdates: 0,
 	};
 	userUsage.set(userId, usage);
 	return usage;
@@ -690,11 +685,7 @@ function getAssignedSeatCount(organizationId) {
 }
 
 function getCollaboratorCount(organizationId) {
-	return [...organizationMemberships.values()].filter(
-		(membership) =>
-			membership.organizationId === organizationId &&
-			membership.status === 'active',
-	).length;
+	return getAssignedSeatCount(organizationId);
 }
 
 async function canAssignSeats(organizationId, additionalSeats = 1) {
@@ -898,53 +889,6 @@ function markWebhookJobFailed(jobId, errorMessage) {
 	return job;
 }
 
-function ensureOrganizationForUser(user) {
-	const normalizedEmail = String(user?.email || '').toLowerCase().trim();
-	const existingMembership = [...organizationMemberships.values()].find(
-		(membership) =>
-			membership.status === 'active' &&
-			String(users.get(membership.userId)?.email || '').toLowerCase().trim() === normalizedEmail,
-	); 
-
-	if (existingMembership) {
-		const existingOrg = organizations.get(existingMembership.organizationId);
-		if (existingOrg) {
-			ensureOrganizationBillingState(existingOrg);
-			ensureOrganizationSecurityState(existingOrg);
-			if (!user.currentOrganizationId) user.currentOrganizationId = existingOrg.id;
-			users.set(user.id, user);
-			return existingOrg;
-		}
-	}
-
-	const now = nowIso();
-	const organization = {
-		id: uuidv4(),
-		name: `${user.name}'s Organization`,
-		ownerUserId: user.id,
-		createdAt: now,
-		updatedAt: now,
-	};
-	organizations.set(organization.id, organization);
-	ensureOrganizationBillingState(organization);
-	ensureOrganizationSecurityState(organization);
-
-	const membership = {
-		id: uuidv4(),
-		organizationId: organization.id,
-		userId: user.id,
-		billingAdmin: true,
-		status: 'active',
-		createdAt: now,
-		updatedAt: now,
-	};
-	organizationMemberships.set(membership.id, membership);
-
-	user.currentOrganizationId = organization.id;
-	users.set(user.id, user);
-	return organization;
-}
-
 async function syncCurrentOrganizationFromMembership(user) {
 	if (!user) return null;
 	if (!isDatabaseConfigured()) return null;
@@ -1016,7 +960,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 	return organization;
 }
 
-function ensureWorkspaceForUser(user, organizationId) {
+function ensureWorkspaceForUser(user) {
 	const personalScopeId = user.id;
 	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
 	if (existing) return existing;
@@ -1047,12 +991,12 @@ function mapWorkspaceRowToRecord(row) {
 	};
 }
 
-async function ensureWorkspaceForUserProvisioned(user, organizationId) {
+async function ensureWorkspaceForUserProvisioned(user) {
 	const personalScopeId = user.id;
 	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
 
-	if (!process.env.DATABASE_URL) {
-		return existing || ensureWorkspaceForUser(user, organizationId);
+	if (!isDatabaseConfigured()) {
+		return existing || ensureWorkspaceForUser(user);
 	}
 
 	let row = await prisma.workspace.findFirst({
@@ -1093,22 +1037,6 @@ async function ensureWorkspaceForUserProvisioned(user, organizationId) {
 	return mapped;
 }
 
-function hydrateLegacyResourcesForUser(user, organizationId) {
-	for (const doc of documents.values()) {
-		if (doc.userId === user.id && !doc.organizationId) {
-			doc.organizationId = organizationId;
-			documents.set(doc.id, doc);
-		}
-	}
-
-	for (const workspace of workspaces.values()) {
-		if (workspace.memberIds?.includes(user.id) && !workspace.organizationId) {
-			workspace.organizationId = organizationId;
-			workspaces.set(workspace.id, workspace);
-		}
-	}
-}
-
 async function ensureTenantBootstrapForUser(user) {
 	if (!user) return null;
 	if (!isDatabaseConfigured()) return null;
@@ -1117,15 +1045,14 @@ async function ensureTenantBootstrapForUser(user) {
 
 	const dbUser = await prisma.user.findUnique({
 		where: { email: normalizedEmail },
-		select: { id: true, name: true, currentOrganizationId: true ,email: true},
+		select: { id: true, name: true, currentOrganizationId: true, email: true },
 	});
 	if (!dbUser) return null;
 
-	const effectiveUserId = dbUser.email ;
-	const now = nowIso();
+	const membershipEmail = dbUser.email;
 	const activeMemberships = await prisma.organizationMembership.findMany({
 		where: {
-			email: effectiveUserId,
+			email: membershipEmail,
 			status: 'active',
 		},
 		orderBy: {
@@ -1133,17 +1060,15 @@ async function ensureTenantBootstrapForUser(user) {
 		},
 	});
 
-	if(activeMemberships.length === 0) {
+	if (activeMemberships.length) {
 		await prisma.userBilling.deleteMany({
 			where: {
 				userId: dbUser.id,
 			},
 		});
 
-		await prisma.user.updateMany({
-				where: { email: normalizedEmail },
-				data: { currentOrganizationId: activeMemberships[0].organizationId },
-		});
+		const organization = await prisma.organization.findUnique({ where: { id: activeMemberships[0].organizationId } });
+		if (!organization) return null;
 
 		await ensureOrganizationBillingState(organization);
 		const security = ensureOrganizationSecurityState(organization);
@@ -1168,9 +1093,11 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		await ensureWorkspaceForUserProvisioned(user, organization.id);
+		await ensureWorkspaceForUserProvisioned(user);
 		return organization;
-	}	
+	}
+
+	return null;
 }
 
 module.exports = {

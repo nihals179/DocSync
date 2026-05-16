@@ -325,7 +325,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   if (user.currentOrganizationId) {
     try {
-      await ensureWorkspaceForUserProvisioned(user, user.currentOrganizationId);
+      await ensureWorkspaceForUserProvisioned(user);
     } catch (error) {
       audit(req, 'login', 'failure', user.id, {
         reason: 'workspace-provision-failed',

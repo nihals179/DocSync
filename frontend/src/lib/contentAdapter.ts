@@ -3,17 +3,6 @@ import { DEFAULT_RUN_FMT, FONT_STACK, buildTableToken, detectBulletPrefix, parse
 const TABLE_PLACEHOLDER_PREFIX = '__DOCSYNC_TABLE_BLOCK_';
 const INLINE_STYLE_FONT_STACK = FONT_STACK.replace(/"/g, "'");
 
-function decodeHtmlEntities(value: string): string {
-  if (!value) return '';
-  return value
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
 function decodeUriComponentSafe(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -41,18 +30,6 @@ function serializeFontFamilyForStyle(family: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
   return `${htmlSafeCssFamily}, ${INLINE_STYLE_FONT_STACK}`;
-}
-
-function replaceDocsyncHtmlTokens(value: string): string {
-  const withTables = value.replace(
-    /<div\b[^>]*data-docsync-table-token="([^"]+)"[^>]*>[\s\S]*?<\/div>/gi,
-    (_match, encodedToken: string) => `\n\n${decodeUriComponentSafe(encodedToken)}\n\n`,
-  );
-
-  return withTables.replace(
-    /<img\b[^>]*data-docsync-token-source="([^"]+)"[^>]*>/gi,
-    (_match, encodedToken: string) => decodeUriComponentSafe(encodedToken),
-  );
 }
 
 function renderImageToken(token: string): string {
@@ -200,23 +177,6 @@ function replaceTableTokensWithPlaceholders(text: string): { normalized: string;
   }
 
   return { normalized, tables };
-}
-
-function htmlToCanvasText(value: string): string {
-  if (!value) return '';
-  const withDocsyncTokens = replaceDocsyncHtmlTokens(value);
-  return decodeHtmlEntities(
-    withDocsyncTokens
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<\/h[1-6]>/gi, '\n\n')
-      .replace(/<\/div>/gi, '\n')
-      .replace(/<li>/gi, '• ')
-      .replace(/<\/li>/gi, '\n')
-      .replace(/<[^>]+>/g, ''),
-  )
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 export function canvasTextToHtml(value: string): string {
@@ -403,7 +363,7 @@ export function canvasRunsToHtml(runs: Run[]): string {
 
     if (bullet.hasBullet) {
       const level = Math.max(0, Math.floor(bullet.indentLen / 2));
-      let contentRuns = stripLeadingChars(lineRuns, bullet.prefixLen);
+      const contentRuns = stripLeadingChars(lineRuns, bullet.prefixLen);
       let contentHtml = contentRuns.map(renderRunSpan).join('');
       const isOrdered =
         bullet.listType === 'number' || bullet.listType === 'letter';
@@ -605,7 +565,7 @@ export function htmlToRuns(html: string): Run[] {
   }
 
   function trimLeadingWhitespaceFromRuns(startIndex: number) {
-    let i = startIndex;
+    const i = startIndex;
     while (i < runs.length) {
       const current = runs[i];
       const trimmed = current.text.replace(/^[\r\n\t ]+/, '');

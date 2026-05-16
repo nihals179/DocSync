@@ -47,7 +47,7 @@ function sortWorkspacesForUser(items, userId) {
  */
 router.get('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.read'), async (req, res) => {
   try {
-    await ensureWorkspaceForUserProvisioned(req.user, req.organization.id);
+    await ensureWorkspaceForUserProvisioned(req.user);
   } catch {
     return res.status(500).json({ error: 'Failed to initialize workspace.' });
   }

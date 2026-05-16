@@ -261,7 +261,7 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   users.set(user.id, user);
 
   try {
-    await ensureWorkspaceForUserProvisioned(user, invite.organizationId);
+    await ensureWorkspaceForUserProvisioned(user);
   } catch {
     return res.status(500).json({ error: 'Invite accepted, but workspace provisioning failed.' });
   }
