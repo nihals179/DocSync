@@ -254,6 +254,7 @@ type FetchOptions = RequestInit & {
 
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
 let unauthorizedHandler: (() => void) | null = null;
+let passwordPublicKeyPromise: Promise<string> | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
@@ -349,12 +350,82 @@ async function apiFetchText(path: string, options: FetchOptions = {}): Promise<s
   return text;
 }
 
+function toBase64(bytes: Uint8Array) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function fetchPasswordPublicKey() {
+  if (!passwordPublicKeyPromise) {
+    passwordPublicKeyPromise = apiFetch<{ publicKey?: string }>('/api/auth/public-key')
+      .then((response) => {
+        if (!response?.publicKey) {
+          throw new Error('Password encryption public key is unavailable.');
+        }
+        return response.publicKey;
+      })
+      .catch((error) => {
+        passwordPublicKeyPromise = null;
+        throw error;
+      });
+  }
+  return passwordPublicKeyPromise;
+}
+
+async function encryptPasswordForTransport(password: string) {
+  const keyPem = await fetchPasswordPublicKey();
+  const pemBody = keyPem
+    .replace('-----BEGIN PUBLIC KEY-----', '')
+    .replace('-----END PUBLIC KEY-----', '')
+    .replace(/\s+/g, '');
+  const binaryDer = Uint8Array.from(atob(pemBody), (char) => char.charCodeAt(0));
+  const cryptoKey = await window.crypto.subtle.importKey(
+    'spki',
+    binaryDer,
+    { name: 'RSA-OAEP', hash: 'SHA-256' },
+    false,
+    ['encrypt'],
+  );
+  const encrypted = await window.crypto.subtle.encrypt(
+    { name: 'RSA-OAEP' },
+    cryptoKey,
+    new TextEncoder().encode(password),
+  );
+  return toBase64(new Uint8Array(encrypted));
+}
+
+function isInvalidPasswordEncryptionError(error: unknown) {
+  return error instanceof Error
+    && error.message.toLowerCase().includes('invalid encrypted password payload');
+}
+
+async function withPasswordEncryptionRetry<T>(operation: () => Promise<T>) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isInvalidPasswordEncryptionError(error)) {
+      throw error;
+    }
+
+    // Backend key rotated after restart; force public-key refresh and retry once.
+    passwordPublicKeyPromise = null;
+    return operation();
+  }
+}
+
 export const authApi = {
-  register: (name: string, email: string, password: string) =>
-    apiFetch<RegisterResponse>('/api/auth/register', {
+  register: async (name: string, email: string, password: string) =>
+    withPasswordEncryptionRetry(async () => apiFetch<RegisterResponse>('/api/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ name, email, password }),
-    }),
+      body: JSON.stringify({
+        name,
+        email,
+        passwordEncrypted: await encryptPasswordForTransport(password),
+      }),
+    })),
   verifyEmail: (token: string) =>
     apiFetch<{ message: string }>('/api/auth/verify-email', {
       method: 'POST',
@@ -365,12 +436,16 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email }),
     }),
-  login: (email: string, password: string, remember: boolean, authScope: 'workspace' | 'admin' = 'workspace') =>
-    apiFetch<AuthSuccess | TwoFactorPending>('/api/auth/login', {
+  login: async (email: string, password: string, remember: boolean, authScope: 'workspace' | 'admin' = 'workspace') =>
+    withPasswordEncryptionRetry(async () => apiFetch<AuthSuccess | TwoFactorPending>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password, remember }),
+      body: JSON.stringify({
+        email,
+        passwordEncrypted: await encryptPasswordForTransport(password),
+        remember,
+      }),
       authScope,
-    }),
+    })),
   loginWithTwoFactor: (tempToken: string, code: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/login/2fa', {
       method: 'POST',
@@ -398,11 +473,14 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email }),
     }),
-  resetPassword: (token: string, password: string) =>
-    apiFetch<{ message: string }>('/api/auth/reset-password', {
+  resetPassword: async (token: string, password: string) =>
+    withPasswordEncryptionRetry(async () => apiFetch<{ message: string }>('/api/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ token, password }),
-    }),
+      body: JSON.stringify({
+        token,
+        passwordEncrypted: await encryptPasswordForTransport(password),
+      }),
+    })),
   getSessions: (token: string) =>
     apiFetch<{ sessions: AuthSessionSummary[] }>('/api/auth/sessions', { token }),
   revokeSession: (token: string, sessionId: string) =>

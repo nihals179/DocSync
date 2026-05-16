@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
+const { encryptPassword } = require('./helpers/password-crypto');
 
 const app = require('../src/app');
 const {
@@ -45,7 +46,7 @@ function clearStore() {
 async function registerVerifyLogin(client, { name, email, password = 'Password123!' }) {
   const registerRes = await client
     .post('/api/auth/register')
-    .send({ name, email, password })
+    .send({ name, email, passwordEncrypted: encryptPassword(password) })
     .expect(201);
 
   await client
@@ -55,7 +56,7 @@ async function registerVerifyLogin(client, { name, email, password = 'Password12
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 
   return {
@@ -211,7 +212,7 @@ test('ip allowlist blocks new login sessions from unapproved addresses', async (
 
   const registerRes = await client
     .post('/api/auth/register')
-    .send({ name: 'IP Login Owner', email, password })
+    .send({ name: 'IP Login Owner', email, passwordEncrypted: encryptPassword(password) })
     .expect(201);
 
   await client
@@ -222,7 +223,7 @@ test('ip allowlist blocks new login sessions from unapproved addresses', async (
   const initialLogin = await client
     .post('/api/auth/login')
     .set('x-forwarded-for', '10.10.10.10')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 
   ensureTenantBootstrapForUser(users.get(initialLogin.body.user.id));
@@ -240,12 +241,12 @@ test('ip allowlist blocks new login sessions from unapproved addresses', async (
   await client
     .post('/api/auth/login')
     .set('x-forwarded-for', '203.0.113.15')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(403);
 
   await client
     .post('/api/auth/login')
     .set('x-forwarded-for', '10.10.10.10')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 });

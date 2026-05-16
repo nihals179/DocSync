@@ -16,6 +16,7 @@ const {
   nowIso,
   organizationMemberships,
   organizations,
+  upsertOrganizationBillingState,
   users,
   upsertInvoice,
 } = require('../store');
@@ -49,11 +50,11 @@ function promoteOrganizationMembersToEnterprise(organizationId) {
   }).catch(() => {});
 }
 
-function applySubscriptionState({ organizationId, planId, purchasedSeats, subscriptionId, customerId, trialDays = 0, periodDays = 30 }) {
+async function applySubscriptionState({ organizationId, planId, purchasedSeats, subscriptionId, customerId, trialDays = 0, periodDays = 30 }) {
   const organization = ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
-  const billing = getOrganizationBillingState(organizationId);
+  const billing = await getOrganizationBillingState(organizationId);
   const now = Date.now();
   const plan = getPlan(planId);
   const nextSeats = Math.max(1, Number(purchasedSeats || plan.limits.seats));
@@ -79,18 +80,21 @@ function applySubscriptionState({ organizationId, planId, purchasedSeats, subscr
   if (plan.id === 'enterprise') {
     promoteOrganizationMembersToEnterprise(organizationId);
   }
-  organizations.set(organization.id, organization);
-  return billing;
+  return upsertOrganizationBillingState(organizationId, billing);
 }
 
-function applyInvoicePaid({ organizationId, amountCents, periodStart = null, periodEnd = null, invoiceId = `inv_${uuidv4()}` }) {
+async function applyInvoicePaid({ organizationId, amountCents, periodStart = null, periodEnd = null, invoiceId = `inv_${uuidv4()}` }) {
   const organization = ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
-  const billing = getOrganizationBillingState(organizationId);
+  const billing = await getOrganizationBillingState(organizationId);
   billing.status = billing.status === 'suspended' ? 'active' : billing.status;
   billing.graceEndsAt = null;
-  billing.updatedAt = nowIso();
+  await upsertOrganizationBillingState(organizationId, {
+    status: billing.status,
+    graceEndsAt: billing.graceEndsAt,
+    updatedAt: nowIso(),
+  });
 
   return upsertInvoice({
     id: invoiceId,
@@ -107,14 +111,18 @@ function applyInvoicePaid({ organizationId, amountCents, periodStart = null, per
   });
 }
 
-function applyInvoiceFailed({ organizationId, amountCents, graceDays = 3, invoiceId = `inv_${uuidv4()}` }) {
+async function applyInvoiceFailed({ organizationId, amountCents, graceDays = 3, invoiceId = `inv_${uuidv4()}` }) {
   const organization = ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
-  const billing = getOrganizationBillingState(organizationId);
+  const billing = await getOrganizationBillingState(organizationId);
   billing.status = 'grace';
   billing.graceEndsAt = new Date(Date.now() + graceDays * 24 * 60 * 60 * 1000).toISOString();
-  billing.updatedAt = nowIso();
+  await upsertOrganizationBillingState(organizationId, {
+    status: billing.status,
+    graceEndsAt: billing.graceEndsAt,
+    updatedAt: nowIso(),
+  });
 
   return upsertInvoice({
     id: invoiceId,
@@ -131,19 +139,21 @@ function applyInvoiceFailed({ organizationId, amountCents, graceDays = 3, invoic
   });
 }
 
-function applySubscriptionCanceled({ organizationId, periodEndAt = null }) {
+async function applySubscriptionCanceled({ organizationId, periodEndAt = null }) {
   const organization = ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
-  const billing = getOrganizationBillingState(organizationId);
+  const billing = await getOrganizationBillingState(organizationId);
   billing.status = 'canceled';
   billing.currentPeriodEndAt = periodEndAt || billing.currentPeriodEndAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  billing.updatedAt = nowIso();
-  organizations.set(organization.id, organization);
-  return billing;
+  return upsertOrganizationBillingState(organizationId, {
+    status: billing.status,
+    currentPeriodEndAt: billing.currentPeriodEndAt,
+    updatedAt: nowIso(),
+  });
 }
 
-function processBillingEvent(event) {
+async function processBillingEvent(event) {
   const eventType = String(event.type || '');
   const data = event.data || {};
 
@@ -203,7 +213,7 @@ async function processDueWebhookJobs(limit = 20) {
   for (const job of jobs) {
     try {
       markWebhookJobProcessing(job.id);
-      processBillingEvent(job.payload);
+      await processBillingEvent(job.payload);
       markWebhookJobProcessed(job.id);
     } catch (error) {
       markWebhookJobFailed(job.id, error instanceof Error ? error.message : 'Unknown error');
@@ -248,8 +258,8 @@ function createCheckoutSession({ organizationId, planId, purchasedSeats, success
   };
 }
 
-function buildBillingSnapshot(organizationId) {
-  const entitlements = getOrganizationEntitlements(organizationId);
+async function buildBillingSnapshot(organizationId) {
+  const entitlements = await getOrganizationEntitlements(organizationId);
   if (!entitlements) return null;
   return {
     ...entitlements,

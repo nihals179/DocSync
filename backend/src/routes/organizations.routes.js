@@ -120,7 +120,7 @@ router.get('/current/invites', requireAuth, resolveOrganizationContext, requireP
   res.json({ invites });
 });
 
-router.post('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.member.invite'), (req, res) => {
+router.post('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.member.invite'), async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim();
   const billingAdminInput = parseBooleanInput(req.body?.billingAdmin, 'billingAdmin');
   if (!billingAdminInput.ok) return res.status(400).json({ error: billingAdminInput.error });
@@ -130,11 +130,11 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
   if (!email) return res.status(400).json({ error: 'email is required.' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email address.' });
 
-  const seatCheck = canAssignSeats(req.organization.id, 1);
+  const seatCheck = await canAssignSeats(req.organization.id, 1);
   if (!seatCheck.allowed) {
     return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
   }
-  const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
+  const collaboratorCheck = await canAssignCollaborators(req.organization.id, 1);
   if (!collaboratorCheck.allowed) {
     return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
   }
@@ -211,14 +211,14 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
 
   const needsSeat = !existingMembership || existingMembership.status !== 'active';
   if (needsSeat) {
-    const seatCheck = canAssignSeats(invite.organizationId, 1);
+    const seatCheck = await canAssignSeats(invite.organizationId, 1);
     if (!seatCheck.allowed) {
       return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
     }
   }
 
   if (!existingMembership || existingMembership.status !== 'active') {
-    const collaboratorCheck = canAssignCollaborators(invite.organizationId, 1);
+    const collaboratorCheck = await canAssignCollaborators(invite.organizationId, 1);
     if (!collaboratorCheck.allowed) {
       return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
     }
@@ -248,7 +248,7 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   organizationInvites.set(invite.id, invite);
 
   user.currentOrganizationId = invite.organizationId;
-  const orgBilling = getOrganizationBillingState(invite.organizationId);
+  const orgBilling = await getOrganizationBillingState(invite.organizationId);
   if (orgBilling?.planId === 'enterprise') {
     user.accountType = 'Enterprise';
     if (process.env.DATABASE_URL) {
@@ -343,8 +343,8 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
   res.json({ message: 'Member removed.' });
 });
 
-router.get('/current/entitlements', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), (req, res) => {
-  const entitlements = getOrganizationEntitlements(req.organization.id);
+router.get('/current/entitlements', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+  const entitlements = await getOrganizationEntitlements(req.organization.id);
   if (!entitlements) return res.status(404).json({ error: 'Entitlements unavailable.' });
   res.json({ entitlements });
 });

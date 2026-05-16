@@ -63,6 +63,7 @@ model User {
   emailVerified         Boolean  @default(false)
   failedLoginAttempts   Int      @default(0)
   lockoutUntil          DateTime?
+  lastLoginAt           DateTime?
   role                  String   @default("user")
   twoFactorEnabled      Boolean  @default(false)
   twoFactorSecret       String?
@@ -76,7 +77,6 @@ model Organization {
   id          String   @id
   name        String
   ownerUserId String
-  billing     Json?
   security    Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -84,16 +84,35 @@ model Organization {
   @@map("organizations")
 }
 
+model OrganizationBilling {
+  organizationId     String   @id
+  planId             String
+  status             String
+  purchasedSeats     Int
+  trialEndsAt        DateTime?
+  trialUsed          Boolean  @default(false)
+  subscriptionId     String?
+  customerId         String?
+  currentPeriodEndAt DateTime?
+  graceEndsAt        DateTime?
+  updatedAt          DateTime @updatedAt
+
+  @@map("organization_billing")
+}
+
 model OrganizationMembership {
   id             String   @id
   organizationId String
   userId         String
+  email          String?
   billingAdmin   Boolean  @default(false)
   status         String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@unique([organizationId, userId])
+  @@unique([organizationId, email])
+  @@index([email])
   @@map("organization_memberships")
 }
 
@@ -181,6 +200,7 @@ model Invoice {
 
 model UserBilling {
   userId             String   @id
+  email              String?  @unique
   planId             String
   status             String
   trialEndsAt        DateTime?

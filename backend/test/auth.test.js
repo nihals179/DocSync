@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
+const { encryptPassword } = require('./helpers/password-crypto');
 const { generateSync: _totpGenSync } = require('@otplib/totp');
 const { NobleCryptoPlugin: _NobleCryptoPlugin } = require('@otplib/plugin-crypto-noble');
 const { ScureBase32Plugin: _ScureBase32Plugin } = require('@otplib/plugin-base32-scure');
@@ -63,7 +64,7 @@ function clearStore() {
 async function registerVerifyLogin(client, { name, email, password = 'Password123!' }) {
   const registerRes = await client
     .post('/api/auth/register')
-    .send({ name, email, password })
+    .send({ name, email, passwordEncrypted: encryptPassword(password) })
     .expect(201);
 
   assert.equal(typeof registerRes.body.verificationTokenPreview, 'string');
@@ -75,7 +76,7 @@ async function registerVerifyLogin(client, { name, email, password = 'Password12
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 
   assert.equal(typeof loginRes.body.accessToken, 'string');
@@ -102,7 +103,7 @@ test.beforeEach(() => {
 test('POST /register - creates account, returns 201 with verificationTokenPreview', async () => {
   const res = await request(app)
     .post('/api/auth/register')
-    .send({ name: 'Alice', email: 'alice@example.com', password: 'Password123!' })
+    .send({ name: 'Alice', email: 'alice@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   assert.equal(res.body.verificationRequired, true);
@@ -114,7 +115,7 @@ test('POST /register - creates account, returns 201 with verificationTokenPrevie
 test('POST /register - missing name returns 400', async () => {
   const res = await request(app)
     .post('/api/auth/register')
-    .send({ email: 'a@example.com', password: 'Password123!' })
+    .send({ email: 'a@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(400);
 
   assert.match(res.body.error, /required/i);
@@ -123,7 +124,7 @@ test('POST /register - missing name returns 400', async () => {
 test('POST /register - missing email returns 400', async () => {
   await request(app)
     .post('/api/auth/register')
-    .send({ name: 'Alice', password: 'Password123!' })
+    .send({ name: 'Alice', passwordEncrypted: encryptPassword('Password123!') })
     .expect(400);
 });
 
@@ -137,7 +138,7 @@ test('POST /register - missing password returns 400', async () => {
 test('POST /register - invalid email format returns 400', async () => {
   const res = await request(app)
     .post('/api/auth/register')
-    .send({ name: 'Alice', email: 'not-an-email', password: 'Password123!' })
+    .send({ name: 'Alice', email: 'not-an-email', passwordEncrypted: encryptPassword('Password123!') })
     .expect(400);
 
   assert.match(res.body.error, /invalid email/i);
@@ -146,7 +147,7 @@ test('POST /register - invalid email format returns 400', async () => {
 test('POST /register - password shorter than 8 chars returns 400', async () => {
   const res = await request(app)
     .post('/api/auth/register')
-    .send({ name: 'Alice', email: 'alice@example.com', password: 'abc' })
+    .send({ name: 'Alice', email: 'alice@example.com', passwordEncrypted: encryptPassword('abc') })
     .expect(400);
 
   assert.match(res.body.error, /8 characters/i);
@@ -156,12 +157,12 @@ test('POST /register - duplicate email returns 409', async () => {
   const client = request(app);
   await client
     .post('/api/auth/register')
-    .send({ name: 'Alice', email: 'dup@example.com', password: 'Password123!' })
+    .send({ name: 'Alice', email: 'dup@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   const res = await client
     .post('/api/auth/register')
-    .send({ name: 'Alice2', email: 'dup@example.com', password: 'Password123!' })
+    .send({ name: 'Alice2', email: 'dup@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(409);
 
   assert.match(res.body.error, /already exists/i);
@@ -170,7 +171,7 @@ test('POST /register - duplicate email returns 409', async () => {
 test('POST /register - email is normalized to lowercase', async () => {
   const res = await request(app)
     .post('/api/auth/register')
-    .send({ name: 'Alice', email: 'ALICE@EXAMPLE.COM', password: 'Password123!' })
+    .send({ name: 'Alice', email: 'ALICE@EXAMPLE.COM', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   assert.equal(res.body.user.email, 'alice@example.com');
@@ -184,7 +185,7 @@ test('POST /verify-email - valid token marks email as verified', async () => {
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Bob', email: 'bob@example.com', password: 'Password123!' })
+    .send({ name: 'Bob', email: 'bob@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   const res = await client
@@ -215,7 +216,7 @@ test('POST /verify-email - token is single-use (consumed after first use)', asyn
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Bob', email: 'onetime@example.com', password: 'Password123!' })
+    .send({ name: 'Bob', email: 'onetime@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   const { verificationTokenPreview: token } = regRes.body;
@@ -232,7 +233,7 @@ test('POST /resend-verification - issues new token for unverified user', async (
   const client = request(app);
   await client
     .post('/api/auth/register')
-    .send({ name: 'Carol', email: 'carol@example.com', password: 'Password123!' })
+    .send({ name: 'Carol', email: 'carol@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   const res = await client
@@ -258,7 +259,7 @@ test('POST /resend-verification - already-verified user returns 400', async () =
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Carol', email: 'verified@example.com', password: 'Password123!' })
+    .send({ name: 'Carol', email: 'verified@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -282,7 +283,7 @@ test('POST /login - valid credentials return accessToken, csrfToken, and set coo
   const client = request.agent(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Dave', email: 'dave@example.com', password: 'Password123!' })
+    .send({ name: 'Dave', email: 'dave@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -292,7 +293,7 @@ test('POST /login - valid credentials return accessToken, csrfToken, and set coo
 
   const res = await client
     .post('/api/auth/login')
-    .send({ email: 'dave@example.com', password: 'Password123!', remember: false })
+    .send({ email: 'dave@example.com', passwordEncrypted: encryptPassword('Password123!'), remember: false })
     .expect(200);
 
   assert.equal(typeof res.body.accessToken, 'string');
@@ -308,7 +309,7 @@ test('POST /login - legacy personal account without tenant membership is auto-bo
 
   const registerRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Legacy Personal', email, password })
+    .send({ name: 'Legacy Personal', email, passwordEncrypted: encryptPassword(password) })
     .expect(201);
 
   await client
@@ -334,7 +335,7 @@ test('POST /login - legacy personal account without tenant membership is auto-bo
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 
   const workspacesRes = await client
@@ -348,13 +349,13 @@ test('POST /login - legacy personal account without tenant membership is auto-bo
 test('POST /login - missing credentials returns 400', async () => {
   await request(app).post('/api/auth/login').send({}).expect(400);
   await request(app).post('/api/auth/login').send({ email: 'x@x.com' }).expect(400);
-  await request(app).post('/api/auth/login').send({ password: 'Password123!' }).expect(400);
+  await request(app).post('/api/auth/login').send({ passwordEncrypted: encryptPassword('Password123!') }).expect(400);
 });
 
 test('POST /login - unknown user returns 401', async () => {
   const res = await request(app)
     .post('/api/auth/login')
-    .send({ email: 'nobody@example.com', password: 'Password123!' })
+    .send({ email: 'nobody@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(401);
 
   assert.match(res.body.error, /invalid credentials/i);
@@ -364,7 +365,7 @@ test('POST /login - wrong password returns 401 with attempts-remaining message',
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Eve', email: 'eve@example.com', password: 'Password123!' })
+    .send({ name: 'Eve', email: 'eve@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -374,7 +375,7 @@ test('POST /login - wrong password returns 401 with attempts-remaining message',
 
   const res = await client
     .post('/api/auth/login')
-    .send({ email: 'eve@example.com', password: 'WrongPassword!' })
+    .send({ email: 'eve@example.com', passwordEncrypted: encryptPassword('WrongPassword!') })
     .expect(401);
 
   assert.match(res.body.error, /attempts remaining/i);
@@ -384,12 +385,12 @@ test('POST /login - unverified email returns 403', async () => {
   const client = request(app);
   await client
     .post('/api/auth/register')
-    .send({ name: 'Frank', email: 'frank@example.com', password: 'Password123!' })
+    .send({ name: 'Frank', email: 'frank@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   const res = await client
     .post('/api/auth/login')
-    .send({ email: 'frank@example.com', password: 'Password123!' })
+    .send({ email: 'frank@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(403);
 
   assert.match(res.body.error, /verify your email/i);
@@ -399,7 +400,7 @@ test('POST /login - 5 consecutive wrong passwords lock the account (423)', async
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Grace', email: 'grace@example.com', password: 'Password123!' })
+    .send({ name: 'Grace', email: 'grace@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -410,12 +411,12 @@ test('POST /login - 5 consecutive wrong passwords lock the account (423)', async
   for (let i = 0; i < 5; i++) {
     await client
       .post('/api/auth/login')
-      .send({ email: 'grace@example.com', password: 'WrongPass!' });
+      .send({ email: 'grace@example.com', passwordEncrypted: encryptPassword('WrongPass!') });
   }
 
   const res = await client
     .post('/api/auth/login')
-    .send({ email: 'grace@example.com', password: 'Password123!' })
+    .send({ email: 'grace@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(423);
 
   assert.match(res.body.error, /locked/i);
@@ -425,7 +426,7 @@ test('POST /login - remember=true creates a long-lived session', async () => {
   const client = request.agent(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Heidi', email: 'heidi@example.com', password: 'Password123!' })
+    .send({ name: 'Heidi', email: 'heidi@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -435,7 +436,7 @@ test('POST /login - remember=true creates a long-lived session', async () => {
 
   const res = await client
     .post('/api/auth/login')
-    .send({ email: 'heidi@example.com', password: 'Password123!', remember: true })
+    .send({ email: 'heidi@example.com', passwordEncrypted: encryptPassword('Password123!'), remember: true })
     .expect(200);
 
   const session = authSessions.get(res.body.session.id);
@@ -446,7 +447,7 @@ test('POST /login - successful login resets failed-attempt counter', async () =>
   const client = request(app);
   const regRes = await client
     .post('/api/auth/register')
-    .send({ name: 'Ivan', email: 'ivan@example.com', password: 'Password123!' })
+    .send({ name: 'Ivan', email: 'ivan@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(201);
 
   await client
@@ -457,13 +458,13 @@ test('POST /login - successful login resets failed-attempt counter', async () =>
   // One bad attempt
   await client
     .post('/api/auth/login')
-    .send({ email: 'ivan@example.com', password: 'Bad!' })
+    .send({ email: 'ivan@example.com', passwordEncrypted: encryptPassword('Bad!') })
     .expect(401);
 
   // Correct attempt should succeed
   await client
     .post('/api/auth/login')
-    .send({ email: 'ivan@example.com', password: 'Password123!' })
+    .send({ email: 'ivan@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(200);
 
   const user = [...users.values()].find((u) => u.email === 'ivan@example.com');
@@ -739,7 +740,7 @@ test('POST /reset-password - valid token updates password and allows new login',
 
   const res = await client
     .post('/api/auth/reset-password')
-    .send({ token: forgotRes.body.resetTokenPreview, password: 'NewPassword456!' })
+    .send({ token: forgotRes.body.resetTokenPreview, passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(200);
 
   assert.match(res.body.message, /updated/i);
@@ -747,14 +748,14 @@ test('POST /reset-password - valid token updates password and allows new login',
   // New password must work
   await client
     .post('/api/auth/login')
-    .send({ email: 'victor@example.com', password: 'NewPassword456!' })
+    .send({ email: 'victor@example.com', passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(200);
 });
 
 test('POST /reset-password - invalid token returns 400', async () => {
   const res = await request(app)
     .post('/api/auth/reset-password')
-    .send({ token: 'bogus-token', password: 'NewPassword456!' })
+    .send({ token: 'bogus-token', passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(400);
 
   assert.match(res.body.error, /invalid or expired/i);
@@ -773,13 +774,13 @@ test('POST /reset-password - token is single-use', async () => {
 
   await client
     .post('/api/auth/reset-password')
-    .send({ token, password: 'NewPassword456!' })
+    .send({ token, passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(200);
 
   // Second use of same token must fail
   await client
     .post('/api/auth/reset-password')
-    .send({ token, password: 'AnotherPassword789!' })
+    .send({ token, passwordEncrypted: encryptPassword('AnotherPassword789!') })
     .expect(400);
 });
 
@@ -794,7 +795,7 @@ test('POST /reset-password - short new password returns 400', async () => {
 
   const res = await client
     .post('/api/auth/reset-password')
-    .send({ token: forgotRes.body.resetTokenPreview, password: 'abc' })
+    .send({ token: forgotRes.body.resetTokenPreview, passwordEncrypted: encryptPassword('abc') })
     .expect(400);
 
   assert.match(res.body.error, /8 characters/i);
@@ -803,7 +804,7 @@ test('POST /reset-password - short new password returns 400', async () => {
 test('POST /reset-password - missing fields returns 400', async () => {
   await request(app)
     .post('/api/auth/reset-password')
-    .send({ password: 'NewPassword456!' })
+    .send({ passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(400);
 
   await request(app)
@@ -826,7 +827,7 @@ test('POST /reset-password - revokes all existing sessions', async () => {
 
   await client
     .post('/api/auth/reset-password')
-    .send({ token: forgotRes.body.resetTokenPreview, password: 'NewPassword456!' })
+    .send({ token: forgotRes.body.resetTokenPreview, passwordEncrypted: encryptPassword('NewPassword456!') })
     .expect(200);
 
   // Old access token must no longer be valid
@@ -968,7 +969,7 @@ test('POST /login - 2FA-enabled account returns 202 with tempToken', async () =>
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email: 'gina@example.com', password: 'Password123!' })
+    .send({ email: 'gina@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(202);
 
   assert.equal(loginRes.body.requiresTwoFactor, true);
@@ -993,7 +994,7 @@ test('POST /login/2fa - valid code completes login and returns accessToken', asy
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email: 'harry@example.com', password: 'Password123!' })
+    .send({ email: 'harry@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(202);
 
   const res = await client
@@ -1023,7 +1024,7 @@ test('POST /login/2fa - invalid TOTP code returns 401', async () => {
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email: 'iris@example.com', password: 'Password123!' })
+    .send({ email: 'iris@example.com', passwordEncrypted: encryptPassword('Password123!') })
     .expect(202);
 
   const res = await client

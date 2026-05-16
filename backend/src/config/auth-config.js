@@ -1,68 +1,87 @@
 const { prisma } = require('../db/client');
 const { getRedisClient } = require('../lib/redis-client');
 
-const DEFAULT_AUTH_CONFIG = Object.freeze({
-  appName: 'DocSync',
-  devMode: process.env.NODE_ENV !== 'production',
-  emailVerificationBypass: process.env.AUTH_BYPASS_EMAIL_VERIFICATION === 'true',
-  emailTokenTtlMs: 24 * 60 * 60 * 1000,
-  resetTokenTtlMs: 60 * 60 * 1000,
-  lockoutThreshold: 5,
-  lockoutMs: 30 * 60 * 1000,
-});
-
 const CACHE_TTL_MS = 30 * 1000;
 let cachedConfig = null;
 let cachedAt = 0;
 const AUTH_CONFIG_SCOPE = 'auth';
 const REDIS_CACHE_KEY = `app-config:${AUTH_CONFIG_SCOPE}`;
+const REDIS_AUTH_CONFIG_TTL_SECONDS = Math.max(0, Number(process.env.REDIS_AUTH_CONFIG_TTL_SECONDS || 0));
+const MIN_TOKEN_TTL_MS = 60 * 1000;
+const MIN_LOCKOUT_THRESHOLD = 1;
 
-const DEFAULT_AUTH_CONFIG_ENTRIES = Object.entries(DEFAULT_AUTH_CONFIG);
+const REQUIRED_AUTH_KEYS = [
+  'appName',
+  'devMode',
+  'emailVerificationBypass',
+  'emailTokenTtlMs',
+  'resetTokenTtlMs',
+  'lockoutThreshold',
+  'lockoutMs',
+];
 
 function shouldUseDatabase() {
-  return Boolean(process.env[`${process.env.DOCSYNC_ENV}.DATABASE_URL`]) || Boolean(process.env.DATABASE_URL);
+  const envKey = String(process.env.DOCSYNC_ENV || '').trim();
+  if (envKey && process.env[`${envKey}.DATABASE_URL`]) return true;
+  return Boolean(process.env.DATABASE_URL);
+}
+
+function hasValue(value) {
+  return value !== undefined && value !== null;
+}
+
+function toNumberAtLeast(value, min) {
+  return Math.max(min, Number(value));
 }
 
 function normalizeAuthConfig(raw = {}) {
-  return {
-    appName: String(raw.appName || DEFAULT_AUTH_CONFIG.appName),
-    devMode: Boolean(raw.devMode),
-    emailVerificationBypass: Boolean(raw.emailVerificationBypass),
-    emailTokenTtlMs: Math.max(60 * 1000, Number(raw.emailTokenTtlMs || DEFAULT_AUTH_CONFIG.emailTokenTtlMs)),
-    resetTokenTtlMs: Math.max(60 * 1000, Number(raw.resetTokenTtlMs || DEFAULT_AUTH_CONFIG.resetTokenTtlMs)),
-    lockoutThreshold: Math.max(1, Number(raw.lockoutThreshold || DEFAULT_AUTH_CONFIG.lockoutThreshold)),
-    lockoutMs: Math.max(60 * 1000, Number(raw.lockoutMs || DEFAULT_AUTH_CONFIG.lockoutMs)),
-  };
+  const normalized = {};
+  if (hasValue(raw.appName)) {
+    normalized.appName = String(raw.appName);
+  }
+  if (hasValue(raw.devMode)) {
+    normalized.devMode = Boolean(raw.devMode);
+  }
+  if (hasValue(raw.emailVerificationBypass)) {
+    normalized.emailVerificationBypass = Boolean(raw.emailVerificationBypass);
+  }
+  if (hasValue(raw.emailTokenTtlMs)) {
+    normalized.emailTokenTtlMs = toNumberAtLeast(raw.emailTokenTtlMs, MIN_TOKEN_TTL_MS);
+  }
+  if (hasValue(raw.resetTokenTtlMs)) {
+    normalized.resetTokenTtlMs = toNumberAtLeast(raw.resetTokenTtlMs, MIN_TOKEN_TTL_MS);
+  }
+  if (hasValue(raw.lockoutThreshold)) {
+    normalized.lockoutThreshold = toNumberAtLeast(raw.lockoutThreshold, MIN_LOCKOUT_THRESHOLD);
+  }
+  if (hasValue(raw.lockoutMs)) {
+    normalized.lockoutMs = toNumberAtLeast(raw.lockoutMs, MIN_TOKEN_TTL_MS);
+  }
+  return normalized;
 }
+
+function hasRequiredAuthKeys(config) {
+  if (!config || typeof config !== 'object') return false;
+  return REQUIRED_AUTH_KEYS.every((key) => config[key] !== undefined && config[key] !== null);
+}
+
+
 
 function buildConfigFromRows(rows = []) {
-  const merged = { ...DEFAULT_AUTH_CONFIG };
+  const configByKey = {};
   for (const row of rows) {
     if (!row || typeof row.key !== 'string') continue;
-    merged[row.key] = row.value;
+    configByKey[row.key] = row.value;
   }
-  return normalizeAuthConfig(merged);
+  return normalizeAuthConfig(configByKey);
 }
 
-async function seedMissingKeys() {
-  await Promise.all(
-    DEFAULT_AUTH_CONFIG_ENTRIES.map(([key, value]) =>
-      prisma.appConfig.upsert({
-        where: {
-          scope_key: {
-            scope: AUTH_CONFIG_SCOPE,
-            key,
-          },
-        },
-        update: {},
-        create: {
-          scope: AUTH_CONFIG_SCOPE,
-          key,
-          value,
-        },
-      })),
-  );
+function rememberConfig(config) {
+  cachedConfig = config;
+  cachedAt = Date.now();
+  return config;
 }
+
 
 async function getAuthConfigFromRedis() {
   const redisClient = await getRedisClient();
@@ -72,7 +91,8 @@ async function getAuthConfigFromRedis() {
   if (!payload) return null;
 
   try {
-    return normalizeAuthConfig(JSON.parse(payload));
+    const normalized = normalizeAuthConfig(JSON.parse(payload));
+    return hasRequiredAuthKeys(normalized) ? normalized : null;
   } catch {
     return null;
   }
@@ -82,15 +102,18 @@ async function setAuthConfigInRedis(config) {
   const redisClient = await getRedisClient();
   if (!redisClient) return;
 
-  const ttlSeconds = Math.max(1, Math.floor(CACHE_TTL_MS / 1000));
-  await redisClient.set(REDIS_CACHE_KEY, JSON.stringify(config), {
-    EX: ttlSeconds,
-  });
+  if (REDIS_AUTH_CONFIG_TTL_SECONDS > 0) {
+    await redisClient.set(REDIS_CACHE_KEY, JSON.stringify(config), {
+      EX: REDIS_AUTH_CONFIG_TTL_SECONDS,
+    });
+    return;
+  }
+
+  // Persist key without expiry so cache survives backend restarts.
+  await redisClient.set(REDIS_CACHE_KEY, JSON.stringify(config));
 }
 
 async function getAuthConfig() {
-  if (!shouldUseDatabase()) return DEFAULT_AUTH_CONFIG;
-
   if (cachedConfig && (Date.now() - cachedAt) < CACHE_TTL_MS) {
     return cachedConfig;
   }
@@ -98,27 +121,30 @@ async function getAuthConfig() {
   try {
     const redisConfig = await getAuthConfigFromRedis();
     if (redisConfig) {
-      cachedConfig = redisConfig;
-      cachedAt = Date.now();
-      return redisConfig;
+      return rememberConfig(redisConfig);
     }
   } catch {
     // Ignore Redis errors and continue with database fallback.
   }
 
+  if (!shouldUseDatabase()) {
+    throw new Error('Auth config unavailable: missing database and redis config source.');
+  }
+
   try {
-    await seedMissingKeys();
     const rows = await prisma.appConfig.findMany({
       where: {
         scope: AUTH_CONFIG_SCOPE,
       },
     });
-    cachedConfig = buildConfigFromRows(rows);
-    cachedAt = Date.now();
-    await setAuthConfigInRedis(cachedConfig);
-    return cachedConfig;
+    const dbConfig = buildConfigFromRows(rows);
+    if (!hasRequiredAuthKeys(dbConfig)) {
+      throw new Error('Auth config missing required keys in DB/Redis.');
+    }
+    await setAuthConfigInRedis(dbConfig);
+    return rememberConfig(dbConfig);
   } catch {
-    return DEFAULT_AUTH_CONFIG;
+    throw new Error('Auth config unavailable from Redis/DB.');
   }
 }
 

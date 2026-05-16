@@ -13,7 +13,7 @@ const {
   listInvoicesByOrganization,
   listWebhookJobs,
   nowIso,
-  organizations,
+  upsertOrganizationBillingState,
 } = require('../store');
 const {
   buildBillingSnapshot,
@@ -28,8 +28,8 @@ router.get('/plans', requireAuth, resolveOrganizationContext, requirePermission(
   res.json({ plans: getAllPlans() });
 });
 
-router.get('/current', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), attachEntitlements, (req, res) => {
-  const snapshot = buildBillingSnapshot(req.organization.id);
+router.get('/current', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), attachEntitlements, async (req, res) => {
+  const snapshot = await buildBillingSnapshot(req.organization.id);
   res.json({ snapshot });
 });
 
@@ -38,16 +38,16 @@ router.get('/invoices', requireAuth, resolveOrganizationContext, requirePermissi
   res.json({ invoices });
 });
 
-router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), (req, res) => {
+router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
   const planId = String(req.body?.planId || '').toLowerCase();
   if (!planId) return res.status(400).json({ error: 'planId is required.' });
 
   const plan = getPlan(planId);
   if (!plan || plan.id !== planId) return res.status(400).json({ error: 'Invalid planId.' });
 
-  const current = getOrganizationBillingState(req.organization.id);
+  const current = await getOrganizationBillingState(req.organization.id);
   const requestedSeats = Math.max(1, Number(req.body?.purchasedSeats || plan.limits.seats));
-  const assignedSeats = getOrganizationEntitlements(req.organization.id)?.usage?.assignedSeats || 0;
+  const assignedSeats = (await getOrganizationEntitlements(req.organization.id))?.usage?.assignedSeats || 0;
   if (requestedSeats < assignedSeats) {
     return res.status(400).json({
       error: `Cannot set seats below currently assigned members (${assignedSeats}).`,
@@ -70,7 +70,7 @@ router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermiss
   });
 });
 
-router.post('/subscription/change', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), (req, res) => {
+router.post('/subscription/change', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
   const planId = String(req.body?.planId || '').toLowerCase();
   if (!planId) return res.status(400).json({ error: 'planId is required.' });
 
@@ -78,7 +78,7 @@ router.post('/subscription/change', requireAuth, resolveOrganizationContext, req
   if (!plan || plan.id !== planId) return res.status(400).json({ error: 'Invalid planId.' });
 
   const seats = Math.max(1, Number(req.body?.purchasedSeats || plan.limits.seats));
-  const assignedSeats = getOrganizationEntitlements(req.organization.id)?.usage?.assignedSeats || 0;
+  const assignedSeats = (await getOrganizationEntitlements(req.organization.id))?.usage?.assignedSeats || 0;
   if (seats < assignedSeats) {
     return res.status(400).json({
       error: `Cannot reduce seats below currently assigned members (${assignedSeats}).`,
@@ -107,17 +107,17 @@ router.post('/subscription/change', requireAuth, resolveOrganizationContext, req
   });
 });
 
-router.patch('/seats', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), (req, res) => {
+router.patch('/seats', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
   const nextSeats = Math.max(1, Number(req.body?.purchasedSeats || 0));
-  const billing = getOrganizationBillingState(req.organization.id);
+  const billing = await getOrganizationBillingState(req.organization.id);
   if (!billing) return res.status(404).json({ error: 'Billing state not found.' });
 
-  const check = canAssignSeats(req.organization.id, 0);
+  const check = await canAssignSeats(req.organization.id, 0);
   if (!check.allowed) {
     return res.status(400).json({ error: check.reason });
   }
 
-  const assignedSeats = getOrganizationEntitlements(req.organization.id)?.usage?.assignedSeats || 0;
+  const assignedSeats = (await getOrganizationEntitlements(req.organization.id))?.usage?.assignedSeats || 0;
   if (nextSeats < assignedSeats) {
     return res.status(400).json({
       error: `Cannot set purchased seats below assigned seats (${assignedSeats}).`,
@@ -126,7 +126,10 @@ router.patch('/seats', requireAuth, resolveOrganizationContext, requirePermissio
 
   billing.purchasedSeats = nextSeats;
   billing.updatedAt = nowIso();
-  organizations.set(req.organization.id, req.organization);
+  await upsertOrganizationBillingState(req.organization.id, {
+    purchasedSeats: billing.purchasedSeats,
+    updatedAt: billing.updatedAt,
+  });
 
   res.json({
     message: 'Purchased seats updated.',

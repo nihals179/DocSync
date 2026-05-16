@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
+const { encryptPassword } = require('./helpers/password-crypto');
 
 const app = require('../src/app');
 const {
@@ -48,7 +49,7 @@ function authHeader(token) {
 async function registerVerifyLogin(client, { name, email, password = 'Password123!' }) {
   const registerRes = await client
     .post('/api/auth/register')
-    .send({ name, email, password })
+    .send({ name, email, passwordEncrypted: encryptPassword(password) })
     .expect(201);
 
   await client
@@ -58,7 +59,7 @@ async function registerVerifyLogin(client, { name, email, password = 'Password12
 
   const loginRes = await client
     .post('/api/auth/login')
-    .send({ email, password, remember: false })
+    .send({ email, passwordEncrypted: encryptPassword(password), remember: false })
     .expect(200);
 
   return {

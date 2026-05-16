@@ -48,8 +48,8 @@ async function seedAdmin() {
   }
 
   users.set(admin.id, admin);
-  ensureTenantBootstrapForUser(admin);
-  ensureUserBillingState(admin);
+  await ensureTenantBootstrapForUser(admin);
+  await ensureUserBillingState(admin);
 
   console.log(`[db-seed] Admin user upserted: ${email}`);
   if (process.env.NODE_ENV !== 'production') {

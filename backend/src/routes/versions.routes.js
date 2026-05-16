@@ -35,9 +35,9 @@ function getDoc(docId, organizationId, res) {
 /**
  * GET /api/docs/:docId/versions
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.read'), (req, res) => {
+router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.read'), async (req, res) => {
   if (!getDoc(req.params.docId, req.organization.id, res)) return;
-  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
   const retained = filterVersionsByRetention(versions.get(req.params.docId) ?? [], retentionDays);
   const list = retained.map(({ id, preview, savedAt }) => ({ id, preview, savedAt }));
   res.json({ versions: list });
@@ -71,11 +71,11 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
  * POST /api/docs/:docId/versions/:versionId/restore
  * Overwrites document content with this version's content.
  */
-router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requirePermission('document.version.restore'), (req, res) => {
+router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requirePermission('document.version.restore'), async (req, res) => {
   const doc = getDoc(req.params.docId, req.organization.id, res);
   if (!doc) return;
   const list = versions.get(req.params.docId) ?? [];
-  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
   const retainedList = filterVersionsByRetention(list, retentionDays);
   const version = list.find((v) => v.id === req.params.versionId);
   if (!version || !retainedList.some((item) => item.id === version.id)) {
@@ -91,10 +91,10 @@ router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requ
 /**
  * DELETE /api/docs/:docId/versions/:versionId
  */
-router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePermission('document.version.delete'), (req, res) => {
+router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePermission('document.version.delete'), async (req, res) => {
   if (!getDoc(req.params.docId, req.organization.id, res)) return;
   const list = versions.get(req.params.docId) ?? [];
-  const retentionDays = getVersionHistoryRetentionDays(req.organization.id);
+  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
   const retainedIds = new Set(filterVersionsByRetention(list, retentionDays).map((item) => item.id));
   if (!retainedIds.has(req.params.versionId)) {
     return res.status(404).json({ error: 'Version not found.' });

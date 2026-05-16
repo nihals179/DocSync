@@ -15,10 +15,10 @@ function ensureOrganizationContext(req, res) {
   return true;
 }
 
-function attachEntitlements(req, res, next) {
+async function attachEntitlements(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
-  const billing = refreshBillingStatus(req.organization.id);
+  const billing = await refreshBillingStatus(req.organization.id);
   if (billing && isBillingWriteBlocked(billing)) {
     return res.status(402).json({
       error: 'Subscription suspended due to billing issues. Resolve payment to continue.',
@@ -27,7 +27,7 @@ function attachEntitlements(req, res, next) {
     });
   }
 
-  const entitlements = getOrganizationEntitlements(req.organization.id);
+  const entitlements = await getOrganizationEntitlements(req.organization.id);
   if (!entitlements) {
     return res.status(404).json({ error: 'Organization entitlements unavailable.' });
   }
@@ -36,10 +36,10 @@ function attachEntitlements(req, res, next) {
   return next();
 }
 
-function requireAiQuota(req, res, next) {
+async function requireAiQuota(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
-  const check = canConsumeAiRequests(req.organization.id, 1);
+  const check = await canConsumeAiRequests(req.organization.id, 1);
   if (!check.allowed) {
     return res.status(402).json({
       error: check.reason,
@@ -54,10 +54,10 @@ function requireAiQuota(req, res, next) {
   return next();
 }
 
-function requireGrammarAccess(req, res, next) {
+async function requireGrammarAccess(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
-  const check = canUseGrammar(req.organization.id);
+  const check = await canUseGrammar(req.organization.id);
   if (!check.allowed) {
     return res.status(402).json({
       error: check.reason,
@@ -68,10 +68,10 @@ function requireGrammarAccess(req, res, next) {
   return next();
 }
 
-function consumeAiQuota(req, res, next) {
+async function consumeAiQuota(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
-  const result = consumeAiRequests(req.organization.id, 1);
+  const result = await consumeAiRequests(req.organization.id, 1);
   if (!result.allowed) {
     return res.status(402).json({
       error: result.reason,

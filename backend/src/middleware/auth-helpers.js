@@ -58,11 +58,13 @@ function nowIso() {
 }
 
 function getRequestIp(req) {
-  return req.headers['x-forwarded-for']?.toString().split(',')[0].trim() || req.ip || 'unknown';
+  if (!req) return 'unknown';
+  return req.headers?.['x-forwarded-for']?.toString().split(',')[0].trim() || req.ip || 'unknown';
 }
 
 function getUserAgent(req) {
-  return req.get('user-agent') || 'unknown';
+  if (!req) return 'unknown';
+  return req.get?.('user-agent') || req.headers?.['user-agent'] || 'unknown';
 }
 
 function isOrgIpAllowedForUser(req, user) {
@@ -101,7 +103,6 @@ function ensureUserShape(user) {
 
 function publicUser(user) {
   const current = ensureUserShape(user);
-  syncCurrentOrganizationFromMembership(current);
   return {
     id: current.id,
     name: current.name,
@@ -376,12 +377,20 @@ async function revokeAllUserSessions(userId) {
   }
 }
 
-function findUserByIdentifier(identifier) {
+async function findUserByIdentifier(identifier) {
   const normalized = identifier.toLowerCase();
-  const user = [...users.values()].find(
-    (item) => item.email === normalized || (item.username && item.username === normalized),
-  );
-  return ensureUserShape(user || null);
+  if (!isDatabaseConfigured()) return null;
+
+  const dbUser = await prisma.user.findUnique({ where: { email: normalized } });
+  if (!dbUser) return null;
+
+  return ensureUserShape({
+    ...dbUser,
+    createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
+    updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
+    lockoutUntil: dbUser.lockoutUntil ? dbUser.lockoutUntil.toISOString() : null,
+    lastLoginAt: new Date().toISOString(),
+  });
 }
 
 module.exports = {

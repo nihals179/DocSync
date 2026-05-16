@@ -41,6 +41,10 @@ const {
   verifyTwoFactorToken,
 } = require('../middleware/auth');
 const {
+  getPasswordEncryptionPublicKey,
+  decryptPassword,
+} = require('../lib/password-crypto');
+const {
   nowIso,
   getRequestIp,
   getUserAgent,
@@ -73,6 +77,17 @@ const {
 const { getAuthConfig } = require('../config/auth-config');
 
 const router = express.Router();
+
+function resolvePasswordFromBody(body) {
+  const raw = body ?? {};
+  if (raw.passwordEncrypted) {
+    return decryptPassword(String(raw.passwordEncrypted).trim());
+  }
+  if (typeof raw.password === 'string' && raw.password.length > 0) {
+    return raw.password;
+  }
+  throw new Error('Password payload is required.');
+}
 
 function audit(req, action, status, userId = null, metadata = {}) {
   const user = userId ? users.get(userId) : null;
@@ -112,8 +127,10 @@ async function ensureUserPersistedToDb(user, billing) {
   });
 
   await prisma.userBilling.upsert({
-    where: { userId: user.id },
+    where: { email: user.email },
     update: {
+      userId: user.id,
+      email: user.email,
       planId: billing.planId,
       status: billing.status,
       trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
@@ -125,6 +142,7 @@ async function ensureUserPersistedToDb(user, billing) {
     },
     create: {
       userId: user.id,
+      email: user.email,
       planId: billing.planId,
       status: billing.status,
       trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
@@ -140,7 +158,14 @@ async function ensureUserPersistedToDb(user, billing) {
 
 router.post('/register', registerRateLimit, async (req, res) => {
   const authConfig = await getAuthConfig();
-  const { name, email, password } = req.body ?? {};
+  const { name, email } = req.body ?? {};
+  let password;
+  try {
+    password = resolvePasswordFromBody(req.body);
+  } catch {
+    audit(req, 'register', 'failure', null, { reason: 'invalid-password-encryption' });
+    return res.status(400).json({ error: 'Invalid encrypted password payload.' });
+  }
   if (!name || !email || !password) {
     audit(req, 'register', 'failure', null, { reason: 'missing-fields' });
     return res.status(400).json({ error: 'name, email, and password are required.' });
@@ -155,11 +180,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
   }
 
   const normalizedEmail = String(email).toLowerCase();
-  const existing = [...users.values()].find((u) => u.email === normalizedEmail);
-  if (existing) {
-    audit(req, 'register', 'failure', existing.id, { reason: 'duplicate-email' });
-    return res.status(409).json({ error: 'An account with this email already exists.' });
-  }
+ 
   if (process.env.DATABASE_URL) {
     const existingDbUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (existingDbUser) {
@@ -184,12 +205,9 @@ router.post('/register', registerRateLimit, async (req, res) => {
     twoFactorSecret: null,
     twoFactorTempSecret: null,
   };
-  users.set(user.id, user);
-  const billing = ensureUserBillingState(user);
+  const billing = await ensureUserBillingState(user);
   try {
-    const organization = ensureTenantBootstrapForUser(user);
     await ensureUserPersistedToDb(user, billing);
-    await ensureWorkspaceForUserProvisioned(user, organization.id);
   } catch (error) {
     users.delete(user.id);
     audit(req, 'register', 'failure', user.id, { reason: 'db-persist-failed', error: String(error?.message || error) });
@@ -253,15 +271,21 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
 
 router.post('/login', loginRateLimit, async (req, res) => {
   const authConfig = await getAuthConfig();
-  const authScope = getAuthScope(req);
-  const { email, username, password, remember = false } = req.body ?? {};
+  const authScope = String(req?.get?.('x-auth-scope') || '').toLowerCase() === 'admin' ? 'admin' : 'workspace';
+  const { email, username, remember = false } = req.body ?? {};
+  try {
+    resolvePasswordFromBody(req.body);
+  } catch {
+    audit(req, 'login', 'failure', null, { reason: 'invalid-password-encryption' });
+    return res.status(400).json({ error: 'Invalid encrypted password payload.' });
+  }
   const identifier = String(email || username || '').toLowerCase();
-  if (!identifier || !password) {
+  if (!identifier || !resolvePasswordFromBody(req.body)) {
     audit(req, 'login', 'failure', null, { reason: 'missing-credentials' });
     return res.status(400).json({ error: 'email/username and password are required.' });
   }
 
-  const user = findUserByIdentifier(identifier);
+  const user = await findUserByIdentifier(identifier);
   if (!user) {
     audit(req, 'login', 'failure', null, { reason: 'unknown-user', identifier });
     return res.status(401).json({ error: 'Invalid credentials.' });
@@ -272,14 +296,13 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(423).json({ error: 'Account temporarily locked after repeated failed attempts.' });
   }
 
-  const valid = await bcrypt.compare(String(password), user.passwordHash);
+  const valid = await bcrypt.compare(String(resolvePasswordFromBody(req.body)), user.passwordHash);
   if (!valid) {
     user.failedLoginAttempts += 1;
     if (user.failedLoginAttempts >= authConfig.lockoutThreshold) {
       user.lockoutUntil = new Date(Date.now() + authConfig.lockoutMs).toISOString();
       audit(req, 'account-lockout', 'failure', user.id, { failedLoginAttempts: user.failedLoginAttempts });
     }
-    users.set(user.id, user);
     audit(req, 'login', 'failure', user.id, { failedLoginAttempts: user.failedLoginAttempts });
     return res.status(user.lockoutUntil ? 423 : 401).json({
       error: user.lockoutUntil
@@ -288,18 +311,17 @@ router.post('/login', loginRateLimit, async (req, res) => {
     });
   }
 
-        if (!authConfig.emailVerificationBypass && !user.emailVerified) {
+  if (!authConfig.emailVerificationBypass && !user.emailVerified && process.env.DOCSYNC_ENV === 'PROD') {
     audit(req, 'login', 'failure', user.id, { reason: 'email-not-verified' });
     return res.status(403).json({ error: 'Please verify your email before signing in.' });
   }
 
   user.failedLoginAttempts = 0;
   user.lockoutUntil = null;
-  users.set(user.id, user);
 
   // Legacy users may exist without org membership; bootstrap tenant context on login.
-  ensureTenantBootstrapForUser(user);
-  syncCurrentOrganizationFromMembership(user);
+  await ensureTenantBootstrapForUser(user);
+  await syncCurrentOrganizationFromMembership(user);
 
   if (user.currentOrganizationId) {
     try {
@@ -344,6 +366,19 @@ router.post('/login', loginRateLimit, async (req, res) => {
     });
   }
 
+  user.lastLoginAt = nowIso();
+  if (process.env.DATABASE_URL) {
+    await prisma.user.updateMany({
+      where: { id: user.id },
+      data: {
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
+        currentOrganizationId: user.currentOrganizationId || null,
+        lastLoginAt: new Date(user.lastLoginAt),
+      },
+    });
+  }
+
   const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(remember));
   writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login', 'success', user.id, { sessionId: session.id });
@@ -381,6 +416,16 @@ router.post('/login/2fa', loginRateLimit, async (req, res) => {
   if (!valid) {
     audit(req, 'login-2fa', 'failure', user.id);
     return res.status(401).json({ error: 'Invalid authentication code.' });
+  }
+
+  user.lastLoginAt = nowIso();
+  if (process.env.DATABASE_URL) {
+    await prisma.user.updateMany({
+      where: { id: user.id },
+      data: {
+        lastLoginAt: new Date(user.lastLoginAt),
+      },
+    });
   }
 
   const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(pending.remember));
@@ -498,7 +543,14 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
 });
 
 router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
-  const { token, password } = req.body ?? {};
+  const { token } = req.body ?? {};
+  let password;
+  try {
+    password = resolvePasswordFromBody(req.body);
+  } catch {
+    audit(req, 'password-reset', 'failure', null, { reason: 'invalid-password-encryption' });
+    return res.status(400).json({ error: 'Invalid encrypted password payload.' });
+  }
   if (!token || !password) return res.status(400).json({ error: 'token and password are required.' });
   if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
@@ -517,6 +569,10 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
   await revokeAllUserSessions(user.id);
   audit(req, 'password-reset', 'success', user.id);
   res.json({ message: 'Password updated successfully. Please sign in again.' });
+});
+
+router.get('/public-key', authRateLimit, (req, res) => {
+  res.json(getPasswordEncryptionPublicKey());
 });
 
 router.get('/audit-logs', requireAuth, async (req, res) => {

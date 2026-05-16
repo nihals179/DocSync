@@ -31,10 +31,6 @@ function normalizeSession(session) {
   };
 }
 
-function getAuthScope(req) {
-  return String(req?.get?.('x-auth-scope') || '').toLowerCase() === 'admin' ? 'admin' : 'workspace';
-}
-
 function resolveCookieNames(scope) {
   if (scope === 'admin') {
     return {
@@ -46,6 +42,11 @@ function resolveCookieNames(scope) {
     refreshCookie: REFRESH_COOKIE,
     csrfCookie: CSRF_COOKIE,
   };
+}
+
+function getAuthScope(req) {
+  const headerScope = String(req?.get?.('x-auth-scope') || req?.headers?.['x-auth-scope'] || '').toLowerCase();
+  return headerScope === 'admin' ? 'admin' : 'workspace';
 }
 
 function hashToken(token) {
@@ -129,7 +130,7 @@ async function resolveUserFromSession(sessionId) {
   }
   const user = users.get(session.userId);
   if (!user) return null;
-  syncCurrentOrganizationFromMembership(user);
+  await syncCurrentOrganizationFromMembership(user);
   return { session, user };
 }
 

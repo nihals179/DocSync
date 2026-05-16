@@ -15,6 +15,7 @@ const {
   getPlan,
   organizations,
   organizationMemberships,
+  upsertOrganizationBillingState,
   updateOrganizationSecurityState,
   users,
 } = require('../store');
@@ -87,28 +88,26 @@ router.get('/current/security', requirePermission('organization.read'), (req, re
   });
 });
 
-router.post('/current/enterprise/environment', requirePermission('organization.member.manage'), (req, res) => {
+router.post('/current/enterprise/environment', requirePermission('organization.member.manage'), async (req, res) => {
   const organization = organizations.get(req.organization.id);
   if (!organization) return res.status(404).json({ error: 'Organization not found.' });
 
   const enterprisePlan = getPlan('enterprise');
-  const existingBilling = getOrganizationBillingState(req.organization.id) || {};
+  const existingBilling = await getOrganizationBillingState(req.organization.id) || {};
   const requestedSeats = Number(req.body?.purchasedSeats);
   const purchasedSeats = Number.isFinite(requestedSeats) && requestedSeats > 0
     ? Math.floor(requestedSeats)
     : Math.max(Number(existingBilling.purchasedSeats || 0), enterprisePlan.limits.seats);
 
   const now = nowIso();
-  organization.billing = {
-    ...existingBilling,
+  const billing = await upsertOrganizationBillingState(req.organization.id, {
     planId: 'enterprise',
     status: 'active',
     purchasedSeats,
     trialUsed: true,
     trialEndsAt: null,
     updatedAt: now,
-  };
-  organizations.set(organization.id, organization);
+  });
 
   const domains = Array.isArray(req.body?.domains)
     ? req.body.domains.map((value) => String(value || '').toLowerCase().trim().replace(/^@+/, '')).filter(Boolean)
@@ -150,15 +149,15 @@ router.post('/current/enterprise/environment', requirePermission('organization.m
     };
   });
 
-  const entitlements = getOrganizationEntitlements(req.organization.id);
+  const entitlements = await getOrganizationEntitlements(req.organization.id);
 
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
     action: 'organization.enterprise.environment.create',
     metadata: {
-      planId: organization.billing.planId,
-      seatsPurchased: organization.billing.purchasedSeats,
+      planId: billing.planId,
+      seatsPurchased: billing.purchasedSeats,
       requireMfa: security.requireMfa,
       domainCount: security.domainMappings.length,
       createdSsoProviderId: createdProvider?.id || null,
@@ -171,7 +170,7 @@ router.post('/current/enterprise/environment', requirePermission('organization.m
       id: organization.id,
       name: organization.name,
     },
-    billing: organization.billing,
+    billing,
     security: {
       requireMfa: security.requireMfa,
       sessionDurationHours: security.sessionDurationHours,
@@ -391,7 +390,7 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
 
     const needsSeat = !existingMembership || existingMembership.status !== 'active';
     if (needsSeat) {
-      const seatCheck = canAssignSeats(req.organization.id, 1);
+      const seatCheck = await canAssignSeats(req.organization.id, 1);
       if (!seatCheck.allowed) {
         failed.push({ email: parsed.email, reason: seatCheck.reason, code: 'seat_limit_exceeded' });
         continue;
@@ -399,7 +398,7 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
     }
 
     if (!existingMembership || existingMembership.status !== 'active') {
-      const collaboratorCheck = canAssignCollaborators(req.organization.id, 1);
+      const collaboratorCheck = await canAssignCollaborators(req.organization.id, 1);
       if (!collaboratorCheck.allowed) {
         failed.push({ email: parsed.email, reason: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
         continue;
@@ -454,7 +453,7 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
       user.currentOrganizationId = req.organization.id;
     }
 
-    const orgBilling = getOrganizationBillingState(req.organization.id);
+    const orgBilling = await getOrganizationBillingState(req.organization.id);
     if (orgBilling?.planId === 'enterprise') {
       user.accountType = 'Enterprise';
       if (process.env.DATABASE_URL) {

@@ -8,6 +8,7 @@ const {
 	organizationInvites,
 	authSessions,
 	invoices,
+	organizationBilling,
 	userBilling,
 	organizationUsage,
 	userUsage,
@@ -26,6 +27,147 @@ const {
 
 function nowIso() {
 	return new Date().toISOString();
+}
+
+function isDatabaseConfigured() {
+	return Boolean(process.env.DATABASE_URL);
+}
+
+function toIsoOrNull(value) {
+	if (!value) return null;
+	return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeUserBillingState(input, userId, fallbackEmail = null) {
+	const resolvedEmail = String(input?.email || fallbackEmail || '').toLowerCase().trim();
+	const state = {
+		userId,
+		email: resolvedEmail || null,
+		planId: input?.planId,
+		status: input?.status,
+		trialEndsAt: toIsoOrNull(input?.trialEndsAt),
+		trialUsed: input?.trialUsed,
+		subscriptionId: input?.subscriptionId || null,
+		customerId: input?.customerId || null,
+		currentPeriodEndAt: toIsoOrNull(input?.currentPeriodEndAt),
+		graceEndsAt: toIsoOrNull(input?.graceEndsAt),
+		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
+	};
+
+	if (!state.planId || !PLAN_CATALOG[state.planId]) state.planId = 'free';
+	if (!state.status) state.status = 'active';
+	state.trialUsed = typeof state.trialUsed === 'boolean' ? state.trialUsed : false;
+	return state;
+}
+
+function normalizeOrganizationBillingState(input, organizationId) {
+	const state = {
+		organizationId,
+		planId: input?.planId,
+		status: input?.status,
+		purchasedSeats: Number(input?.purchasedSeats || 0),
+		trialEndsAt: toIsoOrNull(input?.trialEndsAt),
+		trialUsed: input?.trialUsed,
+		subscriptionId: input?.subscriptionId || null,
+		customerId: input?.customerId || null,
+		currentPeriodEndAt: toIsoOrNull(input?.currentPeriodEndAt),
+		graceEndsAt: toIsoOrNull(input?.graceEndsAt),
+		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
+	};
+
+	if (!state.planId || !PLAN_CATALOG[state.planId]) state.planId = 'free';
+	if (!state.status) state.status = 'active';
+	if (!state.purchasedSeats || state.purchasedSeats < 1) {
+		state.purchasedSeats = getPlan(state.planId).limits.seats;
+	}
+	state.trialUsed = typeof state.trialUsed === 'boolean' ? state.trialUsed : false;
+	return state;
+}
+
+async function readUserBillingStateFromDb(userId, email = null) {
+	if (!isDatabaseConfigured()) return null;
+	const normalizedEmail = String(email || '').toLowerCase().trim();
+	const row = await prisma.userBilling.findUnique({ where: { userId } });
+	if (!row && normalizedEmail) {
+		const byEmail = await prisma.userBilling.findUnique({ where: { email: normalizedEmail } });
+		if (byEmail) {
+			return normalizeUserBillingState(byEmail, byEmail.userId, normalizedEmail);
+		}
+	}
+	if (!row) return null;
+	return normalizeUserBillingState(row, userId, normalizedEmail);
+}
+
+async function writeUserBillingStateToDb(state) {
+	if (!isDatabaseConfigured() || !state?.userId) return;
+	const normalizedEmail = String(state.email || '').toLowerCase().trim();
+	if (!normalizedEmail) return;
+	await prisma.userBilling.upsert({
+		where: { email: normalizedEmail },
+		update: {
+			userId: state.userId,
+			email: normalizedEmail,
+			planId: state.planId,
+			status: state.status,
+			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+			trialUsed: Boolean(state.trialUsed),
+			subscriptionId: state.subscriptionId || null,
+			customerId: state.customerId || null,
+			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+		},
+		create: {
+			userId: state.userId,
+			email: normalizedEmail,
+			planId: state.planId,
+			status: state.status,
+			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+			trialUsed: Boolean(state.trialUsed),
+			subscriptionId: state.subscriptionId || null,
+			customerId: state.customerId || null,
+			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+		},
+	});
+}
+
+async function readOrganizationBillingStateFromDb(organizationId) {
+	if (!isDatabaseConfigured()) return null;
+	const row = await prisma.organizationBilling.findUnique({
+		where: { organizationId },
+	});
+	if (!row) return null;
+	return normalizeOrganizationBillingState(row, organizationId);
+}
+
+async function writeOrganizationBillingStateToDb(organizationId, state) {
+	if (!isDatabaseConfigured() || !organizationId || !state) return;
+	await prisma.organizationBilling.upsert({
+		where: { organizationId },
+		update: {
+			planId: state.planId,
+			status: state.status,
+			purchasedSeats: state.purchasedSeats,
+			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+			trialUsed: Boolean(state.trialUsed),
+			subscriptionId: state.subscriptionId || null,
+			customerId: state.customerId || null,
+			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+		},
+		create: {
+			organizationId,
+			planId: state.planId,
+			status: state.status,
+			purchasedSeats: state.purchasedSeats,
+			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+			trialUsed: Boolean(state.trialUsed),
+			subscriptionId: state.subscriptionId || null,
+			customerId: state.customerId || null,
+			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+		},
+	});
 }
 
 function monthKeyFromDate(input = new Date()) {
@@ -233,75 +375,85 @@ function findOrganizationByDomain(emailOrDomain) {
 	return null;
 }
 
-function ensureOrganizationBillingState(organization) {
-	if (!organization.billing) {
-		organization.billing = {
-			planId: 'free',
-			status: 'active',
-			purchasedSeats: PLAN_CATALOG.free.limits.seats,
-			trialEndsAt: null,
-			trialUsed: false,
-			subscriptionId: null,
-			customerId: null,
-			currentPeriodEndAt: null,
-			graceEndsAt: null,
-			updatedAt: nowIso(),
-		};
+async function ensureOrganizationBillingState(organization) {
+	if (!organization?.id) return null;
+	let billing = null;
+	if (isDatabaseConfigured()) {
+		billing = await readOrganizationBillingStateFromDb(organization.id);
+	} else {
+		const existing = organizationBilling.get(organization.id);
+		billing = normalizeOrganizationBillingState(existing || null, organization.id);
 	}
-	if (!organization.billing.planId || !PLAN_CATALOG[organization.billing.planId]) {
-		organization.billing.planId = 'free';
+
+	if (!billing) {
+		billing = normalizeOrganizationBillingState(null, organization.id);
+		if (isDatabaseConfigured()) {
+			await writeOrganizationBillingStateToDb(organization.id, billing);
+		}
 	}
-	if (!organization.billing.purchasedSeats || organization.billing.purchasedSeats < 1) {
-		organization.billing.purchasedSeats = getPlan(organization.billing.planId).limits.seats;
-	}
-	if (typeof organization.billing.trialUsed !== 'boolean') {
-		organization.billing.trialUsed = false;
-	}
-	if (!organization.billing.updatedAt) organization.billing.updatedAt = nowIso();
-	organizations.set(organization.id, organization);
-	return organization.billing;
+
+	organizationBilling.set(organization.id, billing);
+	return billing;
 }
 
-function getOrganizationBillingState(organizationId) {
+async function getOrganizationBillingState(organizationId) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return null;
 	return ensureOrganizationBillingState(organization);
 }
 
-function ensureUserBillingState(user) {
+async function upsertOrganizationBillingState(organizationId, updates = {}) {
+	const organization = organizations.get(organizationId);
+	if (!organization) return null;
+	const current = await ensureOrganizationBillingState(organization);
+	const next = normalizeOrganizationBillingState({
+		...current,
+		...updates,
+		updatedAt: nowIso(),
+	}, organizationId);
+	organizationBilling.set(organizationId, next);
+	if (isDatabaseConfigured()) {
+		await writeOrganizationBillingStateToDb(organizationId, next);
+	}
+	return next;
+}
+
+async function ensureUserBillingState(user) {
 	if (!user?.id) return null;
-	const existing = userBilling.get(user.id);
-	if (existing) {
-		if (!existing.planId || !PLAN_CATALOG[existing.planId]) existing.planId = 'free';
-		if (!existing.updatedAt) existing.updatedAt = nowIso();
-		userBilling.set(user.id, existing);
-		return existing;
+
+	if (isDatabaseConfigured()) {
+		const direct = await readUserBillingStateFromDb(user.id, user.email);
+		if (direct) {
+			const normalizedDirect = normalizeUserBillingState(direct, user.id, user.email);
+			userBilling.set(user.id, normalizedDirect);
+			await writeUserBillingStateToDb(normalizedDirect);
+			return normalizedDirect;
+		}
+		const created = normalizeUserBillingState(null, user.id, user.email);
+		await writeUserBillingStateToDb(created);
+		userBilling.set(user.id, created);
+		return created;
 	}
 
-	const state = {
-		userId: user.id,
-		planId: 'free',
-		status: 'active',
-		trialEndsAt: null,
-		trialUsed: false,
-		subscriptionId: null,
-		customerId: null,
-		currentPeriodEndAt: null,
-		graceEndsAt: null,
-		updatedAt: nowIso(),
-	};
+	const existing = userBilling.get(user.id);
+	if (existing) {
+		const normalized = normalizeUserBillingState(existing, user.id, user.email);
+		userBilling.set(user.id, normalized);
+		return normalized;
+	}
+	const state = normalizeUserBillingState(null, user.id, user.email);
 	userBilling.set(user.id, state);
 	return state;
 }
 
-function getUserBillingState(userId) {
+async function getUserBillingState(userId) {
 	const user = users.get(userId);
 	if (!user) return null;
 	return ensureUserBillingState(user);
 }
 
-function refreshUserBillingStatus(userId) {
-	const billing = getUserBillingState(userId);
+async function refreshUserBillingStatus(userId) {
+	const billing = await getUserBillingState(userId);
 	if (!billing) return null;
 	const nowMs = Date.now();
 
@@ -331,13 +483,16 @@ function refreshUserBillingStatus(userId) {
 	}
 
 	userBilling.set(billing.userId, billing);
+	if (isDatabaseConfigured()) {
+		await writeUserBillingStateToDb(billing);
+	}
 	return billing;
 }
 
-function refreshBillingStatus(organizationId) {
+async function refreshBillingStatus(organizationId) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return null;
-	const billing = ensureOrganizationBillingState(organization);
+	const billing = await ensureOrganizationBillingState(organization);
 	const nowMs = Date.now();
 
 	if ((billing.status === 'past_due' || billing.status === 'grace') && billing.graceEndsAt) {
@@ -366,7 +521,10 @@ function refreshBillingStatus(organizationId) {
 		}
 	}
 
-	organizations.set(organization.id, organization);
+	organizationBilling.set(organization.id, billing);
+	if (isDatabaseConfigured()) {
+		await writeOrganizationBillingStateToDb(organization.id, billing);
+	}
 	return billing;
 }
 
@@ -429,8 +587,8 @@ function countUserDocuments(userId) {
 	return total;
 }
 
-function getUserEntitlements(userId) {
-	const billing = refreshUserBillingStatus(userId) || getUserBillingState(userId);
+async function getUserEntitlements(userId) {
+	const billing = await refreshUserBillingStatus(userId) || await getUserBillingState(userId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
 	const usage = getUserUsage(userId);
@@ -461,8 +619,8 @@ function getUserEntitlements(userId) {
 	};
 }
 
-function canCreateDocuments(organizationId, additionalDocuments = 1) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function canCreateDocuments(organizationId, additionalDocuments = 1) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documents;
@@ -480,8 +638,8 @@ function canCreateDocuments(organizationId, additionalDocuments = 1) {
 	return { allowed: true, current, limit };
 }
 
-function canUpdateDocuments(organizationId, additionalUpdates = 1) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function canUpdateDocuments(organizationId, additionalUpdates = 1) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documentUpdatesPerMonth;
@@ -501,8 +659,8 @@ function canUpdateDocuments(organizationId, additionalUpdates = 1) {
 	return { allowed: true, usage, limit };
 }
 
-function consumeDocumentUpdates(organizationId, count = 1) {
-	const check = canUpdateDocuments(organizationId, count);
+async function consumeDocumentUpdates(organizationId, count = 1) {
+	const check = await canUpdateDocuments(organizationId, count);
 	if (!check.allowed) return check;
 	const usage = getOrganizationUsage(organizationId);
 	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
@@ -510,10 +668,10 @@ function consumeDocumentUpdates(organizationId, count = 1) {
 	return { allowed: true, usage };
 }
 
-function canUseGrammar(organizationId) {
+async function canUseGrammar(organizationId) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return { allowed: false, reason: 'Organization not found.' };
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
 	if (isWithinPlanAccessDays(organization, plan.limits.grammarAccessDays)) {
@@ -539,8 +697,8 @@ function getCollaboratorCount(organizationId) {
 	).length;
 }
 
-function canAssignSeats(organizationId, additionalSeats = 1) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function canAssignSeats(organizationId, additionalSeats = 1) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const assignedSeats = getAssignedSeatCount(organizationId);
 	const nextAssigned = assignedSeats + Math.max(0, additionalSeats);
@@ -553,8 +711,8 @@ function canAssignSeats(organizationId, additionalSeats = 1) {
 	return { allowed: true, assignedSeats, purchasedSeats: billing.purchasedSeats };
 }
 
-function canAssignCollaborators(organizationId, additionalCollaborators = 1) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function canAssignCollaborators(organizationId, additionalCollaborators = 1) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
 	const current = getCollaboratorCount(organizationId);
@@ -578,10 +736,10 @@ function calculateOrganizationStorageBytes(organizationId) {
 	return total;
 }
 
-function canConsumeAiRequests(organizationId, count = 1) {
+async function canConsumeAiRequests(organizationId, count = 1) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return { allowed: false, reason: 'Organization not found.' };
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	if (billing.status === 'suspended') {
 		return { allowed: false, reason: 'Subscription suspended due to failed payments.' };
@@ -604,8 +762,8 @@ function canConsumeAiRequests(organizationId, count = 1) {
 	return { allowed: true, usage, limit: plan.limits.aiRequestsPerMonth };
 }
 
-function consumeAiRequests(organizationId, count = 1) {
-	const check = canConsumeAiRequests(organizationId, count);
+async function consumeAiRequests(organizationId, count = 1) {
+	const check = await canConsumeAiRequests(organizationId, count);
 	if (!check.allowed) return check;
 	const usage = getOrganizationUsage(organizationId);
 	usage.aiRequests += Math.max(0, count);
@@ -613,8 +771,8 @@ function consumeAiRequests(organizationId, count = 1) {
 	return { allowed: true, usage };
 }
 
-function getOrganizationEntitlements(organizationId) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function getOrganizationEntitlements(organizationId) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
 	const usage = getOrganizationUsage(organizationId);
@@ -647,8 +805,8 @@ function getOrganizationEntitlements(organizationId) {
 	};
 }
 
-function getVersionHistoryRetentionDays(organizationId) {
-	const billing = refreshBillingStatus(organizationId) || getOrganizationBillingState(organizationId);
+async function getVersionHistoryRetentionDays(organizationId) {
+	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
 	return plan.limits.versionHistoryDays;
@@ -741,8 +899,11 @@ function markWebhookJobFailed(jobId, errorMessage) {
 }
 
 function ensureOrganizationForUser(user) {
+	const normalizedEmail = String(user?.email || '').toLowerCase().trim();
 	const existingMembership = [...organizationMemberships.values()].find(
-		(membership) => membership.userId === user.id && membership.status === 'active',
+		(membership) =>
+			membership.status === 'active' &&
+			String(users.get(membership.userId)?.email || '').toLowerCase().trim() === normalizedEmail,
 	); 
 
 	if (existingMembership) {
@@ -784,14 +945,34 @@ function ensureOrganizationForUser(user) {
 	return organization;
 }
 
-function syncCurrentOrganizationFromMembership(user) {
+async function syncCurrentOrganizationFromMembership(user) {
 	if (!user) return null;
-	const activeMemberships = [...organizationMemberships.values()].filter(
-		(membership) => membership.userId === user.id && membership.status === 'active',
-	);
+	if (!isDatabaseConfigured()) return null;
+	const normalizedEmail = String(user.email || '').toLowerCase().trim();
+	if (!normalizedEmail) return null;
+
+	const dbUser = await prisma.user.findUnique({
+		where: { email: normalizedEmail },
+		select: { id: true },
+	});
+	if (!dbUser) return null;
+
+	const activeMemberships = await prisma.organizationMembership.findMany({
+		where: {
+			userId: dbUser.id,
+			status: 'active',
+		},
+		orderBy: {
+			createdAt: 'asc',
+		},
+	});
 	if (!activeMemberships.length) {
 		user.currentOrganizationId = null;
 		users.set(user.id, user);
+		await prisma.user.updateMany({
+			where: { email: normalizedEmail },
+			data: { currentOrganizationId: null },
+		});
 		return null;
 	}
 
@@ -799,17 +980,39 @@ function syncCurrentOrganizationFromMembership(user) {
 		(membership) => membership.organizationId === user.currentOrganizationId,
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
-	const organization = organizations.get(selectedMembership.organizationId) || null;
+	let organization = organizations.get(selectedMembership.organizationId) || null;
+	if (!organization) {
+		const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
+		if (row) {
+			organization = {
+				id: row.id,
+				name: row.name,
+				ownerUserId: row.ownerUserId,
+				createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+				updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+				...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
+			};
+			organizations.set(organization.id, organization);
+		}
+	}
 	if (!organization) {
 		user.currentOrganizationId = null;
 		users.set(user.id, user);
+		await prisma.user.updateMany({
+			where: { email: normalizedEmail },
+			data: { currentOrganizationId: null },
+		});
 		return null;
 	}
 
-	ensureOrganizationBillingState(organization);
+	await ensureOrganizationBillingState(organization);
 	ensureOrganizationSecurityState(organization);
 	user.currentOrganizationId = organization.id;
 	users.set(user.id, user);
+	await prisma.user.updateMany({
+		where: { email: normalizedEmail },
+		data: { currentOrganizationId: organization.id },
+	});
 	return organization;
 }
 
@@ -906,12 +1109,68 @@ function hydrateLegacyResourcesForUser(user, organizationId) {
 	}
 }
 
-function ensureTenantBootstrapForUser(user) {
-	const organization = ensureOrganizationForUser(user);
-	ensureOrganizationBillingState(organization);
-	hydrateLegacyResourcesForUser(user, organization.id);
-	ensureWorkspaceForUser(user, organization.id);
-	return organization;
+async function ensureTenantBootstrapForUser(user) {
+	if (!user) return null;
+	if (!isDatabaseConfigured()) return null;
+	const normalizedEmail = String(user.email || '').toLowerCase().trim();
+	if (!normalizedEmail) return null;
+
+	const dbUser = await prisma.user.findUnique({
+		where: { email: normalizedEmail },
+		select: { id: true, name: true, currentOrganizationId: true ,email: true},
+	});
+	if (!dbUser) return null;
+
+	const effectiveUserId = dbUser.email ;
+	const now = nowIso();
+	const activeMemberships = await prisma.organizationMembership.findMany({
+		where: {
+			email: effectiveUserId,
+			status: 'active',
+		},
+		orderBy: {
+			createdAt: 'asc',
+		},
+	});
+
+	if(activeMemberships.length === 0) {
+		await prisma.userBilling.deleteMany({
+			where: {
+				userId: dbUser.id,
+			},
+		});
+
+		await prisma.user.updateMany({
+				where: { email: normalizedEmail },
+				data: { currentOrganizationId: activeMemberships[0].organizationId },
+		});
+
+		await ensureOrganizationBillingState(organization);
+		const security = ensureOrganizationSecurityState(organization);
+		await prisma.organization.updateMany({
+			where: { id: organization.id },
+			data: { security },
+		});
+
+		user.currentOrganizationId = organization.id;
+		await prisma.user.updateMany({
+			where: { email: normalizedEmail },
+			data: { currentOrganizationId: organization.id },
+		});
+
+		await prisma.document.updateMany({
+			where: {
+				userId: user.id,
+				organizationId: null,
+			},
+			data: {
+				organizationId: organization.id,
+			},
+		});
+
+		await ensureWorkspaceForUserProvisioned(user, organization.id);
+		return organization;
+	}	
 }
 
 module.exports = {
@@ -923,6 +1182,7 @@ module.exports = {
 	organizationInvites,
 	authSessions,
 	invoices,
+	organizationBilling,
 	userBilling,
 	organizationUsage,
 	userUsage,
@@ -940,6 +1200,7 @@ module.exports = {
 	getPlan,
 	getAllPlans,
 	getOrganizationBillingState,
+	upsertOrganizationBillingState,
 	ensureUserBillingState,
 	getOrganizationSecurityState,
 	findOrganizationByDomain,

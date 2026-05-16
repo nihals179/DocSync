@@ -30,6 +30,7 @@ async function ensureDefaultOrganizationForUser(user) {
       id: uuidv4(),
       organizationId,
       userId: user.id,
+      email: String(user.email || '').toLowerCase(),
       billingAdmin: true,
       status: 'active',
       createdAt: now,

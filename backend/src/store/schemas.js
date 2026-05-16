@@ -5,9 +5,6 @@
 
 const { createPersistentMap, initializePersistentMaps } = require('./persistence');
 
-/** @type {Map<string, { id: string, name: string, username?: string, email: string, passwordHash: string, createdAt: string, emailVerified: boolean, failedLoginAttempts: number, lockoutUntil: string | null, role?: string, twoFactorEnabled: boolean, twoFactorSecret: string | null, twoFactorTempSecret: string | null }>} */
-const users = createPersistentMap('users');
-
 /** @type {Map<string, { id: string, name: string, ownerUserId: string, createdAt: string, updatedAt: string, billing?: Record<string, unknown> }>} */
 const organizations = createPersistentMap('organizations');
 
@@ -23,7 +20,10 @@ const authSessions = createPersistentMap('authSessions');
 /** @type {Map<string, { id: string, organizationId: string, provider: string, status: 'draft' | 'open' | 'paid' | 'failed' | 'void', amountCents: number, currency: string, periodStart: string | null, periodEnd: string | null, issuedAt: string, paidAt: string | null, hostedUrl: string | null }>} */
 const invoices = createPersistentMap('invoices');
 
-/** @type {Map<string, { userId: string, planId: string, status: string, trialEndsAt: string | null, trialUsed: boolean, subscriptionId: string | null, customerId: string | null, currentPeriodEndAt: string | null, graceEndsAt: string | null, updatedAt: string }>} */
+/** @type {Map<string, { organizationId: string, planId: string, status: string, purchasedSeats: number, trialEndsAt: string | null, trialUsed: boolean, subscriptionId: string | null, customerId: string | null, currentPeriodEndAt: string | null, graceEndsAt: string | null, updatedAt: string }>} */
+const organizationBilling = createPersistentMap('organizationBilling');
+
+/** @type {Map<string, { userId: string, email?: string | null, planId: string, status: string, trialEndsAt: string | null, trialUsed: boolean, subscriptionId: string | null, customerId: string | null, currentPeriodEndAt: string | null, graceEndsAt: string | null, updatedAt: string }>} */
 const userBilling = createPersistentMap('userBilling');
 
 /** @type {Map<string, { organizationId: string, monthKey: string, aiRequests: number }>} */
@@ -62,6 +62,9 @@ const todos = createPersistentMap('todos');
 /** @type {Map<string, { id: string, name: string, ownerId: string, memberIds: string[], createdAt: string, updatedAt: string }>} */
 const workspaces = createPersistentMap('workspaces');
 
+/** @type {Map<string, { id: string, name: string, email: string, passwordHash: string, createdAt: string, accountType?: string, emailVerified?: boolean, failedLoginAttempts?: number, lockoutUntil?: string | null, role?: string, twoFactorEnabled?: boolean, twoFactorSecret?: string | null, twoFactorTempSecret?: string | null, currentOrganizationId?: string | null, lastLoginAt?: string | null }>} */
+const users = createPersistentMap('users');
+
 module.exports = {
 	users,
 	organizations,
@@ -69,6 +72,7 @@ module.exports = {
 	organizationInvites,
 	authSessions,
 	invoices,
+	organizationBilling,
 	userBilling,
 	organizationUsage,
 	userUsage,

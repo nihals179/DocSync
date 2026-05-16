@@ -31,9 +31,9 @@ function bytes(value) {
  * Create a new document.
  * Body: { title?, content? }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, (req, res) => {
+router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
   const { title = 'Untitled', content = '', parentId = null, workspaceId = null } = req.body;
-  const createCheck = canCreateDocuments(req.organization.id, 1);
+  const createCheck = await canCreateDocuments(req.organization.id, 1);
   if (!createCheck.allowed) {
     return res.status(402).json({
       error: createCheck.reason,
@@ -41,7 +41,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
     });
   }
 
-  const entitlements = getOrganizationEntitlements(req.organization.id);
+  const entitlements = await getOrganizationEntitlements(req.organization.id);
   if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
 
   const currentStorage = calculateOrganizationStorageBytes(req.organization.id);
@@ -141,11 +141,11 @@ router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
  * Update title and/or content.
  * Body: { title?, content? }
  */
-router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.update'), attachEntitlements, (req, res) => {
+router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.update'), attachEntitlements, async (req, res) => {
   const doc = getDocForOrg(req.params.id, req.organization.id);
   if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
-  const updateCheck = canUpdateDocuments(req.organization.id, 1);
+  const updateCheck = await canUpdateDocuments(req.organization.id, 1);
   if (!updateCheck.allowed) {
     return res.status(402).json({
       error: updateCheck.reason,
@@ -154,7 +154,7 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   }
 
   if (req.body.content !== undefined) {
-    const entitlements = getOrganizationEntitlements(req.organization.id);
+    const entitlements = await getOrganizationEntitlements(req.organization.id);
     if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
 
     const currentStorage = calculateOrganizationStorageBytes(req.organization.id);
@@ -176,7 +176,7 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   if (req.body.sortOrder !== undefined) doc.sortOrder = req.body.sortOrder;
   doc.updatedAt = new Date().toISOString();
   documents.set(doc.id, doc);
-  consumeDocumentUpdates(req.organization.id, 1);
+  await consumeDocumentUpdates(req.organization.id, 1);
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,

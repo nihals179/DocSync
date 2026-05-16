@@ -8,6 +8,7 @@ const {
   userUsage,
   organizations,
   organizationMemberships,
+  upsertOrganizationBillingState,
 } = require('../store');
 
 const TEST_PASSWORD = process.env.SEED_TEST_PASSWORD || 'Password123!';
@@ -78,8 +79,10 @@ async function upsertUserWithBilling({
   });
 
   const persistedBilling = await prisma.userBilling.upsert({
-    where: { userId },
+    where: { email: normalizedEmail },
     update: {
+      userId,
+      email: normalizedEmail,
       planId,
       status: billingStatus,
       trialEndsAt: null,
@@ -91,6 +94,7 @@ async function upsertUserWithBilling({
     },
     create: {
       userId,
+      email: normalizedEmail,
       planId,
       status: billingStatus,
       trialEndsAt: null,
@@ -204,18 +208,6 @@ async function upsertEnterpriseMembers() {
     update: {
       name: 'Test Enterprise Shared Org',
       ownerUserId: owner.userId,
-      billing: {
-        planId: 'enterprise',
-        status: 'active',
-        purchasedSeats: 50,
-        trialEndsAt: null,
-        trialUsed: true,
-        subscriptionId: 'sub_test_enterprise_shared',
-        customerId: 'cus_test_enterprise_shared',
-        currentPeriodEndAt: daysFromNow(30),
-        graceEndsAt: null,
-        updatedAt: now,
-      },
       security: {
         requireMfa: false,
         sessionDurationHours: 8,
@@ -231,18 +223,6 @@ async function upsertEnterpriseMembers() {
       name: 'Test Enterprise Shared Org',
       ownerUserId: owner.userId,
       createdAt: now,
-      billing: {
-        planId: 'enterprise',
-        status: 'active',
-        purchasedSeats: 50,
-        trialEndsAt: null,
-        trialUsed: true,
-        subscriptionId: 'sub_test_enterprise_shared',
-        customerId: 'cus_test_enterprise_shared',
-        currentPeriodEndAt: daysFromNow(30),
-        graceEndsAt: null,
-        updatedAt: now,
-      },
       security: {
         requireMfa: false,
         sessionDurationHours: 8,
@@ -259,10 +239,22 @@ async function upsertEnterpriseMembers() {
     id: persistedOrganization.id,
     name: persistedOrganization.name,
     ownerUserId: persistedOrganization.ownerUserId,
-    billing: persistedOrganization.billing,
     security: persistedOrganization.security,
     createdAt: new Date(persistedOrganization.createdAt).toISOString(),
     updatedAt: new Date(persistedOrganization.updatedAt).toISOString(),
+  });
+
+  await upsertOrganizationBillingState(organizationId, {
+    planId: 'enterprise',
+    status: 'active',
+    purchasedSeats: 50,
+    trialEndsAt: null,
+    trialUsed: true,
+    subscriptionId: 'sub_test_enterprise_shared',
+    customerId: 'cus_test_enterprise_shared',
+    currentPeriodEndAt: daysFromNow(30),
+    graceEndsAt: null,
+    updatedAt: now,
   });
 
   for (const member of seededUsers) {
