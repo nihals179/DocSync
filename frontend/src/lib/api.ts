@@ -217,6 +217,8 @@ export type AuthSuccess = {
   csrfToken: string;
   user: AuthUser;
   session: AuthSessionSummary;
+  mfaSetupRequired?: boolean;
+  message?: string;
 };
 
 export type TwoFactorPending = {

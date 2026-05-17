@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
+const { isDatabaseConfigured } = require('./runtime-utils');
 const { auditLogs, nowIso } = require('../store');
 
 const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
@@ -10,10 +11,6 @@ const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
 
 let auditFileReady = false;
 const THIS_FILE = path.resolve(__filename);
-
-function isDatabaseConfigured() {
-	return Boolean(process.env.DATABASE_URL);
-}
 
 function normalizeAuditEntry(entry) {
 	if (!entry) return null;

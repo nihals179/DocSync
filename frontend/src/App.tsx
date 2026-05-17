@@ -2000,6 +2000,10 @@ function App() {
   const handleAuthSuccess = useCallback(
     async (auth: AuthSuccess) => {
       applySession(auth);
+      if (auth.mfaSetupRequired) {
+        navigate('/security?setupMfa=1', { replace: true });
+        return;
+      }
       navigate('/workspace', { replace: true });
     },
     [applySession, navigate],

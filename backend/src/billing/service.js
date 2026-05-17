@@ -20,6 +20,7 @@ const {
   users,
   upsertInvoice,
 } = require('../store');
+const { isDatabaseConfigured } = require('../lib/runtime-utils');
 
 let workerStarted = false;
 
@@ -29,13 +30,28 @@ function ensureOrganization(organizationId) {
   return organization;
 }
 
-function promoteOrganizationMembersToEnterprise(organizationId) {
-  const activeMemberUserIds = [...organizationMemberships.values()]
-    .filter((membership) => membership.organizationId === organizationId && membership.status === 'active')
-    .map((membership) => membership.userId);
+async function promoteOrganizationMembersToEnterprise(organizationId) {
+  const activeMemberUserIds = isDatabaseConfigured()
+    ? (await prisma.organizationMembership.findMany({
+      where: { organizationId, status: 'active' },
+      select: { userId: true },
+    })).map((membership) => membership.userId)
+    : [...organizationMemberships.values()]
+      .filter((membership) => membership.organizationId === organizationId && membership.status === 'active')
+      .map((membership) => membership.userId);
 
   for (const userId of activeMemberUserIds) {
-    const user = users.get(userId);
+    let user = users.get(userId);
+    if (!user && isDatabaseConfigured()) {
+      const dbUser = await prisma.user.findUnique({ where: { id: userId } });
+      if (dbUser) {
+        user = {
+          ...dbUser,
+          createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
+          updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
+        };
+      }
+    }
     if (!user) continue;
     if (user.accountType !== 'Enterprise') {
       user.accountType = 'Enterprise';
@@ -43,11 +59,11 @@ function promoteOrganizationMembersToEnterprise(organizationId) {
     }
   }
 
-  if (!process.env.DATABASE_URL || activeMemberUserIds.length === 0) return;
-  void prisma.user.updateMany({
+  if (!isDatabaseConfigured() || activeMemberUserIds.length === 0) return;
+  await prisma.user.updateMany({
     where: { id: { in: activeMemberUserIds } },
     data: { accountType: 'Enterprise' },
-  }).catch(() => {});
+  });
 }
 
 async function applySubscriptionState({ organizationId, planId, purchasedSeats, subscriptionId, customerId, trialDays = 0, periodDays = 30 }) {
@@ -78,7 +94,7 @@ async function applySubscriptionState({ organizationId, planId, purchasedSeats, 
 
   billing.graceEndsAt = null;
   if (plan.id === 'enterprise') {
-    promoteOrganizationMembersToEnterprise(organizationId);
+    await promoteOrganizationMembersToEnterprise(organizationId);
   }
   return upsertOrganizationBillingState(organizationId, billing);
 }

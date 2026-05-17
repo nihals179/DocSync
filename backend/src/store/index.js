@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
+const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN } = require('./catalog');
 const {
 	users,
@@ -25,18 +26,9 @@ const {
 	initializePersistentMaps: initializeSchemaPersistentMaps,
 } = require('./schemas');
 
-function nowIso() {
-	return new Date().toISOString();
-}
-
-function isDatabaseConfigured() {
-	return Boolean(process.env.DATABASE_URL);
-}
-
-function toIsoOrNull(value) {
-	if (!value) return null;
-	return value instanceof Date ? value.toISOString() : String(value);
-}
+const nowIso = () => runtimeNowIso();
+const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
+const toIsoOrNull = (value) => runtimeToIsoOrNull(value);
 
 function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	const resolvedEmail = String(input?.email || fallbackEmail || '').toLowerCase().trim();
@@ -441,49 +433,6 @@ async function ensureUserBillingState(user) {
 	return state;
 }
 
-async function getUserBillingState(userId) {
-	const user = users.get(userId);
-	if (!user) return null;
-	return ensureUserBillingState(user);
-}
-
-async function refreshUserBillingStatus(userId) {
-	const billing = await getUserBillingState(userId);
-	if (!billing) return null;
-	const nowMs = Date.now();
-
-	if ((billing.status === 'past_due' || billing.status === 'grace') && billing.graceEndsAt) {
-		if (new Date(billing.graceEndsAt).getTime() <= nowMs) {
-			billing.status = 'suspended';
-			billing.updatedAt = nowIso();
-		}
-	}
-
-	if (billing.status === 'trialing' && billing.trialEndsAt) {
-		if (new Date(billing.trialEndsAt).getTime() <= nowMs) {
-			billing.status = 'active';
-			billing.updatedAt = nowIso();
-		}
-	}
-
-	if (billing.status === 'canceled' && billing.currentPeriodEndAt) {
-		if (new Date(billing.currentPeriodEndAt).getTime() <= nowMs) {
-			billing.planId = 'free';
-			billing.status = 'active';
-			billing.subscriptionId = null;
-			billing.currentPeriodEndAt = null;
-			billing.graceEndsAt = null;
-			billing.updatedAt = nowIso();
-		}
-	}
-
-	userBilling.set(billing.userId, billing);
-	if (isDatabaseConfigured()) {
-		await writeUserBillingStateToDb(billing);
-	}
-	return billing;
-}
-
 async function refreshBillingStatus(organizationId) {
 	const organization = organizations.get(organizationId);
 	if (!organization) return null;
@@ -542,20 +491,6 @@ function getOrganizationUsage(organizationId) {
 	return usage;
 }
 
-function getUserUsage(userId) {
-	const monthKey = monthKeyFromDate(new Date());
-	const existing = userUsage.get(userId);
-	if (existing && existing.monthKey === monthKey) return existing;
-	const usage = {
-		userId,
-		monthKey,
-		aiRequests: 0,
-		documentUpdates: 0,
-	};
-	userUsage.set(userId, usage);
-	return usage;
-}
-
 function isWithinPlanAccessDays(organization, accessDays) {
 	if (!organization) return false;
 	if (accessDays === null || accessDays === undefined) return true;
@@ -572,46 +507,6 @@ function countOrganizationDocuments(organizationId) {
 		if (doc.organizationId === organizationId) total += 1;
 	}
 	return total;
-}
-
-function countUserDocuments(userId) {
-	let total = 0;
-	for (const doc of documents.values()) {
-		if (doc.userId === userId && !doc.organizationId) total += 1;
-	}
-	return total;
-}
-
-async function getUserEntitlements(userId) {
-	const billing = await refreshUserBillingStatus(userId) || await getUserBillingState(userId);
-	if (!billing) return null;
-	const plan = getPlan(billing.planId);
-	const usage = getUserUsage(userId);
-
-	return {
-		billing,
-		plan,
-		limits: {
-			seatsPurchased: plan.limits.seats,
-			storageBytes: plan.limits.storageBytes,
-			aiRequestsPerMonth: plan.limits.aiRequestsPerMonth,
-			collaborators: plan.limits.collaborators,
-			documents: plan.limits.documents,
-			documentUpdatesPerMonth: plan.limits.documentUpdatesPerMonth,
-			versionHistoryDays: plan.limits.versionHistoryDays,
-			grammarAccessDays: plan.limits.grammarAccessDays,
-			aiAccessDays: plan.limits.aiAccessDays,
-		},
-		usage: {
-			monthKey: usage.monthKey,
-			aiRequests: usage.aiRequests,
-			documentUpdates: usage.documentUpdates || 0,
-			assignedSeats: 1,
-			storageUsedBytes: 0,
-			collaboratorsAssigned: 0,
-			documentsCount: countUserDocuments(userId),
-		},
-	};
 }
 
 async function canCreateDocuments(organizationId, additionalDocuments = 1) {
@@ -889,9 +784,22 @@ function markWebhookJobFailed(jobId, errorMessage) {
 	return job;
 }
 
+function mapWorkspaceRowToRecord(row) {
+	return {
+		id: row.id,
+		name: row.name,
+		ownerId: row.ownerId,
+		memberIds: Array.isArray(row.memberIds) ? row.memberIds : [row.ownerId],
+		organizationId: row.organizationId || null,
+		createdAt: new Date(row.createdAt).toISOString(),
+		updatedAt: new Date(row.updatedAt).toISOString(),
+	};
+}
+
 async function syncCurrentOrganizationFromMembership(user) {
 	if (!user) return null;
 	if (!isDatabaseConfigured()) return null;
+
 	const normalizedEmail = String(user.email || '').toLowerCase().trim();
 	if (!normalizedEmail) return null;
 
@@ -910,6 +818,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 			createdAt: 'asc',
 		},
 	});
+
 	if (!activeMemberships.length) {
 		user.currentOrganizationId = null;
 		users.set(user.id, user);
@@ -924,6 +833,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 		(membership) => membership.organizationId === user.currentOrganizationId,
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
+
 	let organization = organizations.get(selectedMembership.organizationId) || null;
 	if (!organization) {
 		const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
@@ -939,6 +849,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 			organizations.set(organization.id, organization);
 		}
 	}
+
 	if (!organization) {
 		user.currentOrganizationId = null;
 		users.set(user.id, user);
@@ -957,46 +868,14 @@ async function syncCurrentOrganizationFromMembership(user) {
 		where: { email: normalizedEmail },
 		data: { currentOrganizationId: organization.id },
 	});
+
 	return organization;
-}
-
-function ensureWorkspaceForUser(user) {
-	const personalScopeId = user.id;
-	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
-	if (existing) return existing;
-
-	const now = nowIso();
-	const workspace = {
-		id: uuidv4(),
-		name: `${user.name}'s Workspace`,
-		ownerId: user.id,
-		memberIds: [user.id],
-		organizationId: personalScopeId,
-		createdAt: now,
-		updatedAt: now,
-	};
-	workspaces.set(workspace.id, workspace);
-	return workspace;
-}
-
-function mapWorkspaceRowToRecord(row) {
-	return {
-		id: row.id,
-		name: row.name,
-		ownerId: row.ownerId,
-		memberIds: Array.isArray(row.memberIds) ? row.memberIds : [row.ownerId],
-		organizationId: row.organizationId || null,
-		createdAt: new Date(row.createdAt).toISOString(),
-		updatedAt: new Date(row.updatedAt).toISOString(),
-	};
 }
 
 async function ensureWorkspaceForUserProvisioned(user) {
 	const personalScopeId = user.id;
-	const existing = [...workspaces.values()].find((w) => w.ownerId === user.id && w.organizationId === personalScopeId);
-
 	if (!isDatabaseConfigured()) {
-		return existing || ensureWorkspaceForUser(user);
+		return null;
 	}
 
 	let row = await prisma.workspace.findFirst({
@@ -1008,9 +887,8 @@ async function ensureWorkspaceForUserProvisioned(user) {
 			createdAt: 'asc',
 		},
 	});
-
 	if (!row) {
-		const workspace = existing || {
+		const workspace = {
 			id: uuidv4(),
 			name: `${user.name}'s Workspace`,
 			ownerId: user.id,
@@ -1031,10 +909,7 @@ async function ensureWorkspaceForUserProvisioned(user) {
 			},
 		});
 	}
-
-	const mapped = mapWorkspaceRowToRecord(row);
-	workspaces.set(mapped.id, mapped);
-	return mapped;
+	return mapWorkspaceRowToRecord(row);
 }
 
 async function ensureTenantBootstrapForUser(user) {
@@ -1093,7 +968,6 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		await ensureWorkspaceForUserProvisioned(user);
 		return organization;
 	}
 
