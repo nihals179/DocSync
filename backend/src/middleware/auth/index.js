@@ -1,12 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
-const { prisma } = require('../db/client');
-const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../lib/runtime-utils');
+const { prisma } = require('../../db/client');
+const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
   authSessions,
   authTokens,
   getOrganizationSecurityState,
   users,
-} = require('../store');
+} = require('../../store');
 const {
   generateOpaqueToken,
   getCookieOptions,
@@ -14,7 +14,7 @@ const {
   hashToken,
   resolveCookieNames,
   signAccessToken,
-} = require('./auth');
+} = require('./core');
 
 const REMEMBER_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const STANDARD_SESSION_MS = 8 * 60 * 60 * 1000;
@@ -71,6 +71,98 @@ function ensureUserShape(user) {
   if (user.twoFactorTempSecret === undefined) user.twoFactorTempSecret = null;
   if (user.currentOrganizationId === undefined) user.currentOrganizationId = null;
   return user;
+}
+
+function createAuthRouteHelpers({
+  decryptPassword,
+  users: routeUsers,
+  writeAuditLog,
+  getRequestIp: routeGetRequestIp,
+  getUserAgent: routeGetUserAgent,
+  prisma: routePrisma,
+}) {
+  function resolvePasswordFromBody(body) {
+    const raw = body ?? {};
+    if (raw.passwordEncrypted) {
+      return decryptPassword(String(raw.passwordEncrypted).trim());
+    }
+    if (typeof raw.password === 'string' && raw.password.length > 0) {
+      return raw.password;
+    }
+    throw new Error('Password payload is required.');
+  }
+
+  function audit(req, action, status, userId = null, metadata = {}) {
+    const user = userId ? routeUsers.get(userId) : null;
+    return writeAuditLog({
+      userId,
+      organizationId: user?.currentOrganizationId || metadata.organizationId || null,
+      action,
+      status,
+      ipAddress: routeGetRequestIp(req),
+      userAgent: routeGetUserAgent(req),
+      metadata: {
+        ...metadata,
+      },
+    });
+  }
+
+  async function ensureUserPersistedToDb(user, billing) {
+    if (!process.env.DATABASE_URL) return;
+
+    await routePrisma.user.create({
+      data: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        passwordHash: user.passwordHash,
+        createdAt: new Date(user.createdAt),
+        accountType: user.accountType || 'individual',
+        emailVerified: Boolean(user.emailVerified),
+        failedLoginAttempts: Number(user.failedLoginAttempts || 0),
+        lockoutUntil: user.lockoutUntil ? new Date(user.lockoutUntil) : null,
+        role: user.role || 'user',
+        twoFactorEnabled: Boolean(user.twoFactorEnabled),
+        twoFactorSecret: user.twoFactorSecret || null,
+        twoFactorTempSecret: user.twoFactorTempSecret || null,
+        currentOrganizationId: user.currentOrganizationId || null,
+      },
+    });
+
+    await routePrisma.userBilling.upsert({
+      where: { email: user.email },
+      update: {
+        userId: user.id,
+        email: user.email,
+        planId: billing.planId,
+        status: billing.status,
+        trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
+        trialUsed: Boolean(billing.trialUsed),
+        subscriptionId: billing.subscriptionId || null,
+        customerId: billing.customerId || null,
+        currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
+        graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
+      },
+      create: {
+        userId: user.id,
+        email: user.email,
+        planId: billing.planId,
+        status: billing.status,
+        trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
+        trialUsed: Boolean(billing.trialUsed),
+        subscriptionId: billing.subscriptionId || null,
+        customerId: billing.customerId || null,
+        currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
+        graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
+      },
+    });
+  }
+
+  return {
+    resolvePasswordFromBody,
+    audit,
+    ensureUserPersistedToDb,
+  };
 }
 
 function publicUser(user) {
@@ -210,6 +302,10 @@ async function getSessionById(sessionId) {
   return session;
 }
 
+function matchesRefreshToken(session, token) {
+  return session.refreshTokenHash === hashToken(token);
+}
+
 async function findSessionByRefreshToken(refreshToken) {
   if (!refreshToken) return null;
   const refreshTokenHash = hashToken(refreshToken);
@@ -298,10 +394,6 @@ function buildAuthResponse(user, session) {
   };
 }
 
-function matchesRefreshToken(session, token) {
-  return session.refreshTokenHash === hashToken(token);
-}
-
 function validateCsrf(req, session) {
   const header = req.get('x-csrf-token');
   return Boolean(header && session && header === session.csrfToken);
@@ -350,8 +442,8 @@ async function revokeAllUserSessions(userId) {
 }
 
 async function findUserByIdentifier(identifier) {
-  const normalized = identifier.toLowerCase();
-  if (!isDatabaseConfigured()) return null;
+  const normalized = String(identifier || '').toLowerCase();
+  if (!normalized || !isDatabaseConfigured()) return null;
 
   const dbUser = await prisma.user.findUnique({ where: { email: normalized } });
   if (!dbUser) return null;
@@ -361,7 +453,7 @@ async function findUserByIdentifier(identifier) {
     createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
     updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
     lockoutUntil: dbUser.lockoutUntil ? dbUser.lockoutUntil.toISOString() : null,
-    lastLoginAt: new Date().toISOString(),
+    lastLoginAt: dbUser.lastLoginAt ? dbUser.lastLoginAt.toISOString() : null,
   });
 }
 
@@ -371,6 +463,7 @@ module.exports = {
   getUserAgent,
   isOrgIpAllowedForUser,
   ensureUserShape,
+  createAuthRouteHelpers,
   publicUser,
   issueOneTimeToken,
   consumeOneTimeToken,

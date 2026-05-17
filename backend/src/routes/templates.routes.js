@@ -1,35 +1,11 @@
 const express = require('express');
 const { prisma } = require('../db/client');
 
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { cloneTemplates, readTemplateCache, writeTemplateCache } = require('../middleware/templates');
 
 const router = express.Router();
-const TEMPLATE_CACHE_TTL_MS = Number(process.env.TEMPLATE_CACHE_TTL_MS || 60_000);
-
-const templateCache = {
-  items: null,
-  expiresAt: 0,
-};
-
-function cloneTemplates(list) {
-  return list.map((template) => ({ ...template }));
-}
-
-function readTemplateCache() {
-  if (!templateCache.items) return null;
-  if (Date.now() >= templateCache.expiresAt) {
-    templateCache.items = null;
-    templateCache.expiresAt = 0;
-    return null;
-  }
-  return cloneTemplates(templateCache.items);
-}
-
-function writeTemplateCache(list) {
-  templateCache.items = cloneTemplates(list);
-  templateCache.expiresAt = Date.now() + TEMPLATE_CACHE_TTL_MS;
-}
 
 const TEMPLATES = [
   {

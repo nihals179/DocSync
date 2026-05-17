@@ -1,7 +1,8 @@
 const express = require('express');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
-const { attachEntitlements, requireGrammarAccess } = require('../middleware/entitlements');
+const { attachEntitlements } = require('../middleware/entitlements');
+const { requireGrammarAccess } = require('../middleware/grammar/entitlements');
 
 const router = express.Router();
 

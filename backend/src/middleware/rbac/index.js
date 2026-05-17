@@ -1,6 +1,6 @@
-const { prisma } = require('../db/client');
-const { isDatabaseConfigured } = require('../lib/runtime-utils');
-const { organizations, organizationMemberships, users } = require('../store');
+const { prisma } = require('../../db/client');
+const { isDatabaseConfigured } = require('../../lib/runtime-utils');
+const { organizations, organizationMemberships, users } = require('../../store');
 
 const MEMBER_PERMISSIONS = new Set([
   'organization.read',

@@ -39,7 +39,7 @@ const {
   resolveUserFromSession,
   signTwoFactorToken,
   verifyTwoFactorToken,
-} = require('../middleware/auth');
+} = require('../middleware/auth/core');
 const {
   getPasswordEncryptionPublicKey,
   decryptPassword,
@@ -50,6 +50,7 @@ const {
   getUserAgent,
   isOrgIpAllowedForUser,
   ensureUserShape,
+  createAuthRouteHelpers,
   publicUser,
   issueOneTimeToken,
   consumeOneTimeToken,
@@ -66,94 +67,29 @@ const {
   revokeSession,
   revokeAllUserSessions,
   findUserByIdentifier,
-} = require('../middleware/auth-helpers');
+} = require('../middleware/auth');
 
 const {
   authRateLimit,
   loginRateLimit,
   passwordResetRateLimit,
   registerRateLimit,
-} = require('../middleware/rate-limit');
+} = require('../middleware/auth/rate-limit');
 const { getAuthConfig } = require('../config/auth-config');
 
 const router = express.Router();
-
-function resolvePasswordFromBody(body) {
-  const raw = body ?? {};
-  if (raw.passwordEncrypted) {
-    return decryptPassword(String(raw.passwordEncrypted).trim());
-  }
-  if (typeof raw.password === 'string' && raw.password.length > 0) {
-    return raw.password;
-  }
-  throw new Error('Password payload is required.');
-}
-
-function audit(req, action, status, userId = null, metadata = {}) {
-  const user = userId ? users.get(userId) : null;
-  return writeAuditLog({
-    userId,
-    organizationId: user?.currentOrganizationId || metadata.organizationId || null,
-    action,
-    status,
-    ipAddress: getRequestIp(req),
-    userAgent: getUserAgent(req),
-    metadata: {
-      ...metadata,
-    },
-  });
-}
-
-async function ensureUserPersistedToDb(user, billing) {
-  if (!process.env.DATABASE_URL) return;
-
-  await prisma.user.create({
-    data: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      passwordHash: user.passwordHash,
-      createdAt: new Date(user.createdAt),
-      accountType: user.accountType || 'individual',
-      emailVerified: Boolean(user.emailVerified),
-      failedLoginAttempts: Number(user.failedLoginAttempts || 0),
-      lockoutUntil: user.lockoutUntil ? new Date(user.lockoutUntil) : null,
-      role: user.role || 'user',
-      twoFactorEnabled: Boolean(user.twoFactorEnabled),
-      twoFactorSecret: user.twoFactorSecret || null,
-      twoFactorTempSecret: user.twoFactorTempSecret || null,
-      currentOrganizationId: user.currentOrganizationId || null,
-    },
-  });
-
-  await prisma.userBilling.upsert({
-    where: { email: user.email },
-    update: {
-      userId: user.id,
-      email: user.email,
-      planId: billing.planId,
-      status: billing.status,
-      trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
-      trialUsed: Boolean(billing.trialUsed),
-      subscriptionId: billing.subscriptionId || null,
-      customerId: billing.customerId || null,
-      currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
-      graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
-    },
-    create: {
-      userId: user.id,
-      email: user.email,
-      planId: billing.planId,
-      status: billing.status,
-      trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
-      trialUsed: Boolean(billing.trialUsed),
-      subscriptionId: billing.subscriptionId || null,
-      customerId: billing.customerId || null,
-      currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
-      graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
-    },
-  });
-}
+const {
+  resolvePasswordFromBody,
+  audit,
+  ensureUserPersistedToDb,
+} = createAuthRouteHelpers({
+  decryptPassword,
+  users,
+  writeAuditLog,
+  getRequestIp,
+  getUserAgent,
+  prisma,
+});
 
 
 router.post('/register', registerRateLimit, async (req, res) => {

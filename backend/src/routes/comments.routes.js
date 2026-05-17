@@ -1,18 +1,12 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
-const { documents, comments } = require('../store');
-const { requireAuth } = require('../middleware/auth');
+const { comments } = require('../store');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { getDoc } = require('../middleware/comments');
 
 const router = express.Router({ mergeParams: true });
-
-function getDoc(docId, organizationId, res) {
-  const doc = documents.get(docId);
-  if (!doc) { res.status(404).json({ error: 'Document not found.' }); return null; }
-  if (doc.organizationId !== organizationId) { res.status(403).json({ error: 'Access denied.' }); return null; }
-  return doc;
-}
 
 /**
  * GET /api/docs/:docId/comments

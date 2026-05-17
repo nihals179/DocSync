@@ -3,43 +3,12 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
 const { ensureWorkspaceForUserProvisioned, workspaces } = require('../store');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
+const { isWorkspaceVisibleToUser, sortWorkspacesForUser } = require('../middleware/workspaces');
 
 const router = express.Router();
-
-function isWorkspaceVisibleToUser(workspace, userId) {
-  const memberIds = Array.isArray(workspace.memberIds) ? workspace.memberIds : null;
-
-  // Personal workspace: owner-scope key or explicit single-member ownership.
-  if (workspace.organizationId === workspace.ownerId) {
-    return workspace.ownerId === userId;
-  }
-
-  // Legacy personal workspace representation.
-  if (memberIds && memberIds.length === 1 && memberIds[0] === workspace.ownerId) {
-    return workspace.ownerId === userId;
-  }
-
-  // Organization-shared workspace: no explicit member list.
-  if (!memberIds || memberIds.length === 0) return true;
-
-  return memberIds.includes(userId);
-}
-
-function sortWorkspacesForUser(items, userId) {
-  return [...items].sort((a, b) => {
-    const aIsPersonal = a.ownerId === userId && a.organizationId === userId;
-    const bIsPersonal = b.ownerId === userId && b.organizationId === userId;
-
-    if (aIsPersonal !== bIsPersonal) {
-      return aIsPersonal ? -1 : 1;
-    }
-
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-  });
-}
 
 /**
  * GET /api/workspaces

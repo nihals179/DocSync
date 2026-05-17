@@ -1,7 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
 const {

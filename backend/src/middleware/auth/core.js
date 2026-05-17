@@ -1,8 +1,8 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { prisma } = require('../db/client');
-const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../lib/runtime-utils');
-const { authSessions, syncCurrentOrganizationFromMembership, getOrganizationSecurityState, users } = require('../store');
+const { prisma } = require('../../db/client');
+const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
+const { authSessions, syncCurrentOrganizationFromMembership, getOrganizationSecurityState, users } = require('../../store');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';

@@ -1,7 +1,8 @@
 const express = require('express');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
-const { attachEntitlements, requireAiQuota, consumeAiQuota } = require('../middleware/entitlements');
+const { attachEntitlements } = require('../middleware/entitlements');
+const { requireAiQuota, consumeAiQuota } = require('../middleware/ai/entitlements');
 
 const router = express.Router();
 

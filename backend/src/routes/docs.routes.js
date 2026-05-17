@@ -9,22 +9,13 @@ const {
   consumeDocumentUpdates,
   getOrganizationEntitlements,
 } = require('../store');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
+const { getDocForOrg, bytes } = require('../middleware/docs');
 const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
-
-function getDocForOrg(docId, organizationId) {
-  const doc = documents.get(docId);
-  if (!doc) return null;
-  return doc.organizationId === organizationId ? doc : null;
-}
-
-function bytes(value) {
-  return Buffer.byteLength(String(value || ''), 'utf8');
-}
 
 /**
  * POST /api/docs
