@@ -19,11 +19,8 @@ const {
   getOrganizationEntitlements,
   getOrganizationSecurityState,
   getPlan,
-  organizations,
-  organizationMemberships,
   upsertOrganizationBillingState,
   updateOrganizationSecurityState,
-  users,
 } = require('../store');
 const { listAuditLogs, toAuditCsv, writeAuditLog } = require('../lib/audit');
 
@@ -47,7 +44,7 @@ router.get('/current/security', requirePermission('organization.read'), (req, re
 });
 
 router.post('/current/enterprise/environment', requirePermission('organization.member.manage'), async (req, res) => {
-  const organization = organizations.get(req.organization.id);
+  const organization = req.organization;
   if (!organization) return res.status(404).json({ error: 'Organization not found.' });
 
   const enterprisePlan = getPlan('enterprise');
@@ -279,7 +276,7 @@ router.delete('/current/security/sso/providers/:providerId', requirePermission('
   res.json({ message: 'SSO provider removed.' });
 });
 
-router.post('/sso/simulate-login', requirePermission('organization.read'), (req, res) => {
+router.post('/sso/simulate-login', requirePermission('organization.read'), async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email is required.' });
 
@@ -294,11 +291,18 @@ router.post('/sso/simulate-login', requirePermission('organization.read'), (req,
     return res.status(400).json({ error: 'No active SSO provider configured for organization.' });
   }
 
-  const user = [...users.values()].find((item) => item.email === email) || null;
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, email: true, name: true },
+  });
   const mappedMembership = user
-    ? [...organizationMemberships.values()].find(
-      (membership) => membership.userId === user.id && membership.organizationId === organization.id,
-    )
+    ? await prisma.organizationMembership.findFirst({
+      where: {
+        userId: user.id,
+        organizationId: organization.id,
+      },
+      select: { status: true },
+    })
     : null;
 
   res.json({
@@ -339,11 +343,14 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
       continue;
     }
 
-    let user = [...users.values()].find((item) => item.email === parsed.email) || null;
+    let user = await prisma.user.findUnique({ where: { email: parsed.email } });
     let existingMembership = user
-      ? [...organizationMemberships.values()].find(
-        (membership) => membership.organizationId === req.organization.id && membership.userId === user.id,
-      )
+      ? await prisma.organizationMembership.findFirst({
+        where: {
+          organizationId: req.organization.id,
+          userId: user.id,
+        },
+      })
       : null;
 
     const needsSeat = !existingMembership || existingMembership.status !== 'active';
@@ -364,12 +371,13 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
     }
 
     if (!user) {
-      user = {
+      user = await prisma.user.create({
+        data: {
         id: uuidv4(),
         name: parsed.name,
         email: parsed.email,
         passwordHash: await bcrypt.hash(uuidv4(), 12),
-        createdAt: nowIso(),
+        createdAt: new Date(),
         accountType: 'individual',
         emailVerified: true,
         failedLoginAttempts: 0,
@@ -379,8 +387,8 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
         twoFactorSecret: null,
         twoFactorTempSecret: null,
         currentOrganizationId: req.organization.id,
-      };
-      users.set(user.id, user);
+        },
+      });
     }
 
     if (existingMembership && existingMembership.status === 'active') {
@@ -389,40 +397,45 @@ router.post('/current/security/ldap/import-users', requirePermission('organizati
     }
 
     if (existingMembership) {
-      existingMembership.status = 'active';
-      existingMembership.updatedAt = nowIso();
-      organizationMemberships.set(existingMembership.id, existingMembership);
+      await prisma.organizationMembership.update({
+        where: { id: existingMembership.id },
+        data: {
+          status: 'active',
+          email: parsed.email,
+          updatedAt: new Date(),
+        },
+      });
       imported.push({ email: parsed.email, status: 'updated' });
     } else {
-      existingMembership = {
+      existingMembership = await prisma.organizationMembership.create({
+        data: {
         id: uuidv4(),
         organizationId: req.organization.id,
         userId: user.id,
+        email: parsed.email,
         billingAdmin: false,
         status: 'active',
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-      };
-      organizationMemberships.set(existingMembership.id, existingMembership);
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        },
+      });
       imported.push({ email: parsed.email, status: 'created' });
     }
 
     if (!user.currentOrganizationId) {
-      user.currentOrganizationId = req.organization.id;
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: { currentOrganizationId: req.organization.id },
+      });
     }
 
     const orgBilling = await getOrganizationBillingState(req.organization.id);
     if (orgBilling?.planId === 'enterprise') {
-      user.accountType = 'Enterprise';
-      if (process.env.DATABASE_URL) {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { accountType: 'Enterprise' },
-        });
-      }
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: { accountType: 'Enterprise' },
+      });
     }
-
-    users.set(user.id, user);
   }
 
   writeAuditLog({

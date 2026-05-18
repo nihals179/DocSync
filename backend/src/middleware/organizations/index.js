@@ -1,23 +1,7 @@
-const { users } = require('../../store');
-
 const LEGACY_INVITE_ROLE = 'organization_member';
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function mapMembership(membership) {
-  const user = users.get(membership.userId);
-  return {
-    id: membership.id,
-    userId: membership.userId,
-    email: user?.email || 'unknown',
-    name: user?.name || 'Unknown',
-    billingAdmin: Boolean(membership.billingAdmin),
-    status: membership.status,
-    createdAt: membership.createdAt,
-    updatedAt: membership.updatedAt,
-  };
 }
 
 function mapInviteResponse(invite) {
@@ -46,7 +30,6 @@ function parseBooleanInput(value, fieldName) {
 
 module.exports = {
   nowIso,
-  mapMembership,
   mapInviteResponse,
   parseBooleanInput,
 };

@@ -3,7 +3,6 @@ const { prisma } = require('../../db/client');
 const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
   getOrganizationSecurityState,
-  users,
 } = require('../../store');
 const {
   generateOpaqueToken,
@@ -305,7 +304,10 @@ async function rotateSession(session, req) {
   session.refreshTokenHash = hashToken(refreshToken);
   session.csrfToken = csrfToken;
   session.lastUsedAt = nowIso();
-  const user = users.get(session.userId);
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { currentOrganizationId: true },
+  });
   session.expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);

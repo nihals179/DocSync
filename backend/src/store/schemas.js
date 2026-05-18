@@ -54,6 +54,12 @@ const processedWebhookEvents = createNoMemoryMap();
 /** @type {Map<string, { id: string, userId: string | null, action: string, status: 'success' | 'failure', ipAddress: string, userAgent: string, createdAt: string, metadata?: Record<string, unknown> }>} */
 const auditLogs = createNoMemoryMap();
 
+/** @type {Map<string, { id: string, userId: string, refreshTokenHash: string, csrfToken: string, createdAt: string, lastUsedAt: string, expiresAt: string, revokedAt: string | null, remember: boolean, userAgent: string, ipAddress: string }>} */
+const authSessions = createNoMemoryMap();
+
+/** @type {Map<string, { id: string, userId: string, type: string, expiresAt: string, createdAt: string }>} */
+const authTokens = createNoMemoryMap();
+
 /** @type {Map<string, { id: string, title: string, content: string, userId: string, createdAt: string, updatedAt: string }>} */
 const documents = createNoMemoryMap();
 
@@ -88,6 +94,8 @@ module.exports = {
 	webhookJobs,
 	processedWebhookEvents,
 	auditLogs,
+	authSessions,
+	authTokens,
 	documents,
 	profiles,
 	comments,

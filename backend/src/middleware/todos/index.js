@@ -1,7 +1,7 @@
-const { documents } = require('../../store');
+const { prisma } = require('../../db/client');
 
-function getDoc(docId, organizationId, res) {
-  const doc = documents.get(docId);
+async function getDoc(docId, organizationId, res) {
+  const doc = await prisma.document.findUnique({ where: { id: docId } });
   if (!doc) {
     res.status(404).json({ error: 'Document not found.' });
     return null;

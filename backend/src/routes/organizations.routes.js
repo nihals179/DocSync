@@ -9,9 +9,6 @@ const {
   getOrganizationBillingState,
   getOrganizationEntitlements,
   getProfileTable,
-  organizationInvites,
-  organizationMemberships,
-  organizations,
 } = require('../store');
 const { requireAuth, generateOpaqueToken } = require('../middleware/auth/core');
 const {
@@ -20,8 +17,6 @@ const {
   getUserOrganizations,
 } = require('../middleware/rbac');
 const {
-  nowIso,
-  mapMembership,
   mapInviteResponse,
   parseBooleanInput,
 } = require('../middleware/organizations');
@@ -32,8 +27,35 @@ const router = express.Router();
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function mapMembershipRecord(membership, user) {
+  return {
+    id: membership.id,
+    userId: membership.userId,
+    email: user?.email || membership.email || 'unknown',
+    name: user?.name || 'Unknown',
+    billingAdmin: Boolean(membership.billingAdmin),
+    status: membership.status,
+    createdAt: toIso(membership.createdAt),
+    updatedAt: toIso(membership.updatedAt),
+  };
+}
+
+function mapInviteRecord(invite) {
+  return {
+    ...invite,
+    createdAt: toIso(invite.createdAt),
+    updatedAt: toIso(invite.updatedAt),
+    expiresAt: toIso(invite.expiresAt),
+    acceptedAt: toIso(invite.acceptedAt),
+  };
+}
+
 router.get('/mine', requireAuth, async (req, res) => {
-  const orgs = getUserOrganizations(req.user.id);
+  const orgs = await getUserOrganizations(req.user.id);
   const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { currentOrganizationId: true } });
   res.json({
     organizations: orgs,
@@ -49,9 +71,13 @@ router.post('/switch', requireAuth, async (req, res) => {
   const organizationId = String(req.body?.organizationId || '');
   if (!organizationId) return res.status(400).json({ error: 'organizationId is required.' });
 
-  const membership = [...organizationMemberships.values()].find(
-    (item) => item.organizationId === organizationId && item.userId === req.user.id && item.status === 'active',
-  );
+  const membership = await prisma.organizationMembership.findFirst({
+    where: {
+      organizationId,
+      userId: req.user.id,
+      status: 'active',
+    },
+  });
   if (!membership) return res.status(403).json({ error: 'Organization membership required.' });
 
   const updated = await prisma.user.updateMany({
@@ -67,17 +93,35 @@ router.get('/current', requireAuth, resolveOrganizationContext, requirePermissio
   res.json({ organization: req.organization, membership: req.membership });
 });
 
-router.get('/current/members', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), (req, res) => {
-  const members = [...organizationMemberships.values()]
-    .filter((membership) => membership.organizationId === req.organization.id && membership.status === 'active')
-    .map(mapMembership)
+router.get('/current/members', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+  const memberships = await prisma.organizationMembership.findMany({
+    where: {
+      organizationId: req.organization.id,
+      status: 'active',
+    },
+  });
+  const userIds = [...new Set(memberships.map((membership) => membership.userId))];
+  const users = userIds.length
+    ? await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, email: true, name: true },
+    })
+    : [];
+  const userById = new Map(users.map((user) => [user.id, user]));
+  const members = memberships
+    .map((membership) => mapMembershipRecord(membership, userById.get(membership.userId)))
     .sort((a, b) => a.email.localeCompare(b.email));
   res.json({ members });
 });
 
-router.get('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.invite.read'), (req, res) => {
-  const invites = [...organizationInvites.values()]
-    .filter((invite) => invite.organizationId === req.organization.id && invite.status === 'pending')
+router.get('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.invite.read'), async (req, res) => {
+  const invites = (await prisma.organizationInvite.findMany({
+    where: {
+      organizationId: req.organization.id,
+      status: 'pending',
+    },
+  }))
+    .map(mapInviteRecord)
     .map(mapInviteResponse)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   res.json({ invites });
@@ -113,41 +157,48 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
     return res.status(409).json({ error: 'User is already a member of this organization.' });
   }
 
-  const duplicateInvite = [...organizationInvites.values()].find(
-    (invite) => invite.organizationId === req.organization.id && invite.email === email && invite.status === 'pending',
-  );
+  const duplicateInvite = await prisma.organizationInvite.findFirst({
+    where: {
+      organizationId: req.organization.id,
+      email,
+      status: 'pending',
+    },
+  });
   if (duplicateInvite) {
     return res.status(409).json({ error: 'Pending invite already exists for this email.' });
   }
 
-  const invite = {
-    id: uuidv4(),
-    token: generateOpaqueToken(),
-    organizationId: req.organization.id,
-    email,
-    billingAdmin,
-    status: 'pending',
-    invitedByUserId: req.user.id,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
-    acceptedAt: null,
-  };
-  organizationInvites.set(invite.id, invite);
+  const invite = await prisma.organizationInvite.create({
+    data: {
+      id: uuidv4(),
+      token: generateOpaqueToken(),
+      organizationId: req.organization.id,
+      email,
+      billingAdmin,
+      status: 'pending',
+      invitedByUserId: req.user.id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+      acceptedAt: null,
+    },
+  });
+
+  const inviteRecord = mapInviteRecord(invite);
 
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
     action: 'organization.invite.create',
     metadata: {
-      email: invite.email,
-      billingAdmin: invite.billingAdmin,
+      email: inviteRecord.email,
+      billingAdmin: inviteRecord.billingAdmin,
       legacyRoleProvided: Boolean(legacyRole),
     },
   });
 
   res.status(201).json({
-    invite: mapInviteResponse(invite),
+    invite: mapInviteResponse(inviteRecord),
   });
 });
 
@@ -155,14 +206,20 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'Invite token is required.' });
 
-  const invite = [...organizationInvites.values()].find((item) => item.token === token);
+  const invite = await prisma.organizationInvite.findUnique({
+    where: { token },
+  });
   if (!invite || invite.status !== 'pending') {
     return res.status(404).json({ error: 'Invite not found or already consumed.' });
   }
   if (new Date(invite.expiresAt).getTime() <= Date.now()) {
-    invite.status = 'expired';
-    invite.updatedAt = nowIso();
-    organizationInvites.set(invite.id, invite);
+    await prisma.organizationInvite.update({
+      where: { id: invite.id },
+      data: {
+        status: 'expired',
+        updatedAt: new Date(),
+      },
+    });
     return res.status(400).json({ error: 'Invite has expired.' });
   }
 
@@ -172,9 +229,12 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Invite email does not match signed-in account.' });
   }
 
-  const existingMembership = [...organizationMemberships.values()].find(
-    (membership) => membership.organizationId === invite.organizationId && membership.userId === user.id,
-  );
+  const existingMembership = await prisma.organizationMembership.findFirst({
+    where: {
+      organizationId: invite.organizationId,
+      userId: user.id,
+    },
+  });
 
   const needsSeat = !existingMembership || existingMembership.status !== 'active';
   if (needsSeat) {
@@ -192,27 +252,38 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   }
 
   if (existingMembership) {
-    existingMembership.status = 'active';
-    existingMembership.billingAdmin = invite.billingAdmin;
-    existingMembership.updatedAt = nowIso();
-    organizationMemberships.set(existingMembership.id, existingMembership);
+    await prisma.organizationMembership.update({
+      where: { id: existingMembership.id },
+      data: {
+        status: 'active',
+        billingAdmin: invite.billingAdmin,
+        email: user.email,
+        updatedAt: new Date(),
+      },
+    });
   } else {
-    const membership = {
-      id: uuidv4(),
-      organizationId: invite.organizationId,
-      userId: user.id,
-      billingAdmin: invite.billingAdmin,
-      status: 'active',
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    organizationMemberships.set(membership.id, membership);
+    await prisma.organizationMembership.create({
+      data: {
+        id: uuidv4(),
+        organizationId: invite.organizationId,
+        userId: user.id,
+        email: user.email,
+        billingAdmin: invite.billingAdmin,
+        status: 'active',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
   }
 
-  invite.status = 'accepted';
-  invite.acceptedAt = nowIso();
-  invite.updatedAt = nowIso();
-  organizationInvites.set(invite.id, invite);
+  await prisma.organizationInvite.update({
+    where: { id: invite.id },
+    data: {
+      status: 'accepted',
+      acceptedAt: new Date(),
+      updatedAt: new Date(),
+    },
+  });
 
   const userUpdateData = {
     currentOrganizationId: invite.organizationId,
@@ -242,8 +313,10 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   res.json({ message: 'Organization invite accepted.', organizationId: invite.organizationId });
 });
 
-router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationContext, requirePermission('organization.member.manage'), (req, res) => {
-  const targetMembership = organizationMemberships.get(req.params.membershipId);
+router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationContext, requirePermission('organization.member.manage'), async (req, res) => {
+  const targetMembership = await prisma.organizationMembership.findUnique({
+    where: { id: req.params.membershipId },
+  });
   if (!targetMembership || targetMembership.organizationId !== req.organization.id || targetMembership.status !== 'active') {
     return res.status(404).json({ error: 'Member not found.' });
   }
@@ -258,26 +331,36 @@ router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationC
     return res.status(403).json({ error: 'Only organization owner can manage owner membership.' });
   }
 
-  targetMembership.billingAdmin = nextBillingAdmin;
-  targetMembership.updatedAt = nowIso();
-  organizationMemberships.set(targetMembership.id, targetMembership);
+  const updatedMembership = await prisma.organizationMembership.update({
+    where: { id: targetMembership.id },
+    data: {
+      billingAdmin: nextBillingAdmin,
+      updatedAt: new Date(),
+    },
+  });
 
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
     action: 'organization.member.update',
     metadata: {
-      membershipId: targetMembership.id,
-      targetUserId: targetMembership.userId,
+      membershipId: updatedMembership.id,
+      targetUserId: updatedMembership.userId,
       billingAdmin: nextBillingAdmin,
     },
   });
 
-  res.json({ member: mapMembership(targetMembership) });
+  const targetUser = await prisma.user.findUnique({
+    where: { id: updatedMembership.userId },
+    select: { id: true, email: true, name: true },
+  });
+  res.json({ member: mapMembershipRecord(updatedMembership, targetUser) });
 });
 
 router.delete('/current/members/:membershipId', requireAuth, resolveOrganizationContext, requirePermission('organization.member.manage'), async (req, res) => {
-  const targetMembership = organizationMemberships.get(req.params.membershipId);
+  const targetMembership = await prisma.organizationMembership.findUnique({
+    where: { id: req.params.membershipId },
+  });
   if (!targetMembership || targetMembership.organizationId !== req.organization.id || targetMembership.status !== 'active') {
     return res.status(404).json({ error: 'Member not found.' });
   }
@@ -286,9 +369,13 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
     return res.status(403).json({ error: 'Owner cannot be removed.' });
   }
 
-  targetMembership.status = 'removed';
-  targetMembership.updatedAt = nowIso();
-  organizationMemberships.set(targetMembership.id, targetMembership);
+  await prisma.organizationMembership.update({
+    where: { id: targetMembership.id },
+    data: {
+      status: 'removed',
+      updatedAt: new Date(),
+    },
+  });
 
   writeAuditLog({
     userId: req.user.id,
@@ -299,9 +386,15 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
 
   const removedUser = await prisma.user.findUnique({ where: { id: targetMembership.userId } });
   if (removedUser && removedUser.currentOrganizationId === req.organization.id) {
-    const fallback = [...organizationMemberships.values()].find(
-      (membership) => membership.userId === removedUser.id && membership.status === 'active' && membership.organizationId !== req.organization.id,
-    );
+    const fallback = await prisma.organizationMembership.findFirst({
+      where: {
+        userId: removedUser.id,
+        status: 'active',
+        organizationId: { not: req.organization.id },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: { organizationId: true },
+    });
     await prisma.user.update({
       where: { id: removedUser.id },
       data: { currentOrganizationId: fallback ? fallback.organizationId : null },

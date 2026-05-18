@@ -14,52 +14,25 @@ const {
   markWebhookJobProcessed,
   markWebhookJobProcessing,
   nowIso,
-  organizationMemberships,
-  organizations,
   upsertOrganizationBillingState,
-  users,
   upsertInvoice,
 } = require('../store');
 const { isDatabaseConfigured } = require('../lib/runtime-utils');
 
 let workerStarted = false;
 
-function ensureOrganization(organizationId) {
-  const organization = organizations.get(organizationId);
-  if (!organization) return null;
-  return organization;
+async function ensureOrganization(organizationId) {
+  return prisma.organization.findUnique({ where: { id: organizationId } });
 }
 
 async function promoteOrganizationMembersToEnterprise(organizationId) {
-  const activeMemberUserIds = isDatabaseConfigured()
-    ? (await prisma.organizationMembership.findMany({
-      where: { organizationId, status: 'active' },
-      select: { userId: true },
-    })).map((membership) => membership.userId)
-    : [...organizationMemberships.values()]
-      .filter((membership) => membership.organizationId === organizationId && membership.status === 'active')
-      .map((membership) => membership.userId);
+  if (!isDatabaseConfigured()) return;
+  const activeMemberUserIds = (await prisma.organizationMembership.findMany({
+    where: { organizationId, status: 'active' },
+    select: { userId: true },
+  })).map((membership) => membership.userId);
 
-  for (const userId of activeMemberUserIds) {
-    let user = users.get(userId);
-    if (!user && isDatabaseConfigured()) {
-      const dbUser = await prisma.user.findUnique({ where: { id: userId } });
-      if (dbUser) {
-        user = {
-          ...dbUser,
-          createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
-          updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
-        };
-      }
-    }
-    if (!user) continue;
-    if (user.accountType !== 'Enterprise') {
-      user.accountType = 'Enterprise';
-      users.set(user.id, user);
-    }
-  }
-
-  if (!isDatabaseConfigured() || activeMemberUserIds.length === 0) return;
+  if (!activeMemberUserIds.length) return;
   await prisma.user.updateMany({
     where: { id: { in: activeMemberUserIds } },
     data: { accountType: 'Enterprise' },
@@ -67,7 +40,7 @@ async function promoteOrganizationMembersToEnterprise(organizationId) {
 }
 
 async function applySubscriptionState({ organizationId, planId, purchasedSeats, subscriptionId, customerId, trialDays = 0, periodDays = 30 }) {
-  const organization = ensureOrganization(organizationId);
+  const organization = await ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
   const billing = await getOrganizationBillingState(organizationId);
@@ -100,7 +73,7 @@ async function applySubscriptionState({ organizationId, planId, purchasedSeats, 
 }
 
 async function applyInvoicePaid({ organizationId, amountCents, periodStart = null, periodEnd = null, invoiceId = `inv_${uuidv4()}` }) {
-  const organization = ensureOrganization(organizationId);
+  const organization = await ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
   const billing = await getOrganizationBillingState(organizationId);
@@ -128,7 +101,7 @@ async function applyInvoicePaid({ organizationId, amountCents, periodStart = nul
 }
 
 async function applyInvoiceFailed({ organizationId, amountCents, graceDays = 3, invoiceId = `inv_${uuidv4()}` }) {
-  const organization = ensureOrganization(organizationId);
+  const organization = await ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
   const billing = await getOrganizationBillingState(organizationId);
@@ -156,7 +129,7 @@ async function applyInvoiceFailed({ organizationId, amountCents, graceDays = 3, 
 }
 
 async function applySubscriptionCanceled({ organizationId, periodEndAt = null }) {
-  const organization = ensureOrganization(organizationId);
+  const organization = await ensureOrganization(organizationId);
   if (!organization) throw new Error('Organization not found.');
 
   const billing = await getOrganizationBillingState(organizationId);
