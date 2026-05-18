@@ -1,9 +1,8 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
 const {
-  documents,
-  calculateOrganizationStorageBytes,
   canCreateDocuments,
   canUpdateDocuments,
   consumeDocumentUpdates,
@@ -12,10 +11,38 @@ const {
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
-const { getDocForOrg, bytes } = require('../middleware/docs');
+const { bytes } = require('../middleware/docs');
 const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
+
+function formatDoc(doc) {
+  return {
+    id: doc.id,
+    title: doc.title,
+    content: doc.content,
+    userId: doc.userId,
+    organizationId: doc.organizationId,
+    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
+    updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
+    parentId: null,
+    workspaceId: doc.workspaceId ?? null,
+    sortOrder: 0,
+    preview: String(doc.content || '').replace(/<[^>]+>/g, '').slice(0, 100),
+  };
+}
+
+async function getDocForOrgDb(docId, organizationId) {
+  return prisma.document.findFirst({ where: { id: docId, organizationId } });
+}
+
+async function calculateOrganizationStorageBytesDb(organizationId) {
+  const docs = await prisma.document.findMany({
+    where: { organizationId },
+    select: { content: true },
+  });
+  return docs.reduce((total, doc) => total + bytes(doc.content), 0);
+}
 
 /**
  * POST /api/docs
@@ -23,7 +50,7 @@ const router = express.Router();
  * Body: { title?, content? }
  */
 router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
-  const { title = 'Untitled', content = '', parentId = null, workspaceId = null } = req.body;
+  const { title = 'Untitled', content = '' } = req.body;
   const createCheck = await canCreateDocuments(req.organization.id, 1);
   if (!createCheck.allowed) {
     return res.status(402).json({
@@ -35,7 +62,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
   const entitlements = await getOrganizationEntitlements(req.organization.id);
   if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
 
-  const currentStorage = calculateOrganizationStorageBytes(req.organization.id);
+  const currentStorage = await calculateOrganizationStorageBytesDb(req.organization.id);
   const incomingBytes = bytes(content);
   const limitBytes = entitlements.limits.storageBytes;
   if (currentStorage + incomingBytes > limitBytes) {
@@ -46,28 +73,18 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
   }
 
   const id = uuidv4();
-  const now = new Date().toISOString();
-  // sortOrder = max sortOrder among siblings + 1 so new docs always append
-  const siblings = [...documents.values()].filter(
-    (d) =>
-      d.organizationId === req.organization.id &&
-      (d.workspaceId ?? null) === (workspaceId ?? null) &&
-      (d.parentId ?? null) === (parentId ?? null),
-  );
-  const sortOrder = siblings.reduce((max, d) => Math.max(max, d.sortOrder ?? 0), 0) + 1;
-  const doc = {
-    id,
-    title,
-    content,
-    parentId,
-    workspaceId,
-    sortOrder,
-    userId: req.user.id,
-    organizationId: req.organization.id,
-    createdAt: now,
-    updatedAt: now,
-  };
-  documents.set(id, doc);
+  const created = await prisma.document.create({
+    data: {
+      id,
+      title,
+      content,
+      userId: req.user.id,
+      organizationId: req.organization.id,
+      workspaceId: null,
+    },
+  });
+  const doc = formatDoc(created);
+
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
@@ -81,27 +98,23 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
  * GET /api/docs
  * List all documents belonging to the current user.
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), (req, res) => {
-  const docs = [...documents.values()]
-    .filter((d) => d.organizationId === req.organization.id)
-    .map(({ id, title, userId, createdAt, updatedAt, content, parentId, workspaceId, sortOrder, organizationId }) => ({
-      id,
-      title,
-      userId,
-      organizationId,
-      createdAt,
-      updatedAt,
-      parentId: parentId ?? null,
-      workspaceId: workspaceId ?? null,
-      sortOrder: sortOrder ?? 0,
-      preview: content.replace(/<[^>]+>/g, '').slice(0, 100),
-    }))
-    .sort((a, b) => {
-      if ((a.workspaceId ?? '') !== (b.workspaceId ?? '')) {
-        return (a.workspaceId ?? '').localeCompare(b.workspaceId ?? '');
-      }
-      return a.sortOrder - b.sortOrder;
-    });
+router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (req, res) => {
+  const rows = await prisma.document.findMany({
+    where: { organizationId: req.organization.id },
+    orderBy: { updatedAt: 'desc' },
+  });
+  const docs = rows.map((doc) => ({
+    id: doc.id,
+    title: doc.title,
+    userId: doc.userId,
+    organizationId: doc.organizationId,
+    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
+    updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
+    parentId: null,
+    workspaceId: doc.workspaceId ?? null,
+    sortOrder: 0,
+    preview: String(doc.content || '').replace(/<[^>]+>/g, '').slice(0, 100),
+  }));
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
@@ -115,9 +128,10 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
  * GET /api/docs/:id
  * Fetch a single document.
  */
-router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.read'), (req, res) => {
-  const doc = getDocForOrg(req.params.id, req.organization.id);
-  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (req, res) => {
+  const row = await getDocForOrgDb(req.params.id, req.organization.id);
+  if (!row) return res.status(404).json({ error: 'Document not found.' });
+  const doc = formatDoc(row);
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
@@ -133,8 +147,8 @@ router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
  * Body: { title?, content? }
  */
 router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.update'), attachEntitlements, async (req, res) => {
-  const doc = getDocForOrg(req.params.id, req.organization.id);
-  if (!doc) return res.status(404).json({ error: 'Document not found.' });
+  const existing = await getDocForOrgDb(req.params.id, req.organization.id);
+  if (!existing) return res.status(404).json({ error: 'Document not found.' });
 
   const updateCheck = await canUpdateDocuments(req.organization.id, 1);
   if (!updateCheck.allowed) {
@@ -148,9 +162,9 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
     const entitlements = await getOrganizationEntitlements(req.organization.id);
     if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
 
-    const currentStorage = calculateOrganizationStorageBytes(req.organization.id);
+    const currentStorage = await calculateOrganizationStorageBytesDb(req.organization.id);
     const nextBytes = bytes(req.body.content);
-    const previousBytes = bytes(doc.content);
+    const previousBytes = bytes(existing.content);
     const projectedStorage = currentStorage - previousBytes + nextBytes;
     if (projectedStorage > entitlements.limits.storageBytes) {
       return res.status(402).json({
@@ -160,14 +174,16 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
     }
   }
 
-  if (req.body.title !== undefined) doc.title = req.body.title;
-  if (req.body.content !== undefined) doc.content = req.body.content;
-  if (req.body.parentId !== undefined) doc.parentId = req.body.parentId;
-  if (req.body.workspaceId !== undefined) doc.workspaceId = req.body.workspaceId;
-  if (req.body.sortOrder !== undefined) doc.sortOrder = req.body.sortOrder;
-  doc.updatedAt = new Date().toISOString();
-  documents.set(doc.id, doc);
+  const updated = await prisma.document.update({
+    where: { id: existing.id },
+    data: {
+      ...(req.body.title !== undefined ? { title: req.body.title } : {}),
+      ...(req.body.content !== undefined ? { content: req.body.content } : {}),
+      ...(req.body.workspaceId !== undefined ? { workspaceId: req.body.workspaceId } : {}),
+    },
+  });
   await consumeDocumentUpdates(req.organization.id, 1);
+  const doc = formatDoc(updated);
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
@@ -181,15 +197,16 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
  * DELETE /api/docs/:id
  * Delete a document.
  */
-router.delete('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.delete'), attachEntitlements, (req, res) => {
-  const doc = getDocForOrg(req.params.id, req.organization.id);
-  if (!doc) return res.status(404).json({ error: 'Document not found.' });
-  documents.delete(req.params.id);
+router.delete('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.delete'), attachEntitlements, async (req, res) => {
+  const row = await getDocForOrgDb(req.params.id, req.organization.id);
+  if (!row) return res.status(404).json({ error: 'Document not found.' });
+
+  await prisma.document.delete({ where: { id: row.id } });
   writeAuditLog({
     userId: req.user.id,
     organizationId: req.organization.id,
     action: 'document.delete',
-    metadata: { docId: doc.id },
+    metadata: { docId: row.id },
   });
   res.json({ message: 'Document deleted.' });
 });

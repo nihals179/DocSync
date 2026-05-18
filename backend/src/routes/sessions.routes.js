@@ -1,7 +1,6 @@
 const express = require('express');
 
 const { writeAuditLog } = require('../lib/audit');
-const { users } = require('../store');
 const {
   getAuthScope,
   resolveCookieNames,
@@ -30,10 +29,9 @@ const { authRateLimit } = require('../middleware/auth/rate-limit');
 const router = express.Router();
 
 function audit(req, action, status, userId = null, metadata = {}) {
-  const user = userId ? users.get(userId) : null;
   return writeAuditLog({
     userId,
-    organizationId: user?.currentOrganizationId || metadata.organizationId || null,
+    organizationId: req.user?.currentOrganizationId || metadata.organizationId || null,
     action,
     status,
     ipAddress: getRequestIp(req),
@@ -92,7 +90,7 @@ router.post('/logout', requireAuth, async (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(req.user);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   res.json({ user: publicUser(user), session: req.authSession, csrfToken: req.authSession.csrfToken });
 });

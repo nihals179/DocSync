@@ -7,7 +7,6 @@ const { generateTOTP: _generateTOTP } = require('@otplib/uri');
 const QRCode = require('qrcode');
 
 const { prisma } = require('../db/client');
-const { users } = require('../store');
 const { writeAuditLog, listAuditLogs } = require('../lib/audit');
 const { getPasswordEncryptionPublicKey } = require('../lib/password-crypto');
 const {
@@ -46,11 +45,14 @@ const authenticator = {
 
 const router = express.Router();
 
+async function getUserById(userId) {
+  return prisma.user.findUnique({ where: { id: userId } });
+}
+
 function audit(req, action, status, userId = null, metadata = {}) {
-  const user = userId ? users.get(userId) : null;
   return writeAuditLog({
     userId,
-    organizationId: user?.currentOrganizationId || metadata.organizationId || null,
+    organizationId: req.user?.currentOrganizationId || metadata.organizationId || null,
     action,
     status,
     ipAddress: getRequestIp(req),
@@ -75,7 +77,7 @@ router.post('/login/2fa', loginRateLimit, async (req, res) => {
     return res.status(400).json({ error: 'Two-factor session is invalid or expired.' });
   }
 
-  const user = ensureUserShape(users.get(pending.sub));
+  const user = ensureUserShape(await getUserById(pending.sub));
   if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
     return res.status(400).json({ error: 'Two-factor authentication is not configured.' });
   }
@@ -95,14 +97,12 @@ router.post('/login/2fa', loginRateLimit, async (req, res) => {
   }
 
   user.lastLoginAt = nowIso();
-  if (process.env.DATABASE_URL) {
-    await prisma.user.updateMany({
-      where: { id: user.id },
-      data: {
-        lastLoginAt: new Date(user.lastLoginAt),
-      },
-    });
-  }
+  await prisma.user.updateMany({
+    where: { id: user.id },
+    data: {
+      lastLoginAt: new Date(user.lastLoginAt),
+    },
+  });
 
   const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(pending.remember));
   writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
@@ -120,7 +120,7 @@ router.get('/audit-logs', requireAuth, async (req, res) => {
 });
 
 router.get('/security', requireAuth, async (req, res) => {
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(await getUserById(req.user.id));
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const activeSessions = await countActiveSessionsForUser(user.id);
   res.json({
@@ -131,23 +131,25 @@ router.get('/security', requireAuth, async (req, res) => {
 
 router.post('/2fa/setup', requireAuth, async (req, res) => {
   const authConfig = await getAuthConfig();
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(await getUserById(req.user.id));
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   const secret = authenticator.generateSecret();
-  user.twoFactorTempSecret = secret;
-  users.set(user.id, user);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { twoFactorTempSecret: secret },
+  });
   const otpauth = authenticator.keyuri(user.email, authConfig.appName, secret);
   const qrDataUrl = await QRCode.toDataURL(otpauth);
   audit(req, '2fa-setup', 'success', user.id);
   res.json({ secret, otpauth, qrDataUrl });
 });
 
-router.post('/2fa/enable', requireAuth, (req, res) => {
+router.post('/2fa/enable', requireAuth, async (req, res) => {
   const code = String(req.body?.code || '');
   if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
 
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(await getUserById(req.user.id));
   if (!user || !user.twoFactorTempSecret) {
     return res.status(400).json({ error: 'Two-factor setup has not been started.' });
   }
@@ -158,19 +160,23 @@ router.post('/2fa/enable', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid authentication code.' });
   }
 
-  user.twoFactorSecret = user.twoFactorTempSecret;
-  user.twoFactorTempSecret = null;
-  user.twoFactorEnabled = true;
-  users.set(user.id, user);
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      twoFactorSecret: user.twoFactorTempSecret,
+      twoFactorTempSecret: null,
+      twoFactorEnabled: true,
+    },
+  });
   audit(req, '2fa-enable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication enabled.', user: publicUser(user) });
+  res.json({ message: 'Two-factor authentication enabled.', user: publicUser(ensureUserShape(updatedUser)) });
 });
 
-router.post('/2fa/disable', requireAuth, (req, res) => {
+router.post('/2fa/disable', requireAuth, async (req, res) => {
   const code = String(req.body?.code || '');
   if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
 
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(await getUserById(req.user.id));
   if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
     return res.status(400).json({ error: 'Two-factor authentication is not enabled.' });
   }
@@ -181,12 +187,16 @@ router.post('/2fa/disable', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Invalid authentication code.' });
   }
 
-  user.twoFactorEnabled = false;
-  user.twoFactorSecret = null;
-  user.twoFactorTempSecret = null;
-  users.set(user.id, user);
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      twoFactorEnabled: false,
+      twoFactorSecret: null,
+      twoFactorTempSecret: null,
+    },
+  });
   audit(req, '2fa-disable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication disabled.', user: publicUser(user) });
+  res.json({ message: 'Two-factor authentication disabled.', user: publicUser(ensureUserShape(updatedUser)) });
 });
 
 module.exports = router;

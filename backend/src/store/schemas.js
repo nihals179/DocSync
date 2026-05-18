@@ -3,74 +3,83 @@
  * Each Map is keyed by entity ID.
  */
 
-const { createPersistentMap, initializePersistentMaps } = require('./persistence');
+const { initializePersistentMaps } = require('./persistence');
+
+class NoMemoryMap extends Map {
+	set(key, value) {
+		return this;
+	}
+
+	delete(key) {
+		return false;
+	}
+
+	clear() {}
+}
+
+function createNoMemoryMap() {
+	return new NoMemoryMap();
+}
 
 /** @type {Map<string, { id: string, name: string, ownerUserId: string, createdAt: string, updatedAt: string, billing?: Record<string, unknown> }>} */
-const organizations = createPersistentMap('organizations');
+const organizations = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, organizationId: string, userId: string, billingAdmin: boolean, status: 'active' | 'removed', createdAt: string, updatedAt: string }>} */
-const organizationMemberships = createPersistentMap('organizationMemberships');
+const organizationMemberships = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, token: string, organizationId: string, email: string, billingAdmin: boolean, status: 'pending' | 'accepted' | 'expired' | 'cancelled', invitedByUserId: string, createdAt: string, updatedAt: string, expiresAt: string, acceptedAt: string | null }>} */
-const organizationInvites = createPersistentMap('organizationInvites');
-
-/** @type {Map<string, { id: string, userId: string, refreshTokenHash: string, csrfToken: string, createdAt: string, lastUsedAt: string, expiresAt: string, revokedAt: string | null, remember: boolean, userAgent: string, ipAddress: string }>} */
-const authSessions = createPersistentMap('authSessions');
+const organizationInvites = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, organizationId: string, provider: string, status: 'draft' | 'open' | 'paid' | 'failed' | 'void', amountCents: number, currency: string, periodStart: string | null, periodEnd: string | null, issuedAt: string, paidAt: string | null, hostedUrl: string | null }>} */
-const invoices = createPersistentMap('invoices');
+const invoices = createNoMemoryMap();
 
 /** @type {Map<string, { organizationId: string, planId: string, status: string, purchasedSeats: number, trialEndsAt: string | null, trialUsed: boolean, subscriptionId: string | null, customerId: string | null, currentPeriodEndAt: string | null, graceEndsAt: string | null, updatedAt: string }>} */
-const organizationBilling = createPersistentMap('organizationBilling');
+const organizationBilling = createNoMemoryMap();
 
 /** @type {Map<string, { userId: string, email?: string | null, planId: string, status: string, trialEndsAt: string | null, trialUsed: boolean, subscriptionId: string | null, customerId: string | null, currentPeriodEndAt: string | null, graceEndsAt: string | null, updatedAt: string }>} */
-const userBilling = createPersistentMap('userBilling');
+const userBilling = createNoMemoryMap();
 
 /** @type {Map<string, { organizationId: string, monthKey: string, aiRequests: number }>} */
-const organizationUsage = createPersistentMap('organizationUsage');
+const organizationUsage = createNoMemoryMap();
 
 /** @type {Map<string, { userId: string, monthKey: string, aiRequests: number, documentUpdates: number }>} */
-const userUsage = createPersistentMap('userUsage');
+const userUsage = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, eventId: string, provider: string, type: string, payload: Record<string, unknown>, status: 'queued' | 'processing' | 'processed' | 'failed', attempts: number, maxAttempts: number, nextAttemptAt: string, lastError: string | null, createdAt: string, updatedAt: string }>} */
-const webhookJobs = createPersistentMap('webhookJobs');
+const webhookJobs = createNoMemoryMap();
 
 /** @type {Map<string, { eventId: string, provider: string, processedAt: string }>} */
-const processedWebhookEvents = createPersistentMap('processedWebhookEvents');
-
-/** @type {Map<string, { id: string, userId: string, type: 'email-verification' | 'password-reset', expiresAt: string, createdAt: string }>} */
-const authTokens = createPersistentMap('authTokens');
+const processedWebhookEvents = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, userId: string | null, action: string, status: 'success' | 'failure', ipAddress: string, userAgent: string, createdAt: string, metadata?: Record<string, unknown> }>} */
-const auditLogs = createPersistentMap('auditLogs');
+const auditLogs = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, title: string, content: string, userId: string, createdAt: string, updatedAt: string }>} */
-const documents = createPersistentMap('documents');
+const documents = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, role: string, canAccessAdminBoard: boolean, canReviewSecurityAudit: boolean, canManageGlobalSettings: boolean, canManageMembers: boolean, canManageMemberBillingAdmin: boolean, canManageOrganizationBilling: boolean, canManageWorkspacesDocuments: boolean, canReadOrganizationResources: boolean, canUseAiGrammarByPlan: boolean, canManageBillingSettings: boolean, canViewInvoicesSubscription: boolean, createdAt: string, updatedAt: string }>} */
-const profiles = createPersistentMap('profiles');
+const profiles = createNoMemoryMap();
 
 /** @type {Map<string, Array<{ id: string, text: string, userId: string, createdAt: string }>>} */
-const comments = createPersistentMap('comments');
+const comments = createNoMemoryMap();
 
 /** @type {Map<string, Array<{ id: string, preview: string, content: string, savedAt: string }>>} */
-const versions = createPersistentMap('versions');
+const versions = createNoMemoryMap();
 
 /** @type {Map<string, Array<{ id: string, text: string, done: boolean }>>} */
-const todos = createPersistentMap('todos');
+const todos = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, name: string, ownerId: string, memberIds: string[], createdAt: string, updatedAt: string }>} */
-const workspaces = createPersistentMap('workspaces');
+const workspaces = createNoMemoryMap();
 
 /** @type {Map<string, { id: string, name: string, email: string, passwordHash: string, createdAt: string, accountType?: string, emailVerified?: boolean, failedLoginAttempts?: number, lockoutUntil?: string | null, role?: string, twoFactorEnabled?: boolean, twoFactorSecret?: string | null, twoFactorTempSecret?: string | null, currentOrganizationId?: string | null, lastLoginAt?: string | null }>} */
-const users = createPersistentMap('users');
+const users = createNoMemoryMap();
 
 module.exports = {
 	users,
 	organizations,
 	organizationMemberships,
 	organizationInvites,
-	authSessions,
 	invoices,
 	organizationBilling,
 	userBilling,
@@ -78,7 +87,6 @@ module.exports = {
 	userUsage,
 	webhookJobs,
 	processedWebhookEvents,
-	authTokens,
 	auditLogs,
 	documents,
 	profiles,

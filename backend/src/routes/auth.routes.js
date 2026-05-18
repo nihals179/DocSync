@@ -9,7 +9,6 @@ const {
   ensureWorkspaceForUserProvisioned,
   getOrganizationSecurityState,
   syncCurrentOrganizationFromMembership,
-  users,
 } = require('../store');
 const { writeAuditLog } = require('../lib/audit');
 const {
@@ -23,7 +22,6 @@ const {
   getRequestIp,
   getUserAgent,
   isOrgIpAllowedForUser,
-  ensureUserShape,
   createAuthRouteHelpers,
   publicUser,
   issueOneTimeToken,
@@ -44,13 +42,13 @@ const {
 const { getAuthConfig } = require('../config/auth-config');
 
 const router = express.Router();
+const FRONTEND_URL = process.env.FRONTEND_URL;
 const {
   resolvePasswordFromBody,
   audit,
   ensureUserPersistedToDb,
 } = createAuthRouteHelpers({
   decryptPassword,
-  users,
   writeAuditLog,
   getRequestIp,
   getUserAgent,
@@ -111,7 +109,6 @@ router.post('/register', registerRateLimit, async (req, res) => {
   try {
     await ensureUserPersistedToDb(user, billing);
   } catch (error) {
-    users.delete(user.id);
     audit(req, 'register', 'failure', user.id, { reason: 'db-persist-failed', error: String(error?.message || error) });
     return res.status(500).json({ error: 'Failed to create account. Please try again.' });
   }
@@ -120,7 +117,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
     ? await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs)
     : null;
   const verificationLink = verificationToken
-    ? `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`
+    ? `${FRONTEND_URL}/verify-email?token=${verificationToken}`
     : null;
   audit(req, 'register', 'success', user.id, { verificationRequired });
   res.status(201).json({
@@ -164,16 +161,27 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   const valid = await bcrypt.compare(String(resolvePasswordFromBody(req.body)), user.passwordHash);
   if (!valid) {
-    user.failedLoginAttempts += 1;
-    if (user.failedLoginAttempts >= authConfig.lockoutThreshold) {
-      user.lockoutUntil = new Date(Date.now() + authConfig.lockoutMs).toISOString();
-      audit(req, 'account-lockout', 'failure', user.id, { failedLoginAttempts: user.failedLoginAttempts });
+    const nextFailedAttempts = Number(user.failedLoginAttempts || 0) + 1;
+    const nextLockoutUntil = nextFailedAttempts >= authConfig.lockoutThreshold
+      ? new Date(Date.now() + authConfig.lockoutMs).toISOString()
+      : null;
+    if (nextLockoutUntil) {
+      audit(req, 'account-lockout', 'failure', user.id, { failedLoginAttempts: nextFailedAttempts });
     }
-    audit(req, 'login', 'failure', user.id, { failedLoginAttempts: user.failedLoginAttempts });
-    return res.status(user.lockoutUntil ? 423 : 401).json({
-      error: user.lockoutUntil
+    if (process.env.DATABASE_URL) {
+      await prisma.user.updateMany({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: nextFailedAttempts,
+          lockoutUntil: nextLockoutUntil ? new Date(nextLockoutUntil) : null,
+        },
+      });
+    }
+    audit(req, 'login', 'failure', user.id, { failedLoginAttempts: nextFailedAttempts });
+    return res.status(nextLockoutUntil ? 423 : 401).json({
+      error: nextLockoutUntil
         ? 'Too many failed attempts. Account locked for 30 minutes.'
-          : `Invalid credentials. ${Math.max(0, authConfig.lockoutThreshold - user.failedLoginAttempts)} attempts remaining.`,
+          : `Invalid credentials. ${Math.max(0, authConfig.lockoutThreshold - nextFailedAttempts)} attempts remaining.`,
     });
   }
 
@@ -261,11 +269,12 @@ router.post('/verify-email', authRateLimit, async (req, res) => {
     return res.status(400).json({ error: 'Verification token is invalid or expired.' });
   }
 
-  const user = ensureUserShape(users.get(record.userId));
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  user.emailVerified = true;
-  users.set(user.id, user);
-  audit(req, 'email-verify', 'success', user.id);
+  const updated = await prisma.user.updateMany({
+    where: { id: record.userId },
+    data: { emailVerified: true },
+  });
+  if (!updated.count) return res.status(404).json({ error: 'User not found.' });
+  audit(req, 'email-verify', 'success', record.userId);
   res.json({ message: 'Email verified successfully.' });
 });
 
@@ -273,13 +282,15 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
   const authConfig = await getAuthConfig();
   const email = String(req.body?.email || '').toLowerCase();
   if (!email) return res.status(400).json({ error: 'Email is required.' });
-  const user = [...users.values()].find((item) => item.email === email);
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, emailVerified: true },
+  });
   if (!user) return res.status(404).json({ error: 'User not found.' });
-  ensureUserShape(user);
   if (user.emailVerified) return res.status(400).json({ error: 'Email already verified.' });
 
   const verificationToken = await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
-  const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
+  const verificationLink = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
   audit(req, 'email-verification-resend', 'success', user.id);
   res.json({
     message: 'Verification email queued.',
@@ -292,14 +303,17 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase();
   if (!email) return res.status(400).json({ error: 'Email is required.' });
 
-  const user = [...users.values()].find((item) => item.email === email);
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true },
+  });
   if (!user) {
     audit(req, 'password-reset-request', 'success', null, { maskedEmail: email });
     return res.json({ message: 'If an account exists for that email, a reset link has been generated.' });
   }
 
   const resetToken = await issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
-  const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+  const resetLink = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
   audit(req, 'password-reset-request', 'success', user.id);
   res.json({
     message: 'If an account exists for that email, a reset link has been generated.',
@@ -325,14 +339,17 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
     return res.status(400).json({ error: 'Reset token is invalid or expired.' });
   }
 
-  const user = ensureUserShape(users.get(record.userId));
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  user.passwordHash = await bcrypt.hash(String(password), 12);
-  user.failedLoginAttempts = 0;
-  user.lockoutUntil = null;
-  users.set(user.id, user);
-  await revokeAllUserSessions(user.id);
-  audit(req, 'password-reset', 'success', user.id);
+  const updated = await prisma.user.updateMany({
+    where: { id: record.userId },
+    data: {
+      passwordHash: await bcrypt.hash(String(password), 12),
+      failedLoginAttempts: 0,
+      lockoutUntil: null,
+    },
+  });
+  if (!updated.count) return res.status(404).json({ error: 'User not found.' });
+  await revokeAllUserSessions(record.userId);
+  audit(req, 'password-reset', 'success', record.userId);
   res.json({ message: 'Password updated successfully. Please sign in again.' });
 });
 

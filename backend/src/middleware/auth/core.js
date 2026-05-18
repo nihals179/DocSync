@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { prisma } = require('../../db/client');
 const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
-const { authSessions, syncCurrentOrganizationFromMembership, getOrganizationSecurityState, users } = require('../../store');
+const { syncCurrentOrganizationFromMembership, getOrganizationSecurityState, users } = require('../../store');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
@@ -99,26 +99,20 @@ function mapDbUserToAuthUser(dbUser) {
 }
 
 async function resolveUserFromSession(sessionId) {
-  let session = authSessions.get(sessionId);
-  if (!session && isDatabaseConfigured()) {
-    session = normalizeSession(await prisma.authSession.findUnique({ where: { id: sessionId } }));
-    if (session) authSessions.set(session.id, session);
-  }
+  if (!isDatabaseConfigured()) return null;
+  const session = normalizeSession(await prisma.authSession.findUnique({ where: { id: sessionId } }));
   if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
     return null;
   }
   // Inactivity check: if the user has been idle for 30 minutes, treat the session as expired.
   if (new Date(session.lastUsedAt).getTime() + INACTIVITY_TTL_MS <= Date.now()) {
     session.revokedAt = new Date().toISOString();
-    authSessions.set(session.id, session);
-    if (isDatabaseConfigured()) {
-      await prisma.authSession.updateMany({
-        where: { id: session.id },
-        data: {
-          revokedAt: new Date(session.revokedAt),
-        },
-      });
-    }
+    await prisma.authSession.updateMany({
+      where: { id: session.id },
+      data: {
+        revokedAt: new Date(session.revokedAt),
+      },
+    });
     return null;
   }
   let user = users.get(session.userId);
@@ -180,13 +174,10 @@ async function requireAuth(req, res, next) {
 
     // Slide the inactivity window: any authenticated request counts as activity.
     resolved.session.lastUsedAt = new Date().toISOString();
-    authSessions.set(resolved.session.id, resolved.session);
-    if (isDatabaseConfigured()) {
-      await prisma.authSession.updateMany({
-        where: { id: resolved.session.id },
-        data: { lastUsedAt: new Date(resolved.session.lastUsedAt) },
-      });
-    }
+    await prisma.authSession.updateMany({
+      where: { id: resolved.session.id },
+      data: { lastUsedAt: new Date(resolved.session.lastUsedAt) },
+    });
 
     next();
   } catch {

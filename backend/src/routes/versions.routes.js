@@ -1,21 +1,43 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
-const { documents, getVersionHistoryRetentionDays, versions } = require('../store');
+const { getVersionHistoryRetentionDays } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
-const { filterVersionsByRetention, getDoc } = require('../middleware/versions');
+const { filterVersionsByRetention } = require('../middleware/versions');
 
 const router = express.Router({ mergeParams: true });
+
+async function getDocForOrg(docId, organizationId, res) {
+  const doc = await prisma.document.findUnique({ where: { id: docId } });
+  if (!doc) {
+    res.status(404).json({ error: 'Document not found.' });
+    return null;
+  }
+  if (doc.organizationId !== organizationId) {
+    res.status(403).json({ error: 'Access denied.' });
+    return null;
+  }
+  return doc;
+}
 
 /**
  * GET /api/docs/:docId/versions
  */
 router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.read'), async (req, res) => {
-  if (!getDoc(req.params.docId, req.organization.id, res)) return;
+  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
   const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
-  const retained = filterVersionsByRetention(versions.get(req.params.docId) ?? [], retentionDays);
-  const list = retained.map(({ id, preview, savedAt }) => ({ id, preview, savedAt }));
+  const rows = await prisma.version.findMany({
+    where: { docId: req.params.docId },
+    orderBy: { savedAt: 'desc' },
+  });
+  const retained = filterVersionsByRetention(rows, retentionDays);
+  const list = retained.map((item) => ({
+    id: item.id,
+    preview: item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90),
+    savedAt: item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt,
+  }));
   res.json({ versions: list });
 });
 
@@ -23,24 +45,42 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
  * POST /api/docs/:docId/versions
  * Body: { preview?, content }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.write'), (req, res) => {
-  const doc = getDoc(req.params.docId, req.organization.id, res);
+router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.write'), async (req, res) => {
+  const doc = await getDocForOrg(req.params.docId, req.organization.id, res);
   if (!doc) return;
   const { content, preview } = req.body;
-  if (content === undefined) return res.status(400).json({ error: 'content is required.' });
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content is required.' });
 
-  const version = {
-    id: uuidv4(),
-    preview: (preview ?? content.replace(/<[^>]+>/g, '').trim()).slice(0, 90),
-    content,
-    savedAt: new Date().toISOString(),
-  };
-  const list = versions.get(req.params.docId) ?? [];
-  list.unshift(version);
-  // Keep latest 20 versions
-  if (list.length > 20) list.splice(20);
-  versions.set(req.params.docId, list);
-  res.status(201).json({ version: { id: version.id, preview: version.preview, savedAt: version.savedAt } });
+  const derivedPreview = (preview ?? content.replace(/<[^>]+>/g, '').trim()).slice(0, 90);
+  const created = await prisma.version.create({
+    data: {
+      id: uuidv4(),
+      docId: doc.id,
+      title: derivedPreview,
+      content,
+      savedAt: new Date(),
+    },
+  });
+
+  const overflow = await prisma.version.findMany({
+    where: { docId: req.params.docId },
+    orderBy: { savedAt: 'desc' },
+    skip: 20,
+    select: { id: true },
+  });
+  if (overflow.length) {
+    await prisma.version.deleteMany({
+      where: { id: { in: overflow.map((item) => item.id) } },
+    });
+  }
+
+  res.status(201).json({
+    version: {
+      id: created.id,
+      preview: created.title,
+      savedAt: created.savedAt instanceof Date ? created.savedAt.toISOString() : created.savedAt,
+    },
+  });
 });
 
 /**
@@ -48,37 +88,53 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
  * Overwrites document content with this version's content.
  */
 router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requirePermission('document.version.restore'), async (req, res) => {
-  const doc = getDoc(req.params.docId, req.organization.id, res);
+  const doc = await getDocForOrg(req.params.docId, req.organization.id, res);
   if (!doc) return;
-  const list = versions.get(req.params.docId) ?? [];
-  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
-  const retainedList = filterVersionsByRetention(list, retentionDays);
-  const version = list.find((v) => v.id === req.params.versionId);
-  if (!version || !retainedList.some((item) => item.id === version.id)) {
+
+  const version = await prisma.version.findFirst({
+    where: {
+      id: req.params.versionId,
+      docId: req.params.docId,
+    },
+  });
+  if (!version) {
     return res.status(404).json({ error: 'Version not found.' });
   }
 
-  doc.content = version.content;
-  doc.updatedAt = new Date().toISOString();
-  documents.set(doc.id, doc);
-  res.json({ doc });
+  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
+  const retainedList = filterVersionsByRetention([version], retentionDays);
+  if (!retainedList.length) {
+    return res.status(404).json({ error: 'Version not found.' });
+  }
+
+  const updatedDoc = await prisma.document.update({
+    where: { id: doc.id },
+    data: { content: version.content },
+  });
+  res.json({ doc: updatedDoc });
 });
 
 /**
  * DELETE /api/docs/:docId/versions/:versionId
  */
 router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePermission('document.version.delete'), async (req, res) => {
-  if (!getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = versions.get(req.params.docId) ?? [];
+  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
+
+  const version = await prisma.version.findFirst({
+    where: {
+      id: req.params.versionId,
+      docId: req.params.docId,
+    },
+  });
+  if (!version) return res.status(404).json({ error: 'Version not found.' });
+
   const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
-  const retainedIds = new Set(filterVersionsByRetention(list, retentionDays).map((item) => item.id));
-  if (!retainedIds.has(req.params.versionId)) {
+  const retained = filterVersionsByRetention([version], retentionDays);
+  if (!retained.length) {
     return res.status(404).json({ error: 'Version not found.' });
   }
-  const idx = list.findIndex((v) => v.id === req.params.versionId);
-  if (idx === -1) return res.status(404).json({ error: 'Version not found.' });
-  list.splice(idx, 1);
-  versions.set(req.params.docId, list);
+
+  await prisma.version.delete({ where: { id: req.params.versionId } });
   res.json({ message: 'Version deleted.' });
 });
 

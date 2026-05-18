@@ -2,8 +2,6 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../../db/client');
 const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
-  authSessions,
-  authTokens,
   getOrganizationSecurityState,
   users,
 } = require('../../store');
@@ -93,7 +91,7 @@ function createAuthRouteHelpers({
   }
 
   function audit(req, action, status, userId = null, metadata = {}) {
-    const user = userId ? routeUsers.get(userId) : null;
+    const user = userId && routeUsers?.get ? routeUsers.get(userId) : null;
     return writeAuditLog({
       userId,
       organizationId: user?.currentOrganizationId || metadata.organizationId || null,
@@ -188,7 +186,6 @@ async function issueOneTimeToken(userId, type, ttlMs) {
     expiresAt: new Date(Date.now() + ttlMs).toISOString(),
     createdAt: nowIso(),
   };
-  authTokens.set(token, record);
 
   if (isDatabaseConfigured()) {
     await prisma.authToken.upsert({
@@ -212,72 +209,55 @@ async function issueOneTimeToken(userId, type, ttlMs) {
 }
 
 async function consumeOneTimeToken(token, type) {
-  if (isDatabaseConfigured()) {
-    const dbRecord = await prisma.authToken.findUnique({ where: { id: token } });
-    if (!dbRecord || dbRecord.type !== type) return null;
-
-    await prisma.authToken.deleteMany({
-      where: {
-        id: token,
-        type,
-      },
-    });
-
-    const expiresAtMs = dbRecord.expiresAt instanceof Date
-      ? dbRecord.expiresAt.getTime()
-      : new Date(dbRecord.expiresAt).getTime();
-    if (expiresAtMs <= Date.now()) return null;
-
-    const normalized = {
-      id: dbRecord.id,
-      userId: dbRecord.userId,
-      type: dbRecord.type,
-      expiresAt: dbRecord.expiresAt instanceof Date ? dbRecord.expiresAt.toISOString() : dbRecord.expiresAt,
-      createdAt: dbRecord.createdAt instanceof Date ? dbRecord.createdAt.toISOString() : dbRecord.createdAt,
-    };
-    authTokens.delete(token);
-    return normalized;
+  if (!isDatabaseConfigured()) {
+    return null;
   }
+  const dbRecord = await prisma.authToken.findUnique({ where: { id: token } });
+  if (!dbRecord || dbRecord.type !== type) return null;
 
-  const record = authTokens.get(token);
-  if (!record || record.type !== type) return null;
-  authTokens.delete(token);
-  if (new Date(record.expiresAt).getTime() <= Date.now()) return null;
-  return record;
+  await prisma.authToken.deleteMany({
+    where: {
+      id: token,
+      type,issueOneTimeToken
+    },
+  });
+
+  const expiresAtMs = dbRecord.expiresAt instanceof Date
+    ? dbRecord.expiresAt.getTime()
+    : new Date(dbRecord.expiresAt).getTime();
+  if (expiresAtMs <= Date.now()) return null;
+
+  return {
+    id: dbRecord.id,
+    userId: dbRecord.userId,
+    type: dbRecord.type,
+    expiresAt: dbRecord.expiresAt instanceof Date ? dbRecord.expiresAt.toISOString() : dbRecord.expiresAt,
+    createdAt: dbRecord.createdAt instanceof Date ? dbRecord.createdAt.toISOString() : dbRecord.createdAt,
+  };
 }
 
 async function pruneExpiredSessions() {
   const now = Date.now();
 
-  if (isDatabaseConfigured()) {
-    await prisma.authSession.updateMany({
-      where: {
-        revokedAt: null,
-        expiresAt: { lte: new Date(now) },
-      },
-      data: {
-        revokedAt: new Date(now),
-      },
-    });
-
-    await prisma.authToken.deleteMany({
-      where: {
-        expiresAt: { lte: new Date(now) },
-      },
-    });
+  if (!isDatabaseConfigured()) {
+    return;
   }
 
-  for (const [id, session] of authSessions.entries()) {
-    if (session.revokedAt || new Date(session.expiresAt).getTime() <= now) {
-      authSessions.delete(id);
-    }
-  }
+  await prisma.authSession.updateMany({
+    where: {
+      revokedAt: null,
+      expiresAt: { lte: new Date(now) },
+    },
+    data: {
+      revokedAt: new Date(now),
+    },
+  });
 
-  for (const [id, token] of authTokens.entries()) {
-    if (new Date(token.expiresAt).getTime() <= now) {
-      authTokens.delete(id);
-    }
-  }
+  await prisma.authToken.deleteMany({
+    where: {
+      expiresAt: { lte: new Date(now) },
+    },
+  });
 }
 
 function clearAuthCookies(res, scope = 'workspace') {
@@ -288,6 +268,9 @@ function clearAuthCookies(res, scope = 'workspace') {
 
 async function createSession(user, req, remember) {
   await pruneExpiredSessions();
+  if (!isDatabaseConfigured()) {
+    return null;
+  }
   const refreshToken = generateOpaqueToken();
   const csrfToken = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, remember)).toISOString();
@@ -304,19 +287,19 @@ async function createSession(user, req, remember) {
     userAgent: getUserAgent(req),
     ipAddress: getRequestIp(req),
   };
-  authSessions.set(session.id, session);
-  if (isDatabaseConfigured()) {
-    await prisma.authSession.create({
-      data: {
-        id: session.id,
-        ...toSessionWriteData(session),
-      },
-    });
-  }
+  await prisma.authSession.create({
+    data: {
+      id: session.id,
+      ...toSessionWriteData(session),
+    },
+  });
   return { refreshToken, csrfToken, session };
 }
 
 async function rotateSession(session, req) {
+  if (!isDatabaseConfigured()) {
+    return null;
+  }
   const refreshToken = generateOpaqueToken();
   const csrfToken = generateOpaqueToken();
   session.refreshTokenHash = hashToken(refreshToken);
@@ -326,30 +309,25 @@ async function rotateSession(session, req) {
   session.expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);
-  authSessions.set(session.id, session);
-  if (isDatabaseConfigured()) {
-    await prisma.authSession.upsert({
-      where: { id: session.id },
-      update: {
-        refreshTokenHash: session.refreshTokenHash,
-        csrfToken: session.csrfToken,
-        lastUsedAt: new Date(session.lastUsedAt),
-        expiresAt: new Date(session.expiresAt),
-        userAgent: session.userAgent,
-        ipAddress: session.ipAddress,
-      },
-      create: {
-        id: session.id,
-        ...toSessionWriteData(session),
-      },
-    });
-  }
+  await prisma.authSession.upsert({
+    where: { id: session.id },
+    update: {
+      refreshTokenHash: session.refreshTokenHash,
+      csrfToken: session.csrfToken,
+      lastUsedAt: new Date(session.lastUsedAt),
+      expiresAt: new Date(session.expiresAt),
+      userAgent: session.userAgent,
+      ipAddress: session.ipAddress,
+    },
+    create: {
+      id: session.id,
+      ...toSessionWriteData(session),
+    },
+  });
   return { refreshToken, csrfToken, session };
 }
 
 async function getSessionById(sessionId) {
-  const cached = authSessions.get(sessionId);
-  if (cached) return cached;
   if (!isDatabaseConfigured()) return null;
 
   const session = normalizeSession(
@@ -357,9 +335,7 @@ async function getSessionById(sessionId) {
       where: { id: sessionId },
     }),
   );
-  if (!session) return null;
-  authSessions.set(session.id, session);
-  return session;
+  return session || null;
 }
 
 function matchesRefreshToken(session, token) {
@@ -368,65 +344,43 @@ function matchesRefreshToken(session, token) {
 
 async function findSessionByRefreshToken(refreshToken) {
   if (!refreshToken) return null;
+  if (!isDatabaseConfigured()) return null;
   const refreshTokenHash = hashToken(refreshToken);
-
-  if (isDatabaseConfigured()) {
-    const dbSession = normalizeSession(
-      await prisma.authSession.findFirst({
-        where: {
-          refreshTokenHash,
-          revokedAt: null,
-          expiresAt: { gt: new Date() },
-        },
-        orderBy: { lastUsedAt: 'desc' },
-      }),
-    );
-    if (dbSession) {
-      authSessions.set(dbSession.id, dbSession);
-      return dbSession;
-    }
-  }
-
-  return [...authSessions.values()].find((session) => matchesRefreshToken(session, refreshToken)) || null;
-}
-
-async function listActiveSessionsForUser(userId) {
-  if (isDatabaseConfigured()) {
-    const sessions = await prisma.authSession.findMany({
+  return normalizeSession(
+    await prisma.authSession.findFirst({
       where: {
-        userId,
+        refreshTokenHash,
         revokedAt: null,
         expiresAt: { gt: new Date() },
       },
       orderBy: { lastUsedAt: 'desc' },
-    });
+    }),
+  );
+}
 
-    return sessions.map((session) => {
-      const normalized = normalizeSession(session);
-      authSessions.set(normalized.id, normalized);
-      return normalized;
-    });
-  }
+async function listActiveSessionsForUser(userId) {
+  if (!isDatabaseConfigured()) return [];
+  const sessions = await prisma.authSession.findMany({
+    where: {
+      userId,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { lastUsedAt: 'desc' },
+  });
 
-  return [...authSessions.values()]
-    .filter((session) => session.userId === userId && !session.revokedAt && new Date(session.expiresAt).getTime() > Date.now())
-    .sort((a, b) => new Date(b.lastUsedAt).getTime() - new Date(a.lastUsedAt).getTime());
+  return sessions.map((session) => normalizeSession(session));
 }
 
 async function countActiveSessionsForUser(userId) {
-  if (isDatabaseConfigured()) {
-    return prisma.authSession.count({
-      where: {
-        userId,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-    });
-  }
-
-  return [...authSessions.values()].filter(
-    (session) => session.userId === userId && !session.revokedAt && new Date(session.expiresAt).getTime() > Date.now(),
-  ).length;
+  if (!isDatabaseConfigured()) return 0;
+  return prisma.authSession.count({
+    where: {
+      userId,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+  });
 }
 
 function writeSessionCookies(res, refreshToken, csrfToken, expiresAt, scope = 'workspace') {
@@ -464,41 +418,29 @@ async function revokeSession(sessionId) {
   if (!session) return null;
 
   session.revokedAt = nowIso();
-  authSessions.set(session.id, session);
-
-  if (isDatabaseConfigured()) {
-    await prisma.authSession.updateMany({
-      where: { id: session.id },
-      data: {
-        revokedAt: new Date(session.revokedAt),
-      },
-    });
-  }
+  if (!isDatabaseConfigured()) return null;
+  await prisma.authSession.updateMany({
+    where: { id: session.id },
+    data: {
+      revokedAt: new Date(session.revokedAt),
+    },
+  });
 
   return session;
 }
 
 async function revokeAllUserSessions(userId) {
+  if (!isDatabaseConfigured()) return;
   const revokedAt = nowIso();
-
-  for (const session of authSessions.values()) {
-    if (session.userId === userId && !session.revokedAt) {
-      session.revokedAt = revokedAt;
-      authSessions.set(session.id, session);
-    }
-  }
-
-  if (isDatabaseConfigured()) {
-    await prisma.authSession.updateMany({
-      where: {
-        userId,
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(revokedAt),
-      },
-    });
-  }
+  await prisma.authSession.updateMany({
+    where: {
+      userId,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt: new Date(revokedAt),
+    },
+  });
 }
 
 async function findUserByIdentifier(identifier) {

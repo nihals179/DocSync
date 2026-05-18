@@ -1,53 +1,83 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const { prisma } = require('../db/client');
 
-const { comments } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
-const { getDoc } = require('../middleware/comments');
 
 const router = express.Router({ mergeParams: true });
+
+async function getDocForOrg(docId, organizationId, res) {
+  const doc = await prisma.document.findUnique({ where: { id: docId } });
+  if (!doc) {
+    res.status(404).json({ error: 'Document not found.' });
+    return null;
+  }
+  if (doc.organizationId !== organizationId) {
+    res.status(403).json({ error: 'Access denied.' });
+    return null;
+  }
+  return doc;
+}
 
 /**
  * GET /api/docs/:docId/comments
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.comment.read'), (req, res) => {
-  if (!getDoc(req.params.docId, req.organization.id, res)) return;
-  res.json({ comments: comments.get(req.params.docId) ?? [] });
+router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.comment.read'), async (req, res) => {
+  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
+  const rows = await prisma.comment.findMany({
+    where: { docId: req.params.docId },
+    orderBy: { createdAt: 'asc' },
+  });
+  const list = rows.map((row) => ({
+    id: row.id,
+    text: row.text,
+    userId: row.userId,
+    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+  }));
+  res.json({ comments: list });
 });
 
 /**
  * POST /api/docs/:docId/comments
  * Body: { text }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.comment.write'), (req, res) => {
-  if (!getDoc(req.params.docId, req.organization.id, res)) return;
+router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.comment.write'), async (req, res) => {
+  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
   const { text } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text is required.' });
 
+  const created = await prisma.comment.create({
+    data: {
+      id: uuidv4(),
+      docId: req.params.docId,
+      userId: req.user.id,
+      text: text.trim(),
+    },
+  });
   const comment = {
-    id: uuidv4(),
-    text: text.trim(),
-    userId: req.user.id,
-    userName: req.user.name,
-    createdAt: new Date().toISOString(),
+    id: created.id,
+    text: created.text,
+    userId: created.userId,
+    createdAt: created.createdAt instanceof Date ? created.createdAt.toISOString() : created.createdAt,
+    updatedAt: created.updatedAt instanceof Date ? created.updatedAt.toISOString() : created.updatedAt,
   };
-  const list = comments.get(req.params.docId) ?? [];
-  list.push(comment);
-  comments.set(req.params.docId, list);
   res.status(201).json({ comment });
 });
 
 /**
  * DELETE /api/docs/:docId/comments/:commentId
  */
-router.delete('/:commentId', requireAuth, resolveOrganizationContext, requirePermission('document.comment.delete'), (req, res) => {
-  if (!getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = comments.get(req.params.docId) ?? [];
-  const idx = list.findIndex((c) => c.id === req.params.commentId);
-  if (idx === -1) return res.status(404).json({ error: 'Comment not found.' });
-  list.splice(idx, 1);
-  comments.set(req.params.docId, list);
+router.delete('/:commentId', requireAuth, resolveOrganizationContext, requirePermission('document.comment.delete'), async (req, res) => {
+  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
+  const result = await prisma.comment.deleteMany({
+    where: {
+      id: req.params.commentId,
+      docId: req.params.docId,
+    },
+  });
+  if (!result.count) return res.status(404).json({ error: 'Comment not found.' });
   res.json({ message: 'Comment deleted.' });
 });
 
