@@ -1,25 +1,5 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { generateSync: _totpGenerateSync, verifySync: _totpVerifySync } = require('@otplib/totp');
-const { NobleCryptoPlugin: _NobleCryptoPlugin } = require('@otplib/plugin-crypto-noble');
-const { ScureBase32Plugin: _ScureBase32Plugin } = require('@otplib/plugin-base32-scure');
-const { generateSecret: _otpGenerateSecret } = require('otplib');
-const { generateTOTP: _generateTOTP } = require('@otplib/uri');
-
-// Compatibility shim for otplib v13 (v11 authenticator API no longer exported)
-const _totpPlugins = {
-  crypto: new _NobleCryptoPlugin(),
-  base32: new _ScureBase32Plugin(),
-};
-const authenticator = {
-  generateSecret: () => _otpGenerateSecret(_totpPlugins),
-  keyuri: (email, appName, secret) => _generateTOTP({ label: email, issuer: appName, secret }),
-  check: (token, secret) => {
-    const result = _totpVerifySync({ token: String(token), secret, ..._totpPlugins });
-    return !!(result && result.valid);
-  },
-};
-const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
@@ -31,17 +11,11 @@ const {
   syncCurrentOrganizationFromMembership,
   users,
 } = require('../store');
-const { writeAuditLog, listAuditLogs } = require('../lib/audit');
+const { writeAuditLog } = require('../lib/audit');
 const {
-  getAuthScope,
-  resolveCookieNames,
-  requireAuth,
-  resolveUserFromSession,
   signTwoFactorToken,
-  verifyTwoFactorToken,
 } = require('../middleware/auth/core');
 const {
-  getPasswordEncryptionPublicKey,
   decryptPassword,
 } = require('../lib/password-crypto');
 const {
@@ -54,17 +28,9 @@ const {
   publicUser,
   issueOneTimeToken,
   consumeOneTimeToken,
-  clearAuthCookies,
   createSession,
-  rotateSession,
-  getSessionById,
-  findSessionByRefreshToken,
-  listActiveSessionsForUser,
-  countActiveSessionsForUser,
   writeSessionCookies,
   buildAuthResponse,
-  validateCsrf,
-  revokeSession,
   revokeAllUserSessions,
   findUserByIdentifier,
 } = require('../middleware/auth');
@@ -151,7 +117,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
   }
 
   const verificationToken = verificationRequired
-    ? issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs)
+    ? await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs)
     : null;
   const verificationLink = verificationToken
     ? `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`
@@ -166,42 +132,6 @@ router.post('/register', registerRateLimit, async (req, res) => {
     ...(verificationToken && authConfig.devMode
       ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink }
       : {}),
-  });
-});
-
-router.post('/verify-email', authRateLimit, (req, res) => {
-  const token = String(req.body?.token || '');
-  if (!token) return res.status(400).json({ error: 'Verification token is required.' });
-
-  const record = consumeOneTimeToken(token, 'email-verification');
-  if (!record) {
-    audit(req, 'email-verify', 'failure', null, { reason: 'invalid-token' });
-    return res.status(400).json({ error: 'Verification token is invalid or expired.' });
-  }
-
-  const user = ensureUserShape(users.get(record.userId));
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  user.emailVerified = true;
-  users.set(user.id, user);
-  audit(req, 'email-verify', 'success', user.id);
-  res.json({ message: 'Email verified successfully.' });
-});
-
-router.post('/resend-verification', authRateLimit, async (req, res) => {
-  const authConfig = await getAuthConfig();
-  const email = String(req.body?.email || '').toLowerCase();
-  if (!email) return res.status(400).json({ error: 'Email is required.' });
-  const user = [...users.values()].find((item) => item.email === email);
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  ensureUserShape(user);
-  if (user.emailVerified) return res.status(400).json({ error: 'Email already verified.' });
-
-  const verificationToken = issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
-  const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
-  audit(req, 'email-verification-resend', 'success', user.id);
-  res.json({
-    message: 'Verification email queued.',
-    ...(authConfig.devMode ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
   });
 });
 
@@ -321,141 +251,40 @@ router.post('/login', loginRateLimit, async (req, res) => {
   res.json(buildAuthResponse(user, session));
 });
 
-router.post('/login/2fa', loginRateLimit, async (req, res) => {
-  const authScope = getAuthScope(req);
-  const { tempToken, code } = req.body ?? {};
-  if (!tempToken || !code) {
-    return res.status(400).json({ error: 'tempToken and code are required.' });
+router.post('/verify-email', authRateLimit, async (req, res) => {
+  const token = String(req.body?.token || '');
+  if (!token) return res.status(400).json({ error: 'Verification token is required.' });
+
+  const record = await consumeOneTimeToken(token, 'email-verification');
+  if (!record) {
+    audit(req, 'email-verify', 'failure', null, { reason: 'invalid-token' });
+    return res.status(400).json({ error: 'Verification token is invalid or expired.' });
   }
 
-  let pending;
-  try {
-    pending = verifyTwoFactorToken(String(tempToken));
-  } catch {
-    return res.status(400).json({ error: 'Two-factor session is invalid or expired.' });
-  }
-
-  const user = ensureUserShape(users.get(pending.sub));
-  if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
-    return res.status(400).json({ error: 'Two-factor authentication is not configured.' });
-  }
-
-  if (!isOrgIpAllowedForUser(req, user)) {
-    audit(req, 'login-2fa-ip-policy', 'failure', user.id, {
-      reason: 'ip-not-allowlisted',
-      organizationId: user.currentOrganizationId,
-    });
-    return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
-  }
-
-  const valid = authenticator.check(code, user.twoFactorSecret);
-  if (!valid) {
-    audit(req, 'login-2fa', 'failure', user.id);
-    return res.status(401).json({ error: 'Invalid authentication code.' });
-  }
-
-  user.lastLoginAt = nowIso();
-  if (process.env.DATABASE_URL) {
-    await prisma.user.updateMany({
-      where: { id: user.id },
-      data: {
-        lastLoginAt: new Date(user.lastLoginAt),
-      },
-    });
-  }
-
-  const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(pending.remember));
-  writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
-  audit(req, 'login-2fa', 'success', user.id, { sessionId: session.id });
-  res.json(buildAuthResponse(user, session));
-});
-
-router.post('/refresh', authRateLimit, async (req, res) => {
-  const authScope = getAuthScope(req);
-  const cookieNames = resolveCookieNames(authScope);
-  const refreshToken = req.cookies?.[cookieNames.refreshCookie];
-  if (!refreshToken) {
-    return res.status(401).json({ error: 'No refresh session available.' });
-  }
-
-  const session = await findSessionByRefreshToken(refreshToken);
-  if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
-    clearAuthCookies(res, authScope);
-    return res.status(401).json({ error: 'Refresh session invalid or expired.' });
-  }
-  if (!validateCsrf(req, session)) {
-    return res.status(403).json({ error: 'Invalid CSRF token.' });
-  }
-
-  const resolved = await resolveUserFromSession(session.id);
-  if (!resolved) {
-    clearAuthCookies(res, authScope);
-    return res.status(401).json({ error: 'Refresh session invalid or expired.' });
-  }
-
-  if (!isOrgIpAllowedForUser(req, resolved.user)) {
-    clearAuthCookies(res, authScope);
-    audit(req, 'session-refresh-ip-policy', 'failure', resolved.user.id, {
-      reason: 'ip-not-allowlisted',
-      organizationId: resolved.user.currentOrganizationId,
-      sessionId: resolved.session.id,
-    });
-    return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
-  }
-
-  const rotated = await rotateSession(resolved.session, req);
-  writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt, authScope);
-  audit(req, 'session-refresh', 'success', resolved.user.id, { sessionId: rotated.session.id });
-  res.json(buildAuthResponse(resolved.user, rotated.session));
-});
-
-router.post('/logout', requireAuth, async (req, res) => {
-  const authScope = getAuthScope(req);
-  await revokeSession(req.authSession.id);
-  clearAuthCookies(res, authScope);
-  audit(req, 'logout', 'success', req.user.id, { sessionId: req.authSession.id });
-  res.json({ message: 'Logged out successfully.' });
-});
-
-router.get('/me', requireAuth, (req, res) => {
-  const user = ensureUserShape(users.get(req.user.id));
+  const user = ensureUserShape(users.get(record.userId));
   if (!user) return res.status(404).json({ error: 'User not found.' });
-  res.json({ user: publicUser(user), session: req.authSession, csrfToken: req.authSession.csrfToken });
+  user.emailVerified = true;
+  users.set(user.id, user);
+  audit(req, 'email-verify', 'success', user.id);
+  res.json({ message: 'Email verified successfully.' });
 });
 
-router.get('/sessions', requireAuth, async (req, res) => {
-  const sessions = (await listActiveSessionsForUser(req.user.id))
-    .map((session) => ({
-      id: session.id,
-      createdAt: session.createdAt,
-      lastUsedAt: session.lastUsedAt,
-      expiresAt: session.expiresAt,
-      remember: session.remember,
-      userAgent: session.userAgent,
-      ipAddress: session.ipAddress,
-      current: session.id === req.authSession.id,
-    }));
-  res.json({ sessions });
-});
+router.post('/resend-verification', authRateLimit, async (req, res) => {
+  const authConfig = await getAuthConfig();
+  const email = String(req.body?.email || '').toLowerCase();
+  if (!email) return res.status(400).json({ error: 'Email is required.' });
+  const user = [...users.values()].find((item) => item.email === email);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  ensureUserShape(user);
+  if (user.emailVerified) return res.status(400).json({ error: 'Email already verified.' });
 
-router.delete('/sessions/:sessionId', requireAuth, async (req, res) => {
-  const authScope = getAuthScope(req);
-  const session = await getSessionById(req.params.sessionId);
-  if (!session || session.userId !== req.user.id) {
-    return res.status(404).json({ error: 'Session not found.' });
-  }
-  await revokeSession(session.id);
-  if (session.id === req.authSession.id) clearAuthCookies(res, authScope);
-  audit(req, 'session-revoke', 'success', req.user.id, { sessionId: session.id });
-  res.json({ message: 'Session revoked.' });
-});
-
-router.post('/sessions/revoke-all', requireAuth, async (req, res) => {
-  const authScope = getAuthScope(req);
-  await revokeAllUserSessions(req.user.id);
-  clearAuthCookies(res, authScope);
-  audit(req, 'session-revoke-all', 'success', req.user.id);
-  res.json({ message: 'All sessions revoked.' });
+  const verificationToken = await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
+  const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
+  audit(req, 'email-verification-resend', 'success', user.id);
+  res.json({
+    message: 'Verification email queued.',
+    ...(authConfig.devMode ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
+  });
 });
 
 router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
@@ -469,7 +298,7 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
     return res.json({ message: 'If an account exists for that email, a reset link has been generated.' });
   }
 
-  const resetToken = issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
+  const resetToken = await issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
   const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
   audit(req, 'password-reset-request', 'success', user.id);
   res.json({
@@ -490,7 +319,7 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
   if (!token || !password) return res.status(400).json({ error: 'token and password are required.' });
   if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
-  const record = consumeOneTimeToken(String(token), 'password-reset');
+  const record = await consumeOneTimeToken(String(token), 'password-reset');
   if (!record) {
     audit(req, 'password-reset', 'failure', null, { reason: 'invalid-token' });
     return res.status(400).json({ error: 'Reset token is invalid or expired.' });
@@ -505,85 +334,6 @@ router.post('/reset-password', passwordResetRateLimit, async (req, res) => {
   await revokeAllUserSessions(user.id);
   audit(req, 'password-reset', 'success', user.id);
   res.json({ message: 'Password updated successfully. Please sign in again.' });
-});
-
-router.get('/public-key', authRateLimit, (req, res) => {
-  res.json(getPasswordEncryptionPublicKey());
-});
-
-router.get('/audit-logs', requireAuth, async (req, res) => {
-  const logs = await listAuditLogs({ userId: req.user.id, limit: 100 });
-  res.json({ logs });
-});
-
-router.get('/security', requireAuth, async (req, res) => {
-  const user = ensureUserShape(users.get(req.user.id));
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  const activeSessions = await countActiveSessionsForUser(user.id);
-  res.json({
-    user: publicUser(user),
-    activeSessions,
-  });
-});
-
-router.post('/2fa/setup', requireAuth, async (req, res) => {
-  const authConfig = await getAuthConfig();
-  const user = ensureUserShape(users.get(req.user.id));
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-
-  const secret = authenticator.generateSecret();
-  user.twoFactorTempSecret = secret;
-  users.set(user.id, user);
-  const otpauth = authenticator.keyuri(user.email, authConfig.appName, secret);
-  const qrDataUrl = await QRCode.toDataURL(otpauth);
-  audit(req, '2fa-setup', 'success', user.id);
-  res.json({ secret, otpauth, qrDataUrl });
-});
-
-router.post('/2fa/enable', requireAuth, (req, res) => {
-  const code = String(req.body?.code || '');
-  if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
-
-  const user = ensureUserShape(users.get(req.user.id));
-  if (!user || !user.twoFactorTempSecret) {
-    return res.status(400).json({ error: 'Two-factor setup has not been started.' });
-  }
-
-  const valid = authenticator.check(code, user.twoFactorTempSecret);
-  if (!valid) {
-    audit(req, '2fa-enable', 'failure', req.user.id);
-    return res.status(400).json({ error: 'Invalid authentication code.' });
-  }
-
-  user.twoFactorSecret = user.twoFactorTempSecret;
-  user.twoFactorTempSecret = null;
-  user.twoFactorEnabled = true;
-  users.set(user.id, user);
-  audit(req, '2fa-enable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication enabled.', user: publicUser(user) });
-});
-
-router.post('/2fa/disable', requireAuth, (req, res) => {
-  const code = String(req.body?.code || '');
-  if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
-
-  const user = ensureUserShape(users.get(req.user.id));
-  if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
-    return res.status(400).json({ error: 'Two-factor authentication is not enabled.' });
-  }
-
-  const valid = authenticator.check(code, user.twoFactorSecret);
-  if (!valid) {
-    audit(req, '2fa-disable', 'failure', user.id);
-    return res.status(400).json({ error: 'Invalid authentication code.' });
-  }
-
-  user.twoFactorEnabled = false;
-  user.twoFactorSecret = null;
-  user.twoFactorTempSecret = null;
-  users.set(user.id, user);
-  audit(req, '2fa-disable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication disabled.', user: publicUser(user) });
 });
 
 module.exports = router;

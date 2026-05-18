@@ -179,19 +179,66 @@ function publicUser(user) {
   };
 }
 
-function issueOneTimeToken(userId, type, ttlMs) {
+async function issueOneTimeToken(userId, type, ttlMs) {
   const token = generateOpaqueToken();
-  authTokens.set(token, {
+  const record = {
     id: token,
     userId,
     type,
     expiresAt: new Date(Date.now() + ttlMs).toISOString(),
     createdAt: nowIso(),
-  });
+  };
+  authTokens.set(token, record);
+
+  if (isDatabaseConfigured()) {
+    await prisma.authToken.upsert({
+      where: { id: token },
+      update: {
+        userId,
+        type,
+        expiresAt: new Date(record.expiresAt),
+      },
+      create: {
+        id: token,
+        userId,
+        type,
+        expiresAt: new Date(record.expiresAt),
+        createdAt: new Date(record.createdAt),
+      },
+    });
+  }
+
   return token;
 }
 
-function consumeOneTimeToken(token, type) {
+async function consumeOneTimeToken(token, type) {
+  if (isDatabaseConfigured()) {
+    const dbRecord = await prisma.authToken.findUnique({ where: { id: token } });
+    if (!dbRecord || dbRecord.type !== type) return null;
+
+    await prisma.authToken.deleteMany({
+      where: {
+        id: token,
+        type,
+      },
+    });
+
+    const expiresAtMs = dbRecord.expiresAt instanceof Date
+      ? dbRecord.expiresAt.getTime()
+      : new Date(dbRecord.expiresAt).getTime();
+    if (expiresAtMs <= Date.now()) return null;
+
+    const normalized = {
+      id: dbRecord.id,
+      userId: dbRecord.userId,
+      type: dbRecord.type,
+      expiresAt: dbRecord.expiresAt instanceof Date ? dbRecord.expiresAt.toISOString() : dbRecord.expiresAt,
+      createdAt: dbRecord.createdAt instanceof Date ? dbRecord.createdAt.toISOString() : dbRecord.createdAt,
+    };
+    authTokens.delete(token);
+    return normalized;
+  }
+
   const record = authTokens.get(token);
   if (!record || record.type !== type) return null;
   authTokens.delete(token);
@@ -201,23 +248,36 @@ function consumeOneTimeToken(token, type) {
 
 async function pruneExpiredSessions() {
   const now = Date.now();
+
+  if (isDatabaseConfigured()) {
+    await prisma.authSession.updateMany({
+      where: {
+        revokedAt: null,
+        expiresAt: { lte: new Date(now) },
+      },
+      data: {
+        revokedAt: new Date(now),
+      },
+    });
+
+    await prisma.authToken.deleteMany({
+      where: {
+        expiresAt: { lte: new Date(now) },
+      },
+    });
+  }
+
   for (const [id, session] of authSessions.entries()) {
     if (session.revokedAt || new Date(session.expiresAt).getTime() <= now) {
       authSessions.delete(id);
     }
   }
 
-  if (!isDatabaseConfigured()) return;
-
-  await prisma.authSession.updateMany({
-    where: {
-      revokedAt: null,
-      expiresAt: { lte: new Date() },
-    },
-    data: {
-      revokedAt: new Date(),
-    },
-  });
+  for (const [id, token] of authTokens.entries()) {
+    if (new Date(token.expiresAt).getTime() <= now) {
+      authTokens.delete(id);
+    }
+  }
 }
 
 function clearAuthCookies(res, scope = 'workspace') {

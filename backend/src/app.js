@@ -4,6 +4,8 @@ const cookieParser = require('cookie-parser');
 
 const healthRoutes = require('./routes/health.routes');
 const authRoutes = require('./routes/auth.routes');
+const sessionsRoutes = require('./routes/sessions.routes');
+const securityRoutes = require('./routes/security.routes');
 const docsRoutes = require('./routes/docs.routes');
 const commentsRoutes = require('./routes/comments.routes');
 const versionsRoutes = require('./routes/versions.routes');
@@ -49,6 +51,18 @@ app.use('/', healthRoutes);
 
 // Auth
 app.use('/api/auth', authRoutes);
+
+// Session lifecycle endpoints
+app.use('/api/sessions', sessionsRoutes);
+
+// Backward compatibility for existing auth session endpoints
+app.use('/api/auth', sessionsRoutes);
+
+// Security endpoints
+app.use('/api/security', securityRoutes);
+
+// Backward compatibility for existing auth security endpoints
+app.use('/api/auth', securityRoutes);
 
 // Documents
 app.use('/api/docs', docsRoutes);
