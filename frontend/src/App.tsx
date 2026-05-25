@@ -56,7 +56,7 @@ type RightTool = 'comments' | 'versions' | 'todo' | 'grammar' | 'ai' | 'html';
 
 const RIGHT_TOOLS: { id: RightTool; icon: string; label: string }[] = [
   { id: 'comments', icon: 'comment', label: 'Comments' },
-  { id: 'versions', icon: 'description', label: 'Saved Documents' },
+  { id: 'versions', icon: 'description', label: 'Saved Versions' },
   { id: 'todo', icon: 'checklist', label: 'To-Do List' },
   { id: 'grammar', icon: 'spellcheck', label: 'Grammar Checker' },
   { id: 'ai', icon: 'smart_toy', label: 'AI Assistant' },
@@ -180,7 +180,7 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
   const editorShellRef = useRef<HTMLDivElement | null>(null);
   const [currentText, setCurrentText] = useState('');
   const [currentRuns, setCurrentRuns] = useState<Run[]>([]);
-  const [, setSavedVersions] = useState<SavedVersion[]>([]);
+  const [savedVersions, setSavedVersions] = useState<SavedVersion[]>([]);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocument[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => getInitialWorkspaceSelectionId());
@@ -194,6 +194,7 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
   const [title, setTitle] = useState<string>('');
   const [showSavePopup, setShowSavePopup] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [isWorkspacePanelCollapsed, setIsWorkspacePanelCollapsed] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem(WORKSPACE_PANEL_COLLAPSED_KEY) === '1';
@@ -237,6 +238,27 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
     tableBorderRadiusPx: 0,
   });
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const lastSavedVersionHtmlRef = useRef<string>('');
+  const lastAutoSavedHtmlRef = useRef<string>('');
+  const lastAutoSavedTitleRef = useRef<string>('');
+  const isAutoSavingRef = useRef(false);
+  const isDocLoadedRef = useRef(false);
+
+  function normalizeVersionHtml(html: string) {
+    return String(html || '').trim();
+  }
+
+  function buildVersionPreview(html: string, previewText?: string) {
+    const manualPreview = String(previewText || '').trim();
+    if (manualPreview) return manualPreview.slice(0, 90);
+
+    const plain = String(html || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (plain) return plain.slice(0, 90);
+    return 'Updated document';
+  }
 
   function handleOpenDocClick(docIdValue: string) {
     navigate(`/editor/${docIdValue}`);
@@ -245,10 +267,17 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
   // Load versions from backend on mount
   useEffect(() => {
     if (!docId) return;
+    isDocLoadedRef.current = false;
     docsApi
       .get(token, docId)
       .then(({ doc }) => {
         setTitle(doc.title ?? '');
+        const normalizedHtml = normalizeVersionHtml(doc.content ?? '');
+        const normalizedTitle = String(doc.title || '').trim();
+        lastSavedVersionHtmlRef.current = normalizedHtml;
+        lastAutoSavedHtmlRef.current = normalizedHtml;
+        lastAutoSavedTitleRef.current = normalizedTitle;
+        isDocLoadedRef.current = true;
         const runs = htmlToRuns(doc.content ?? '');
         editorRef.current?.setRuns(runs);
       })
@@ -256,6 +285,49 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
         console.error('Failed to load document.', error);
       });
   }, [token, docId]);
+
+  useEffect(() => {
+    if (!docId || !isDocLoadedRef.current) return;
+
+    const timeoutId = window.setTimeout(async () => {
+      if (isAutoSavingRef.current) return;
+
+      const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+      const normalizedHtml = normalizeVersionHtml(html);
+      const normalizedTitle = String(title || '').trim();
+
+      const unchanged = normalizedHtml === lastAutoSavedHtmlRef.current
+        && normalizedTitle === lastAutoSavedTitleRef.current;
+      if (unchanged) return;
+
+      isAutoSavingRef.current = true;
+      setAutoSaveStatus('saving');
+      try {
+        await docsApi.update(token, docId, { title, content: html });
+        lastAutoSavedHtmlRef.current = normalizedHtml;
+        lastAutoSavedTitleRef.current = normalizedTitle;
+        setAutoSaveStatus('saved');
+
+        setSavedDocuments((prev) => prev.map((doc) => {
+          if (doc.id !== docId) return doc;
+          const preview = String(html || '').replace(/<[^>]+>/g, '').slice(0, 100);
+          return {
+            ...doc,
+            title,
+            preview,
+            updatedAt: new Date().toISOString(),
+          };
+        }));
+      } catch (error: unknown) {
+        console.error('Autosave failed.', error);
+        setAutoSaveStatus('error');
+      } finally {
+        isAutoSavingRef.current = false;
+      }
+    }, 1500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [token, docId, title, currentText, currentRuns]);
 
   useEffect(() => {
     try {
@@ -267,6 +339,7 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
 
   useEffect(() => {
     if (!docId) return;
+    setSavedVersions([]);
     versionsApi
       .list(token, docId)
       .then(({ versions }) => setSavedVersions(versions))
@@ -287,12 +360,16 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
   const saveVersion = useCallback(
     async (previewText?: string) => {
       if (!docId) return;
-      const plainText = currentText.trim();
-      const preview = (previewText ?? plainText).slice(0, 90);
-      if (!preview) return;
       try {
         const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+        const normalizedHtml = normalizeVersionHtml(html);
+        if (normalizedHtml === lastSavedVersionHtmlRef.current) {
+          return;
+        }
+
+        const preview = buildVersionPreview(html, previewText);
         const { version } = await versionsApi.save(token, docId, html, preview);
+        lastSavedVersionHtmlRef.current = normalizedHtml;
         setSavedVersions((prev) => [version, ...prev].slice(0, 20));
       } catch (error: unknown) {
         console.error('Failed to save version.', error);
@@ -799,6 +876,8 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
       try {
         const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
         await docsApi.update(token, docId, { title, content: html });
+        lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
+        lastAutoSavedTitleRef.current = String(title || '').trim();
         const { docs } = await docsApi.list(token);
         setSavedDocuments(docs);
       } catch {
@@ -810,11 +889,26 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
     setSaveMessage('');
   }, [saveMessage, saveVersion, token, docId, title, currentText, currentRuns]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifierPressed = event.metaKey || event.ctrlKey;
+      if (!modifierPressed || event.altKey) return;
+      if (event.key.toLowerCase() !== 's') return;
+      event.preventDefault();
+      void handleSaveDocument();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleSaveDocument]);
+
   const handlePublishDocument = useCallback(async () => {
     if (docId) {
       try {
         const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
         await docsApi.update(token, docId, { title, content: html });
+        lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
+        lastAutoSavedTitleRef.current = String(title || '').trim();
         const { docs } = await docsApi.list(token);
         setSavedDocuments(docs);
       } catch {
@@ -1006,18 +1100,52 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
                     placeholder="Untitled document"
                     className="w-full bg-transparent px-2 py-1 text-sm font-semibold text-slate-800 outline-none"
                   />
+                  <span
+                    className="inline-flex items-center text-[11px] font-medium whitespace-nowrap text-emerald-700"
+                    title={
+                      autoSaveStatus === 'saved'
+                        ? 'Saved'
+                        : autoSaveStatus === 'saving'
+                          ? 'Saving...'
+                          : autoSaveStatus === 'error'
+                            ? 'Save failed'
+                            : 'Auto-save'
+                    }
+                    aria-label={
+                      autoSaveStatus === 'saved'
+                        ? 'Saved'
+                        : autoSaveStatus === 'saving'
+                          ? 'Saving...'
+                          : autoSaveStatus === 'error'
+                            ? 'Save failed'
+                            : 'Auto-save'
+                    }
+                  >
+                    <span
+                      className={`material-icons ${autoSaveStatus === 'saving' ? 'animate-spin' : ''}`}
+                      style={{ fontSize: '1.2rem' }}
+                    >
+                      {autoSaveStatus === 'saved'
+                        ? 'cloud_done'
+                        : autoSaveStatus === 'saving'
+                          ? 'cloud_upload'
+                          : autoSaveStatus === 'error'
+                            ? 'cloud_off'
+                            : 'cloud'}
+                    </span>
+                  </span>
                   <div className="relative" ref={savePopupRef}>
                     <button
                       type="button"
                       onClick={() => setShowSavePopup((prev) => !prev)}
                       className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
                     >
-                      Save
+                      Commit
                     </button>
                     {showSavePopup && (
                       <div className="absolute right-0 top-9 z-50 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
                         <label className="mb-1 block text-[11px] font-semibold text-slate-600">
-                          Save message
+                          Commit message
                         </label>
                         <textarea
                           value={saveMessage}
@@ -1046,7 +1174,7 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
                             onClick={() => void handleSaveDocument()}
                             className="rounded bg-cyan-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-cyan-700"
                           >
-                            Save
+                            Commit
                           </button>
                         </div>
                       </div>
@@ -1098,10 +1226,7 @@ function EditorView({ token, docId }: { token: string; docId: string }) {
                   )}
                   {activeTool === 'versions' && (
                     <SavedDocuments
-                      documents={savedDocuments}
-                      onOpen={(id) => {
-                        navigate(`/editor/${id}`);
-                      }}
+                      versions={savedVersions}
                     />
                   )}
                   {activeTool === 'todo' && <TodoList docId={docId} token={token} />}

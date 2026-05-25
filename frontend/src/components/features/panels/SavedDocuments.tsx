@@ -1,40 +1,31 @@
 import React from 'react';
 
-type SavedDocumentItem = {
+type SavedVersionItem = {
   id: string;
-  title: string;
   preview: string;
-  updatedAt: string;
+  savedAt: string;
 };
 
 type SavedDocumentsProps = {
-  documents: SavedDocumentItem[];
-  onOpen: (id: string) => void;
+  versions: SavedVersionItem[];
 };
 
-const SavedDocuments: React.FC<SavedDocumentsProps> = ({ documents, onOpen }) => (
-  <section className="rounded-xl border border-slate-200/80 bg-white/80 p-4">
+const SavedDocuments: React.FC<SavedDocumentsProps> = ({ versions }) => (
+  <section className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200/80 bg-white/80 p-4">
     <h3 className="mb-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-600">
-      Saved Documents
+      Saved Versions
     </h3>
-    <div className="max-h-72 overflow-y-auto rounded-lg border border-dashed border-slate-300/80 bg-slate-50 p-3">
-      {documents.length === 0 ? (
+    <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-dashed border-slate-300/80 bg-slate-50 p-3">
+      {versions.length === 0 ? (
         <p className="text-sm text-slate-500">
-          No saved documents found.
+          No saved versions for this document.
         </p>
       ) : (
         <ul className="space-y-2">
-          {documents.map((doc) => (
-            <li key={doc.id}>
-              <button
-                type="button"
-                onClick={() => onOpen(doc.id)}
-                className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left hover:bg-slate-50"
-              >
-                <p className="truncate text-xs font-semibold text-slate-800">{doc.title || 'Untitled document'}</p>
-                <p className="mt-1 line-clamp-2 text-xs text-slate-600">{doc.preview || 'No preview available.'}</p>
-                <p className="mt-1 text-[11px] text-slate-500">Updated {new Date(doc.updatedAt).toLocaleString()}</p>
-              </button>
+          {versions.map((version) => (
+            <li key={version.id} className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left">
+              <p className="mt-1 line-clamp-2 text-xs text-slate-700">{version.preview || 'No preview available.'}</p>
+              <p className="mt-1 text-[11px] text-slate-500">Saved {new Date(version.savedAt).toLocaleString()}</p>
             </li>
           ))}
         </ul>

@@ -162,6 +162,76 @@ async function writeOrganizationBillingStateToDb(organizationId, state) {
 	});
 }
 
+function mapDbOrganizationToRecord(row) {
+	if (!row) return null;
+	return {
+		id: row.id,
+		name: row.name,
+		ownerUserId: row.ownerUserId,
+		createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+		updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+		...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
+	};
+}
+
+async function resolveOrganizationById(organizationId) {
+	if (!organizationId) return null;
+	const inMemory = organizations.get(organizationId);
+	if (inMemory) return inMemory;
+	if (!isDatabaseConfigured()) return null;
+
+	const row = await prisma.organization.findUnique({ where: { id: organizationId } });
+	if (!row) return null;
+	const organization = mapDbOrganizationToRecord(row);
+	organizations.set(organization.id, organization);
+	return organization;
+}
+
+function normalizeUsageState(input, organizationId, monthKey) {
+	return {
+		organizationId,
+		monthKey,
+		aiRequests: Number(input?.aiRequests || 0),
+		documentUpdates: Number(input?.documentUpdates || 0),
+	};
+}
+
+async function readOrganizationUsageFromDb(organizationId, monthKey) {
+	if (!isDatabaseConfigured()) return null;
+	const row = await prisma.organizationUsage.findUnique({
+		where: {
+			organizationId_monthKey: {
+				organizationId,
+				monthKey,
+			},
+		},
+	});
+	if (!row) return null;
+	return normalizeUsageState(row, organizationId, monthKey);
+}
+
+async function writeOrganizationUsageToDb(organizationId, monthKey, usage) {
+	if (!isDatabaseConfigured() || !organizationId || !monthKey || !usage) return;
+	await prisma.organizationUsage.upsert({
+		where: {
+			organizationId_monthKey: {
+				organizationId,
+				monthKey,
+			},
+		},
+		update: {
+			aiRequests: Number(usage.aiRequests || 0),
+			documentUpdates: Number(usage.documentUpdates || 0),
+		},
+		create: {
+			organizationId,
+			monthKey,
+			aiRequests: Number(usage.aiRequests || 0),
+			documentUpdates: Number(usage.documentUpdates || 0),
+		},
+	});
+}
+
 function monthKeyFromDate(input = new Date()) {
 	const date = input instanceof Date ? input : new Date(input);
 	return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -384,13 +454,13 @@ async function ensureOrganizationBillingState(organization) {
 }
 
 async function getOrganizationBillingState(organizationId) {
-	const organization = organizations.get(organizationId);
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return null;
 	return ensureOrganizationBillingState(organization);
 }
 
 async function upsertOrganizationBillingState(organizationId, updates = {}) {
-	const organization = organizations.get(organizationId);
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return null;
 	const current = await ensureOrganizationBillingState(organization);
 	const next = normalizeOrganizationBillingState({
@@ -434,7 +504,7 @@ async function ensureUserBillingState(user) {
 }
 
 async function refreshBillingStatus(organizationId) {
-	const organization = organizations.get(organizationId);
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return null;
 	const billing = await ensureOrganizationBillingState(organization);
 	const nowMs = Date.now();
@@ -477,16 +547,23 @@ function isBillingWriteBlocked(billingState) {
 	return billingState.status === 'suspended';
 }
 
-function getOrganizationUsage(organizationId) {
+async function getOrganizationUsage(organizationId) {
 	const monthKey = monthKeyFromDate(new Date());
 	const existing = organizationUsage.get(organizationId);
 	if (existing && existing.monthKey === monthKey) return existing;
-	const usage = {
-		organizationId,
-		monthKey,
-		aiRequests: 0,
-		documentUpdates: 0,
-	};
+
+	let usage = null;
+	if (isDatabaseConfigured()) {
+		usage = await readOrganizationUsageFromDb(organizationId, monthKey);
+	}
+
+	if (!usage) {
+		usage = normalizeUsageState(null, organizationId, monthKey);
+		if (isDatabaseConfigured()) {
+			await writeOrganizationUsageToDb(organizationId, monthKey, usage);
+		}
+	}
+
 	organizationUsage.set(organizationId, usage);
 	return usage;
 }
@@ -501,7 +578,11 @@ function isWithinPlanAccessDays(organization, accessDays) {
 	return Date.now() <= expiresAtMs;
 }
 
-function countOrganizationDocuments(organizationId) {
+async function countOrganizationDocuments(organizationId) {
+	if (isDatabaseConfigured()) {
+		return prisma.document.count({ where: { organizationId } });
+	}
+
 	let total = 0;
 	for (const doc of documents.values()) {
 		if (doc.organizationId === organizationId) total += 1;
@@ -515,9 +596,9 @@ async function canCreateDocuments(organizationId, additionalDocuments = 1) {
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documents;
 	if (limit === null || limit === undefined) {
-		return { allowed: true, current: countOrganizationDocuments(organizationId), limit: null };
+		return { allowed: true, current: await countOrganizationDocuments(organizationId), limit: null };
 	}
-	const current = countOrganizationDocuments(organizationId);
+	const current = await countOrganizationDocuments(organizationId);
 	const nextTotal = current + Math.max(0, additionalDocuments);
 	if (nextTotal > limit) {
 		return {
@@ -533,7 +614,7 @@ async function canUpdateDocuments(organizationId, additionalUpdates = 1) {
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documentUpdatesPerMonth;
-	const usage = getOrganizationUsage(organizationId);
+	const usage = await getOrganizationUsage(organizationId);
 	if (limit === null || limit === undefined) {
 		return { allowed: true, usage, limit: null };
 	}
@@ -552,14 +633,17 @@ async function canUpdateDocuments(organizationId, additionalUpdates = 1) {
 async function consumeDocumentUpdates(organizationId, count = 1) {
 	const check = await canUpdateDocuments(organizationId, count);
 	if (!check.allowed) return check;
-	const usage = getOrganizationUsage(organizationId);
+	const usage = await getOrganizationUsage(organizationId);
 	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
 	organizationUsage.set(organizationId, usage);
+	if (isDatabaseConfigured()) {
+		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
+	}
 	return { allowed: true, usage };
 }
 
 async function canUseGrammar(organizationId) {
-	const organization = organizations.get(organizationId);
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return { allowed: false, reason: 'Organization not found.' };
 	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
@@ -573,20 +657,30 @@ async function canUseGrammar(organizationId) {
 	};
 }
 
-function getAssignedSeatCount(organizationId) {
+async function getAssignedSeatCount(organizationId) {
+	if (isDatabaseConfigured()) {
+		return prisma.organizationMembership.count({
+			where: {
+				organizationId,
+				status: 'active',
+			},
+		});
+	}
+
 	return [...organizationMemberships.values()].filter(
 		(membership) => membership.organizationId === organizationId && membership.status === 'active',
 	).length;
 }
 
-function getCollaboratorCount(organizationId) {
+
+async function getCollaboratorCount(organizationId) {
 	return getAssignedSeatCount(organizationId);
 }
 
 async function canAssignSeats(organizationId, additionalSeats = 1) {
 	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
-	const assignedSeats = getAssignedSeatCount(organizationId);
+	const assignedSeats = await getAssignedSeatCount(organizationId);
 	const nextAssigned = assignedSeats + Math.max(0, additionalSeats);
 	if (nextAssigned > billing.purchasedSeats) {
 		return {
@@ -601,7 +695,7 @@ async function canAssignCollaborators(organizationId, additionalCollaborators = 
 	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
 	const plan = getPlan(billing.planId);
-	const current = getCollaboratorCount(organizationId);
+	const current = await getCollaboratorCount(organizationId);
 	const nextTotal = current + Math.max(0, additionalCollaborators);
 	if (nextTotal > plan.limits.collaborators) {
 		return {
@@ -612,7 +706,15 @@ async function canAssignCollaborators(organizationId, additionalCollaborators = 
 	return { allowed: true, current, limit: plan.limits.collaborators };
 }
 
-function calculateOrganizationStorageBytes(organizationId) {
+async function calculateOrganizationStorageBytes(organizationId) {
+	if (isDatabaseConfigured()) {
+		const docs = await prisma.document.findMany({
+			where: { organizationId },
+			select: { content: true },
+		});
+		return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
+	}
+
 	let total = 0;
 	for (const doc of documents.values()) {
 		if (doc.organizationId === organizationId) {
@@ -623,7 +725,7 @@ function calculateOrganizationStorageBytes(organizationId) {
 }
 
 async function canConsumeAiRequests(organizationId, count = 1) {
-	const organization = organizations.get(organizationId);
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return { allowed: false, reason: 'Organization not found.' };
 	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return { allowed: false, reason: 'Organization not found.' };
@@ -637,7 +739,7 @@ async function canConsumeAiRequests(organizationId, count = 1) {
 			reason: `AI assistant access expired for ${plan.name} plan.`,
 		};
 	}
-	const usage = getOrganizationUsage(organizationId);
+	const usage = await getOrganizationUsage(organizationId);
 	const nextUsage = usage.aiRequests + Math.max(0, count);
 	if (nextUsage > plan.limits.aiRequestsPerMonth) {
 		return {
@@ -651,9 +753,12 @@ async function canConsumeAiRequests(organizationId, count = 1) {
 async function consumeAiRequests(organizationId, count = 1) {
 	const check = await canConsumeAiRequests(organizationId, count);
 	if (!check.allowed) return check;
-	const usage = getOrganizationUsage(organizationId);
+	const usage = await getOrganizationUsage(organizationId);
 	usage.aiRequests += Math.max(0, count);
 	organizationUsage.set(organizationId, usage);
+	if (isDatabaseConfigured()) {
+		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
+	}
 	return { allowed: true, usage };
 }
 
@@ -661,10 +766,10 @@ async function getOrganizationEntitlements(organizationId) {
 	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
-	const usage = getOrganizationUsage(organizationId);
-	const assignedSeats = getAssignedSeatCount(organizationId);
-	const storageUsedBytes = calculateOrganizationStorageBytes(organizationId);
-	const collaboratorsAssigned = getCollaboratorCount(organizationId);
+	const usage = await getOrganizationUsage(organizationId);
+	const assignedSeats = await getAssignedSeatCount(organizationId);
+	const storageUsedBytes = await calculateOrganizationStorageBytes(organizationId);
+	const collaboratorsAssigned = await getCollaboratorCount(organizationId);
 
 	return {
 		billing,

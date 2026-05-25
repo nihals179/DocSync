@@ -36,6 +36,41 @@ async function getDocForOrgDb(docId, organizationId) {
   return prisma.document.findFirst({ where: { id: docId, organizationId } });
 }
 
+function hasWorkspaceAccess(workspace, userId) {
+  if (!workspace) return false;
+  if (workspace.ownerId === userId) return true;
+  if (Array.isArray(workspace.memberIds) && workspace.memberIds.includes(userId)) return true;
+  return false;
+}
+
+async function resolveWorkspaceForOrganization(workspaceId, organizationId, userId) {
+  if (workspaceId === undefined) {
+    return { ok: true, workspaceId: undefined };
+  }
+  if (workspaceId === null) {
+    return { ok: true, workspaceId: null };
+  }
+
+  const normalizedWorkspaceId = String(workspaceId || '').trim();
+  if (!normalizedWorkspaceId) {
+    return { ok: false, error: 'Invalid workspaceId.' };
+  }
+
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: normalizedWorkspaceId },
+    select: { id: true, organizationId: true, ownerId: true, memberIds: true },
+  });
+
+  const inAllowedScope = workspace
+    && (workspace.organizationId === organizationId || workspace.organizationId === userId);
+
+  if (!workspace || !inAllowedScope || !hasWorkspaceAccess(workspace, userId)) {
+    return { ok: false, error: 'Workspace not found for organization.' };
+  }
+
+  return { ok: true, workspaceId: workspace.id };
+}
+
 async function calculateOrganizationStorageBytesDb(organizationId) {
   const docs = await prisma.document.findMany({
     where: { organizationId },
@@ -51,6 +86,15 @@ async function calculateOrganizationStorageBytesDb(organizationId) {
  */
 router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
   const { title = 'Untitled', content = '' } = req.body;
+  const workspaceResolution = await resolveWorkspaceForOrganization(
+    req.body.workspaceId ?? null,
+    req.organization.id,
+    req.user.id,
+  );
+  if (!workspaceResolution.ok) {
+    return res.status(400).json({ error: workspaceResolution.error });
+  }
+
   const createCheck = await canCreateDocuments(req.organization.id, 1);
   if (!createCheck.allowed) {
     return res.status(402).json({
@@ -80,7 +124,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
       content,
       userId: req.user.id,
       organizationId: req.organization.id,
-      workspaceId: null,
+      workspaceId: workspaceResolution.workspaceId,
     },
   });
   const doc = formatDoc(created);
@@ -150,6 +194,15 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   const existing = await getDocForOrgDb(req.params.id, req.organization.id);
   if (!existing) return res.status(404).json({ error: 'Document not found.' });
 
+  const workspaceResolution = await resolveWorkspaceForOrganization(
+    req.body.workspaceId,
+    req.organization.id,
+    req.user.id,
+  );
+  if (!workspaceResolution.ok) {
+    return res.status(400).json({ error: workspaceResolution.error });
+  }
+
   const updateCheck = await canUpdateDocuments(req.organization.id, 1);
   if (!updateCheck.allowed) {
     return res.status(402).json({
@@ -179,7 +232,7 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
     data: {
       ...(req.body.title !== undefined ? { title: req.body.title } : {}),
       ...(req.body.content !== undefined ? { content: req.body.content } : {}),
-      ...(req.body.workspaceId !== undefined ? { workspaceId: req.body.workspaceId } : {}),
+      ...(workspaceResolution.workspaceId !== undefined ? { workspaceId: workspaceResolution.workspaceId } : {}),
     },
   });
   await consumeDocumentUpdates(req.organization.id, 1);

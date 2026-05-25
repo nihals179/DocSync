@@ -88,6 +88,7 @@ export default function WorkspaceHomePage({
   onOpenSettingsDashboard,
   onLogout,
 }: WorkspaceHomePageProps) {
+  const PAGE_SIZE = 5;
   const [docs, setDocs] = useState<DocSummary[]>([]);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -104,6 +105,8 @@ export default function WorkspaceHomePage({
   const [dragDocId, setDragDocId] = useState<string | null>(null);
   const [dropHint, setDropHint] = useState<{ targetId: string | null; mode: 'before' | 'after' | 'inside' | 'root' } | null>(null);
   const [workspaceModal, setWorkspaceModal] = useState<WorkspaceModalState | null>(null);
+  const [docsPage, setDocsPage] = useState(1);
+  const [versionsPage, setVersionsPage] = useState(1);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const selectedWorkspaceIdRef = useRef<string>(selectedWorkspaceId);
 
@@ -208,6 +211,41 @@ export default function WorkspaceHomePage({
   }, [versions, searchQuery]);
 
   const hasDocs = useMemo(() => filteredDocs.length > 0, [filteredDocs]);
+
+  const docsPageCount = useMemo(
+    () => Math.max(1, Math.ceil(filteredDocs.length / PAGE_SIZE)),
+    [filteredDocs.length],
+  );
+  const versionsPageCount = useMemo(
+    () => Math.max(1, Math.ceil(filteredVersions.length / PAGE_SIZE)),
+    [filteredVersions.length],
+  );
+
+  useEffect(() => {
+    setDocsPage(1);
+  }, [searchQuery, selectedWorkspaceId]);
+
+  useEffect(() => {
+    setVersionsPage(1);
+  }, [searchQuery, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (docsPage > docsPageCount) setDocsPage(docsPageCount);
+  }, [docsPage, docsPageCount]);
+
+  useEffect(() => {
+    if (versionsPage > versionsPageCount) setVersionsPage(versionsPageCount);
+  }, [versionsPage, versionsPageCount]);
+
+  const pagedDocs = useMemo(() => {
+    const start = (docsPage - 1) * PAGE_SIZE;
+    return filteredDocs.slice(start, start + PAGE_SIZE);
+  }, [filteredDocs, docsPage]);
+
+  const pagedVersions = useMemo(() => {
+    const start = (versionsPage - 1) * PAGE_SIZE;
+    return filteredVersions.slice(start, start + PAGE_SIZE);
+  }, [filteredVersions, versionsPage]);
 
   async function createFromTemplate(template: Template) {
     try {
@@ -863,9 +901,9 @@ export default function WorkspaceHomePage({
               </section>
 
               {/* Documents + Version History */}
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
 
-                <section id="documents-section" className="rounded-2xl bg-white p-6 shadow-sm lg:col-span-2">
+                <section id="documents-section" className="flex h-140 min-h-0 flex-col rounded-2xl bg-white p-6 shadow-sm">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <h2 className="text-lg font-black tracking-tight text-slate-800">Recent Documents</h2>
@@ -873,37 +911,63 @@ export default function WorkspaceHomePage({
                     </div>
                     {loading && <span className="text-xs text-slate-400">Loading…</span>}
                   </div>
-                  {!loading && !hasDocs && (
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                  {!loading && !hasDocs ? (
+                    <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
                       <span className="material-icons mx-auto mb-2 block text-4xl text-slate-300">description</span>
                       <p className="text-sm font-semibold text-slate-600">No documents yet</p>
                       <p className="mt-1 text-xs text-slate-500">Start with a template above</p>
                     </div>
-                  )}
-                  <ul className="space-y-2">
-                    {filteredDocs.slice(0, 8).map((doc) => (
-                      <li key={doc.id} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="material-icons text-slate-400" style={{ fontSize: '1rem' }}>description</span>
-                              <p className="truncate text-sm font-semibold text-slate-800">{doc.title || 'Untitled'}</p>
+                  ) : (
+                    <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                      <ul className="space-y-2">
+                        {pagedDocs.map((doc) => (
+                          <li key={doc.id} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="material-icons text-slate-400" style={{ fontSize: '1rem' }}>description</span>
+                                  <p className="truncate text-sm font-semibold text-slate-800">{doc.title || 'Untitled'}</p>
+                                </div>
+                                <p className="mt-1 text-xs text-slate-500">Updated {prettyDate(doc.updatedAt)}</p>
+                                {doc.preview && <p className="mt-1.5 line-clamp-1 text-xs text-slate-400">{doc.preview}</p>}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <button type="button" onClick={() => onOpenDocument(doc.id)} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-cyan-700">
+                                  Open
+                                </button>
+                              </div>
                             </div>
-                            <p className="mt-1 text-xs text-slate-500">Updated {prettyDate(doc.updatedAt)}</p>
-                            {doc.preview && <p className="mt-1.5 line-clamp-1 text-xs text-slate-400">{doc.preview}</p>}
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            <button type="button" onClick={() => onOpenDocument(doc.id)} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-cyan-700">
-                              Open
-                            </button>
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {filteredDocs.length > PAGE_SIZE && (
+                    <div className="mt-4 flex shrink-0 items-center justify-between border-t border-slate-200 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => setDocsPage((prev) => Math.max(1, prev - 1))}
+                        disabled={docsPage <= 1}
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-xs font-medium text-slate-500">
+                        Page {docsPage} of {docsPageCount}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setDocsPage((prev) => Math.min(docsPageCount, prev + 1))}
+                        disabled={docsPage >= docsPageCount}
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </section>
 
-                <section id="versions-section" className="rounded-2xl bg-white p-6 shadow-sm">
+                <section id="versions-section" className="flex h-140 min-h-0 flex-col rounded-2xl bg-white p-6 shadow-sm">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <h2 className="text-lg font-black tracking-tight text-slate-800">Version History</h2>
@@ -911,32 +975,58 @@ export default function WorkspaceHomePage({
                     </div>
                     {loading && <span className="text-xs text-slate-400">Loading…</span>}
                   </div>
-                  {!loading && versions.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                  {!loading && versions.length === 0 ? (
+                    <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
                       <span className="material-icons mx-auto mb-2 block text-4xl text-slate-300">history</span>
                       <p className="text-sm font-semibold text-slate-600">No versions yet</p>
                       <p className="mt-1 text-xs text-slate-500">Save versions in the editor</p>
                     </div>
-                  )}
-                  <ul className="space-y-2">
-                    {filteredVersions.slice(0, 8).map((version) => (
-                      <li key={`${version.docId}-${version.id}`} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="material-icons text-slate-400" style={{ fontSize: '1rem' }}>restore</span>
-                              <p className="truncate text-xs font-bold uppercase tracking-wide text-slate-600">{version.docTitle}</p>
+                  ) : (
+                    <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                      <ul className="space-y-2">
+                        {pagedVersions.map((version) => (
+                          <li key={`${version.docId}-${version.id}`} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="material-icons text-slate-400" style={{ fontSize: '1rem' }}>restore</span>
+                                  <p className="truncate text-xs font-bold uppercase tracking-wide text-slate-600">{version.docTitle}</p>
+                                </div>
+                                <p className="mt-1.5 line-clamp-1 text-xs font-medium text-slate-700">{version.preview || 'Version snapshot'}</p>
+                                <p className="mt-1 text-xs text-slate-400">{prettyDate(version.savedAt)}</p>
+                              </div>
+                              <button type="button" onClick={() => onOpenDocument(version.docId)} className="shrink-0 rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-cyan-700 transition-colors">
+                                View
+                              </button>
                             </div>
-                            <p className="mt-1.5 line-clamp-1 text-xs font-medium text-slate-700">{version.preview || 'Version snapshot'}</p>
-                            <p className="mt-1 text-xs text-slate-400">{prettyDate(version.savedAt)}</p>
-                          </div>
-                          <button type="button" onClick={() => onOpenDocument(version.docId)} className="shrink-0 rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-cyan-700 transition-colors">
-                            View
-                          </button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {filteredVersions.length > PAGE_SIZE && (
+                    <div className="mt-4 flex shrink-0 items-center justify-between border-t border-slate-200 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => setVersionsPage((prev) => Math.max(1, prev - 1))}
+                        disabled={versionsPage <= 1}
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-xs font-medium text-slate-500">
+                        Page {versionsPage} of {versionsPageCount}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setVersionsPage((prev) => Math.min(versionsPageCount, prev + 1))}
+                        disabled={versionsPage >= versionsPageCount}
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
                 </section>
 
               </div>

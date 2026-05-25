@@ -217,7 +217,7 @@ async function consumeOneTimeToken(token, type) {
   await prisma.authToken.deleteMany({
     where: {
       id: token,
-      type,issueOneTimeToken
+      type,
     },
   });
 
