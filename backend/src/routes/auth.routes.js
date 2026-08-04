@@ -60,12 +60,14 @@ router.post('/register', registerRateLimit, async (req, res) => {
   const authConfig = await getAuthConfig();
   const { name, email } = req.body ?? {};
   let password;
+
   try {
     password = resolvePasswordFromBody(req.body);
   } catch {
     audit(req, 'register', 'failure', null, { reason: 'invalid-password-encryption' });
     return res.status(400).json({ error: 'Invalid encrypted password payload.' });
   }
+
   if (!name || !email || !password) {
     audit(req, 'register', 'failure', null, { reason: 'missing-fields' });
     return res.status(400).json({ error: 'name, email, and password are required.' });

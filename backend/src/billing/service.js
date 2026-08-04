@@ -252,7 +252,7 @@ async function buildBillingSnapshot(organizationId) {
   if (!entitlements) return null;
   return {
     ...entitlements,
-    invoices: listInvoicesByOrganization(organizationId),
+    invoices: await listInvoicesByOrganization(organizationId),
   };
 }
 

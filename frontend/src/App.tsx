@@ -2050,6 +2050,7 @@ function App() {
     const isAdminPath = pathname.startsWith('/admin');
     const isPublicPath =
       pathname === '/' ||
+      pathname === '/home' ||
       pathname.startsWith('/auth') ||
       pathname.startsWith('/verify-email') ||
       pathname.startsWith('/reset-password');
@@ -2226,6 +2227,20 @@ function App() {
         }
       />
       <Route
+        path="/home"
+        element={
+          <LandingPage
+            onGetStarted={() => navigate(session ? '/workspace' : '/auth')}
+            onSignIn={() => navigate('/auth')}
+            isSignedIn={Boolean(session)}
+            userName={session?.user.name || 'Workspace User'}
+            onOpenProfile={handleOpenProfile}
+            onLogout={handleLogout}
+            onOpenWorkspace={() => navigate('/workspace')}
+          />
+        }
+      />
+      <Route
         path="/auth"
         element={session ? <Navigate to="/workspace" replace /> : <AuthPage onAuthSuccess={handleAuthSuccess} />}
       />
@@ -2265,7 +2280,7 @@ function App() {
               onLogout={handleLogout}
             />
           ) : (
-            <Navigate to="/auth" replace />
+            <Navigate to="/home" replace />
           )
         }
       />

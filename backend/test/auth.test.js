@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
 const { encryptPassword } = require('./helpers/password-crypto');
+const { resetTestState } = require('./helpers/reset-state');
 const { generateSync: _totpGenSync } = require('@otplib/totp');
 const { NobleCryptoPlugin: _NobleCryptoPlugin } = require('@otplib/plugin-crypto-noble');
 const { ScureBase32Plugin: _ScureBase32Plugin } = require('@otplib/plugin-base32-scure');
@@ -37,25 +38,6 @@ const {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function clearStore() {
-  auditLogs.clear();
-  authSessions.clear();
-  authTokens.clear();
-  comments.clear();
-  documents.clear();
-  invoices.clear();
-  organizationUsage.clear();
-  organizationInvites.clear();
-  organizationMemberships.clear();
-  organizations.clear();
-  processedWebhookEvents.clear();
-  todos.clear();
-  users.clear();
-  versions.clear();
-  webhookJobs.clear();
-  workspaces.clear();
-}
 
 /**
  * Register → verify email → login.
@@ -92,8 +74,8 @@ function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
-test.beforeEach(() => {
-  clearStore();
+test.beforeEach(async () => {
+  await resetTestState();
 });
 
 // ===========================================================================

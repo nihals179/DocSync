@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "NODE_ENV=test node --test",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 test/*.test.js",
     "start": "node index.js",
     "dev": "node ./node_modules/nodemon/bin/nodemon.js --inspect=0 index.js",
     "dev:debug": "node ./node_modules/nodemon/bin/nodemon.js --inspect=0 index.js",

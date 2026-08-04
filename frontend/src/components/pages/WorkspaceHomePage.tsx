@@ -912,7 +912,7 @@ export default function WorkspaceHomePage({
                     {loading && <span className="text-xs text-slate-400">Loading…</span>}
                   </div>
                   {!loading && !hasDocs ? (
-                    <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                    <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
                       <span className="material-icons mx-auto mb-2 block text-4xl text-slate-300">description</span>
                       <p className="text-sm font-semibold text-slate-600">No documents yet</p>
                       <p className="mt-1 text-xs text-slate-500">Start with a template above</p>
@@ -976,7 +976,7 @@ export default function WorkspaceHomePage({
                     {loading && <span className="text-xs text-slate-400">Loading…</span>}
                   </div>
                   {!loading && versions.length === 0 ? (
-                    <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                    <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
                       <span className="material-icons mx-auto mb-2 block text-4xl text-slate-300">history</span>
                       <p className="text-sm font-semibold text-slate-600">No versions yet</p>
                       <p className="mt-1 text-xs text-slate-500">Save versions in the editor</p>

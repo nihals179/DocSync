@@ -1,6 +1,13 @@
+import { useState } from 'react';
+
 interface LandingPageProps {
   onGetStarted: () => void;
   onSignIn: () => void;
+  isSignedIn?: boolean;
+  userName?: string;
+  onOpenProfile?: () => void;
+  onLogout?: () => void;
+  onOpenWorkspace?: () => void;
 }
 
 const NAV_LINKS = ['Features', 'How It Works', 'Pricing', 'About'];
@@ -63,7 +70,17 @@ const STATS = [
   { value: '∞', label: 'Document pages per workspace' },
 ];
 
-export default function LandingPage({ onGetStarted, onSignIn }: LandingPageProps) {
+export default function LandingPage({
+  onGetStarted,
+  onSignIn,
+  isSignedIn = false,
+  userName = 'Workspace User',
+  onOpenProfile,
+  onLogout,
+  onOpenWorkspace,
+}: LandingPageProps) {
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+
   return (
     <div className="h-full overflow-y-auto bg-white font-sans text-slate-800 antialiased">
 
@@ -92,17 +109,72 @@ export default function LandingPage({ onGetStarted, onSignIn }: LandingPageProps
 
           {/* CTAs */}
           <div className="flex items-center gap-3">
-            <button
-              onClick={onSignIn}
-              className="hidden rounded-xl px-4 py-2 text-sm font-semibold text-slate-600 transition-colors hover:text-cyan-700 sm:block"
-            >
-              Sign In
-            </button>
+            {isSignedIn ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setProfileMenuOpen((prev) => !prev)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-600 text-white hover:-translate-y-0.5 transition-all"
+                  title="Profile menu"
+                >
+                  <span className="material-icons" style={{ fontSize: '1.2rem' }}>account_circle</span>
+                </button>
+                {profileMenuOpen && (
+                  <div className="absolute right-0 z-50 mt-2 w-52 rounded-lg border border-slate-100 bg-white py-2 shadow-lg">
+                    <div className="border-b border-slate-200 px-4 py-2">
+                      <p className="text-sm font-bold text-slate-800">{userName}</p>
+                      <p className="text-xs text-slate-500">Signed in</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        onOpenWorkspace?.();
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>home</span>
+                      Workspace
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        onOpenProfile?.();
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>person</span>
+                      Profile
+                    </button>
+                    <div className="my-1 border-t border-slate-200" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        onLogout?.();
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                    >
+                      <span className="material-icons" style={{ fontSize: '1rem' }}>logout</span>
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={onSignIn}
+                className="hidden rounded-xl px-4 py-2 text-sm font-semibold text-slate-600 transition-colors hover:text-cyan-700 sm:block"
+              >
+                Sign In
+              </button>
+            )}
             <button
               onClick={onGetStarted}
               className="rounded-xl bg-cyan-700 px-5 py-2 text-sm font-bold text-white shadow-md shadow-cyan-200/60 transition-all hover:bg-cyan-600 active:scale-[0.98]"
             >
-              Get Started Free
+              {isSignedIn ? 'Go To Workspace' : 'Get Started Free'}
             </button>
           </div>
         </div>

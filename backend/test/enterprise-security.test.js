@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const request = require('supertest');
 const { encryptPassword } = require('./helpers/password-crypto');
+const { resetTestState } = require('./helpers/reset-state');
 
 const app = require('../src/app');
 const {
@@ -23,25 +24,6 @@ const {
   workspaces,
   ensureTenantBootstrapForUser,
 } = require('../src/store');
-
-function clearStore() {
-  auditLogs.clear();
-  authSessions.clear();
-  authTokens.clear();
-  comments.clear();
-  documents.clear();
-  invoices.clear();
-  organizationUsage.clear();
-  organizationInvites.clear();
-  organizationMemberships.clear();
-  organizations.clear();
-  processedWebhookEvents.clear();
-  todos.clear();
-  users.clear();
-  versions.clear();
-  webhookJobs.clear();
-  workspaces.clear();
-}
 
 async function registerVerifyLogin(client, { name, email, password = 'Password123!' }) {
   const registerRes = await client
@@ -69,8 +51,8 @@ function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
-test.beforeEach(() => {
-  clearStore();
+test.beforeEach(async () => {
+  await resetTestState();
 });
 
 test('enterprise environment bootstrap applies enterprise billing and security baseline', async () => {

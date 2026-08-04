@@ -7,6 +7,7 @@ const { requirePermission, resolveOrganizationContext } = require('../middleware
 const { attachEntitlements } = require('../middleware/entitlements');
 const {
   nowIso,
+  listInvoicesByOrganization,
 } = require('../store');
 const {
   buildBillingSnapshot,
@@ -96,10 +97,7 @@ router.get('/current', requireAuth, resolveOrganizationContext, requirePermissio
 });
 
 router.get('/invoices', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const invoices = await prisma.invoice.findMany({
-    where: { organizationId: req.organization.id },
-    orderBy: { issuedAt: 'desc' },
-  });
+  const invoices = await listInvoicesByOrganization(req.organization.id);
   res.json({ invoices });
 });
 

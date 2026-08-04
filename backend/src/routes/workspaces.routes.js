@@ -49,6 +49,14 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('work
  * Body: { name? }
  */
 router.post('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.create'), attachEntitlements, async (req, res) => {
+  const planId = String(req.entitlements?.billing?.planId || 'free').toLowerCase();
+  if (planId === 'free') {
+    return res.status(402).json({
+      error: 'Workspace creation is available on paid plans. Please upgrade to continue.',
+      code: 'workspace_creation_requires_paid_plan',
+    });
+  }
+
   const name = typeof req.body?.name === 'string' && req.body.name.trim().length > 0
     ? req.body.name.trim()
     : 'New Workspace';

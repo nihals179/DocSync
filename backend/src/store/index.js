@@ -1,34 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
-const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN } = require('./catalog');
-const {
-	users,
-	organizations,
-	organizationMemberships,
-	organizationInvites,
-	invoices,
-	organizationBilling,
-	userBilling,
-	organizationUsage,
-	userUsage,
-	webhookJobs,
-	processedWebhookEvents,
-	auditLogs,
-	authSessions,
-	authTokens,
-	documents,
-	profiles,
-	comments,
-	versions,
-	todos,
-	workspaces,
-	initializePersistentMaps: initializeSchemaPersistentMaps,
-} = require('./schemas');
+const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 
 const nowIso = () => runtimeNowIso();
 const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
 const toIsoOrNull = (value) => runtimeToIsoOrNull(value);
+const invoiceMemoryStore = new Map();
 
 function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	const resolvedEmail = String(input?.email || fallbackEmail || '').toLowerCase().trim();
@@ -46,7 +24,7 @@ function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
 	};
 
-	if (!state.planId || !PLAN_CATALOG[state.planId]) state.planId = 'free';
+	if (!state.planId) state.planId = 'free';
 	if (!state.status) state.status = 'active';
 	state.trialUsed = typeof state.trialUsed === 'boolean' ? state.trialUsed : false;
 	return state;
@@ -67,7 +45,7 @@ function normalizeOrganizationBillingState(input, organizationId) {
 		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
 	};
 
-	if (!state.planId || !PLAN_CATALOG[state.planId]) state.planId = 'free';
+	if (!state.planId) state.planId = 'free';
 	if (!state.status) state.status = 'active';
 	if (!state.purchasedSeats || state.purchasedSeats < 1) {
 		state.purchasedSeats = getPlan(state.planId).limits.seats;
@@ -76,18 +54,16 @@ function normalizeOrganizationBillingState(input, organizationId) {
 	return state;
 }
 
-async function readUserBillingStateFromDb(userId, email = null) {
+async function readUserBillingStateFromDb(email = null) {
 	if (!isDatabaseConfigured()) return null;
 	const normalizedEmail = String(email || '').toLowerCase().trim();
-	const row = await prisma.userBilling.findUnique({ where: { userId } });
-	if (!row && normalizedEmail) {
+	if (normalizedEmail) {
 		const byEmail = await prisma.userBilling.findUnique({ where: { email: normalizedEmail } });
 		if (byEmail) {
 			return normalizeUserBillingState(byEmail, byEmail.userId, normalizedEmail);
 		}
 	}
-	if (!row) return null;
-	return normalizeUserBillingState(row, userId, normalizedEmail);
+	return null;
 }
 
 async function writeUserBillingStateToDb(state) {
@@ -176,14 +152,10 @@ function mapDbOrganizationToRecord(row) {
 
 async function resolveOrganizationById(organizationId) {
 	if (!organizationId) return null;
-	const inMemory = organizations.get(organizationId);
-	if (inMemory) return inMemory;
 	if (!isDatabaseConfigured()) return null;
-
 	const row = await prisma.organization.findUnique({ where: { id: organizationId } });
 	if (!row) return null;
 	const organization = mapDbOrganizationToRecord(row);
-	organizations.set(organization.id, organization);
 	return organization;
 }
 
@@ -352,11 +324,6 @@ function getProfileTable() {
 		.sort((a, b) => a.role.localeCompare(b.role));
 }
 
-async function initializePersistentMaps() {
-	await initializeSchemaPersistentMaps();
-	ensureProfileTableSeeded();
-}
-
 function normalizeDomain(value) {
 	return String(value || '').toLowerCase().trim().replace(/^@+/, '');
 }
@@ -397,12 +364,10 @@ function ensureOrganizationSecurityState(organization) {
 		.filter(Boolean);
 
 	if (!organization.security.updatedAt) organization.security.updatedAt = nowIso();
-	organizations.set(organization.id, organization);
 	return organization.security;
 }
 
 function getOrganizationSecurityState(organizationId) {
-	const organization = organizations.get(organizationId);
 	if (!organization) return null;
 	return ensureOrganizationSecurityState(organization);
 }
@@ -476,31 +441,19 @@ async function upsertOrganizationBillingState(organizationId, updates = {}) {
 }
 
 async function ensureUserBillingState(user) {
-	if (!user?.id) return null;
+	if (!user?.id || !user?.email) return null;
 
 	if (isDatabaseConfigured()) {
-		const direct = await readUserBillingStateFromDb(user.id, user.email);
+		const direct = await readUserBillingStateFromDb(user.email);
 		if (direct) {
-			const normalizedDirect = normalizeUserBillingState(direct, user.id, user.email);
-			userBilling.set(user.id, normalizedDirect);
-			await writeUserBillingStateToDb(normalizedDirect);
-			return normalizedDirect;
+			await writeUserBillingStateToDb(direct);
+			return direct;
 		}
 		const created = normalizeUserBillingState(null, user.id, user.email);
 		await writeUserBillingStateToDb(created);
-		userBilling.set(user.id, created);
 		return created;
 	}
-
-	const existing = userBilling.get(user.id);
-	if (existing) {
-		const normalized = normalizeUserBillingState(existing, user.id, user.email);
-		userBilling.set(user.id, normalized);
-		return normalized;
-	}
-	const state = normalizeUserBillingState(null, user.id, user.email);
-	userBilling.set(user.id, state);
-	return state;
+	return null;
 }
 
 async function refreshBillingStatus(organizationId) {
@@ -535,7 +488,6 @@ async function refreshBillingStatus(organizationId) {
 		}
 	}
 
-	organizationBilling.set(organization.id, billing);
 	if (isDatabaseConfigured()) {
 		await writeOrganizationBillingStateToDb(organization.id, billing);
 	}
@@ -549,9 +501,6 @@ function isBillingWriteBlocked(billingState) {
 
 async function getOrganizationUsage(organizationId) {
 	const monthKey = monthKeyFromDate(new Date());
-	const existing = organizationUsage.get(organizationId);
-	if (existing && existing.monthKey === monthKey) return existing;
-
 	let usage = null;
 	if (isDatabaseConfigured()) {
 		usage = await readOrganizationUsageFromDb(organizationId, monthKey);
@@ -563,8 +512,6 @@ async function getOrganizationUsage(organizationId) {
 			await writeOrganizationUsageToDb(organizationId, monthKey, usage);
 		}
 	}
-
-	organizationUsage.set(organizationId, usage);
 	return usage;
 }
 
@@ -635,7 +582,6 @@ async function consumeDocumentUpdates(organizationId, count = 1) {
 	if (!check.allowed) return check;
 	const usage = await getOrganizationUsage(organizationId);
 	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
-	organizationUsage.set(organizationId, usage);
 	if (isDatabaseConfigured()) {
 		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
 	}
@@ -666,10 +612,6 @@ async function getAssignedSeatCount(organizationId) {
 			},
 		});
 	}
-
-	return [...organizationMemberships.values()].filter(
-		(membership) => membership.organizationId === organizationId && membership.status === 'active',
-	).length;
 }
 
 
@@ -755,7 +697,6 @@ async function consumeAiRequests(organizationId, count = 1) {
 	if (!check.allowed) return check;
 	const usage = await getOrganizationUsage(organizationId);
 	usage.aiRequests += Math.max(0, count);
-	organizationUsage.set(organizationId, usage);
 	if (isDatabaseConfigured()) {
 		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
 	}
@@ -804,12 +745,117 @@ async function getVersionHistoryRetentionDays(organizationId) {
 }
 
 function upsertInvoice(invoice) {
-	invoices.set(invoice.id, invoice);
-	return invoice;
+	const normalized = {
+		id: String(invoice?.id || `inv_${uuidv4()}`),
+		organizationId: String(invoice?.organizationId || ''),
+		provider: String(invoice?.provider || 'mock'),
+		invoiceNumber: invoice?.invoiceNumber ? String(invoice.invoiceNumber) : null,
+		amountCents: Number(invoice?.amountCents || 0),
+		currency: String(invoice?.currency || 'usd').toLowerCase(),
+		status: String(invoice?.status || 'open'),
+		periodStart: toIsoOrNull(invoice?.periodStart),
+		periodEnd: toIsoOrNull(invoice?.periodEnd),
+		issuedAt: toIsoOrNull(invoice?.issuedAt) || nowIso(),
+		dueAt: toIsoOrNull(invoice?.dueAt),
+		paidAt: toIsoOrNull(invoice?.paidAt),
+		hostedUrl: invoice?.hostedUrl ? String(invoice.hostedUrl) : null,
+		metadata: invoice?.metadata && typeof invoice.metadata === 'object' && !Array.isArray(invoice.metadata)
+			? invoice.metadata
+			: null,
+	};
+
+	if (!isDatabaseConfigured()) {
+		invoiceMemoryStore.set(normalized.id, normalized);
+		return normalized;
+	}
+
+	return prisma.invoice.upsert({
+		where: { id: normalized.id },
+		update: {
+			organizationId: normalized.organizationId,
+			provider: normalized.provider,
+			invoiceNumber: normalized.invoiceNumber,
+			amountCents: normalized.amountCents,
+			currency: normalized.currency,
+			status: normalized.status,
+			issuedAt: new Date(normalized.issuedAt),
+			dueAt: normalized.dueAt ? new Date(normalized.dueAt) : null,
+			paidAt: normalized.paidAt ? new Date(normalized.paidAt) : null,
+			metadata: {
+				periodStart: normalized.periodStart,
+				periodEnd: normalized.periodEnd,
+				hostedUrl: normalized.hostedUrl,
+				...(normalized.metadata || {}),
+			},
+		},
+		create: {
+			id: normalized.id,
+			organizationId: normalized.organizationId,
+			provider: normalized.provider,
+			invoiceNumber: normalized.invoiceNumber,
+			amountCents: normalized.amountCents,
+			currency: normalized.currency,
+			status: normalized.status,
+			issuedAt: new Date(normalized.issuedAt),
+			dueAt: normalized.dueAt ? new Date(normalized.dueAt) : null,
+			paidAt: normalized.paidAt ? new Date(normalized.paidAt) : null,
+			metadata: {
+				periodStart: normalized.periodStart,
+				periodEnd: normalized.periodEnd,
+				hostedUrl: normalized.hostedUrl,
+				...(normalized.metadata || {}),
+			},
+		},
+	}).then((row) => {
+		const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+			? row.metadata
+			: {};
+		return {
+			id: row.id,
+			organizationId: row.organizationId,
+			provider: row.provider,
+			invoiceNumber: row.invoiceNumber || null,
+			amountCents: row.amountCents,
+			currency: row.currency,
+			status: row.status,
+			periodStart: toIsoOrNull(metadata.periodStart),
+			periodEnd: toIsoOrNull(metadata.periodEnd),
+			issuedAt: toIsoOrNull(row.issuedAt),
+			dueAt: toIsoOrNull(row.dueAt),
+			paidAt: toIsoOrNull(row.paidAt),
+			hostedUrl: metadata.hostedUrl ? String(metadata.hostedUrl) : null,
+		};
+	});
 }
 
 function listInvoicesByOrganization(organizationId) {
-	return [...invoices.values()]
+	if (isDatabaseConfigured()) {
+		return prisma.invoice.findMany({
+			where: { organizationId },
+			orderBy: { issuedAt: 'desc' },
+		}).then((rows) => rows.map((row) => {
+			const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+				? row.metadata
+				: {};
+			return {
+				id: row.id,
+				organizationId: row.organizationId,
+				provider: row.provider,
+				invoiceNumber: row.invoiceNumber || null,
+				amountCents: row.amountCents,
+				currency: row.currency,
+				status: row.status,
+				periodStart: toIsoOrNull(metadata.periodStart),
+				periodEnd: toIsoOrNull(metadata.periodEnd),
+				issuedAt: toIsoOrNull(row.issuedAt),
+				dueAt: toIsoOrNull(row.dueAt),
+				paidAt: toIsoOrNull(row.paidAt),
+				hostedUrl: metadata.hostedUrl ? String(metadata.hostedUrl) : null,
+			};
+		}));
+	}
+
+	return [...invoiceMemoryStore.values()]
 		.filter((invoice) => invoice.organizationId === organizationId)
 		.sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime());
 }
@@ -926,7 +972,6 @@ async function syncCurrentOrganizationFromMembership(user) {
 
 	if (!activeMemberships.length) {
 		user.currentOrganizationId = null;
-		users.set(user.id, user);
 		await prisma.user.updateMany({
 			where: { email: normalizedEmail },
 			data: { currentOrganizationId: null },
@@ -935,29 +980,24 @@ async function syncCurrentOrganizationFromMembership(user) {
 	}
 
 	const existingCurrent = activeMemberships.find(
-		(membership) => membership.organizationId === user.currentOrganizationId,
+	(membership) => membership.organizationId === user.currentOrganizationId,
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
-	let organization = organizations.get(selectedMembership.organizationId) || null;
-	if (!organization) {
-		const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
-		if (row) {
-			organization = {
-				id: row.id,
-				name: row.name,
-				ownerUserId: row.ownerUserId,
-				createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
-				updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-				...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
-			};
-			organizations.set(organization.id, organization);
-		}
+	const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
+	if (row) {
+		organization = {
+			id: row.id,
+			name: row.name,
+			ownerUserId: row.ownerUserId,
+			createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+			updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+			...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
+		};
 	}
 
 	if (!organization) {
 		user.currentOrganizationId = null;
-		users.set(user.id, user);
 		await prisma.user.updateMany({
 			where: { email: normalizedEmail },
 			data: { currentOrganizationId: null },
@@ -968,7 +1008,6 @@ async function syncCurrentOrganizationFromMembership(user) {
 	await ensureOrganizationBillingState(organization);
 	ensureOrganizationSecurityState(organization);
 	user.currentOrganizationId = organization.id;
-	users.set(user.id, user);
 	await prisma.user.updateMany({
 		where: { email: normalizedEmail },
 		data: { currentOrganizationId: organization.id },
@@ -1080,29 +1119,9 @@ async function ensureTenantBootstrapForUser(user) {
 }
 
 module.exports = {
-	users,
-	organizations,
+	nowIso,
 	PLAN_CATALOG,
 	TRIAL_DAYS_BY_PLAN,
-	organizationMemberships,
-	organizationInvites,
-	invoices,
-	organizationBilling,
-	userBilling,
-	organizationUsage,
-	userUsage,
-	webhookJobs,
-	processedWebhookEvents,
-	auditLogs,
-	authSessions,
-	authTokens,
-	documents,
-	comments,
-	versions,
-	todos,
-	workspaces,
-	initializePersistentMaps,
-	nowIso,
 	getPlan,
 	getAllPlans,
 	getOrganizationBillingState,

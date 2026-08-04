@@ -114,7 +114,6 @@ function writeAuditLog({
 		createdAt: nowIso(),
 		source,
 	};
-	auditLogs.set(entry.id, entry);
 
 	if (isDatabaseConfigured()) {
 		prisma.auditLog.create({
