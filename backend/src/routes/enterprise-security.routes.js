@@ -28,8 +28,8 @@ const router = express.Router();
 
 router.use(requireAuth, resolveOrganizationContext);
 
-router.get('/current/security', requirePermission('organization.read'), (req, res) => {
-  const security = getOrganizationSecurityState(req.organization.id);
+router.get('/current/security', requirePermission('organization.read'), async (req, res) => {
+  const security = await getOrganizationSecurityState(req.organization.id);
   res.json({
     security: {
       requireMfa: security.requireMfa,
@@ -73,7 +73,7 @@ router.post('/current/enterprise/environment', requirePermission('organization.m
     : null;
   let createdProvider = null;
 
-  const security = updateOrganizationSecurityState(req.organization.id, (current) => {
+  const security = await updateOrganizationSecurityState(req.organization.id, (current) => {
     const nextProviders = [...current.ssoProviders];
     if (requestedProvider && String(requestedProvider.name || '').trim()) {
       createdProvider = ensureProviderShape({
@@ -139,7 +139,7 @@ router.post('/current/enterprise/environment', requirePermission('organization.m
   });
 });
 
-router.put('/current/security/policies', requirePermission('organization.member.manage'), (req, res) => {
+router.put('/current/security/policies', requirePermission('organization.member.manage'), async (req, res) => {
   const {
     requireMfa,
     sessionDurationHours,
@@ -147,7 +147,7 @@ router.put('/current/security/policies', requirePermission('organization.member.
     ipAllowlist,
   } = req.body ?? {};
 
-  const security = updateOrganizationSecurityState(req.organization.id, (current) => ({
+  const security = await updateOrganizationSecurityState(req.organization.id, (current) => ({
     ...current,
     requireMfa: typeof requireMfa === 'boolean' ? requireMfa : current.requireMfa,
     sessionDurationHours: sessionDurationHours == null
@@ -180,12 +180,12 @@ router.put('/current/security/policies', requirePermission('organization.member.
   });
 });
 
-router.put('/current/security/domains', requirePermission('organization.member.manage'), (req, res) => {
+router.put('/current/security/domains', requirePermission('organization.member.manage'), async (req, res) => {
   const domains = Array.isArray(req.body?.domains)
     ? req.body.domains.map((value) => String(value || '').toLowerCase().trim().replace(/^@+/, '')).filter(Boolean)
     : [];
 
-  const security = updateOrganizationSecurityState(req.organization.id, (current) => ({
+  const security = await updateOrganizationSecurityState(req.organization.id, (current) => ({
     ...current,
     domainMappings: [...new Set(domains)],
   }));
@@ -200,7 +200,7 @@ router.put('/current/security/domains', requirePermission('organization.member.m
   res.json({ domains: security.domainMappings, updatedAt: security.updatedAt });
 });
 
-router.post('/current/security/sso/providers', requirePermission('organization.member.manage'), (req, res) => {
+router.post('/current/security/sso/providers', requirePermission('organization.member.manage'), async (req, res) => {
   const provider = ensureProviderShape({
     id: uuidv4(),
     ...req.body,
@@ -227,8 +227,8 @@ router.post('/current/security/sso/providers', requirePermission('organization.m
   res.status(201).json({ provider: sanitizeProvider(security.ssoProviders.find((item) => item.id === provider.id)) });
 });
 
-router.patch('/current/security/sso/providers/:providerId', requirePermission('organization.member.manage'), (req, res) => {
-  const security = getOrganizationSecurityState(req.organization.id);
+router.patch('/current/security/sso/providers/:providerId', requirePermission('organization.member.manage'), async (req, res) => {
+  const security = await getOrganizationSecurityState(req.organization.id);
   const existing = security.ssoProviders.find((item) => item.id === req.params.providerId);
   if (!existing) return res.status(404).json({ error: 'SSO provider not found.' });
 
@@ -239,7 +239,7 @@ router.patch('/current/security/sso/providers/:providerId', requirePermission('o
     updatedAt: new Date().toISOString(),
   });
 
-  const next = updateOrganizationSecurityState(req.organization.id, (current) => ({
+  const next = await updateOrganizationSecurityState(req.organization.id, (current) => ({
     ...current,
     ssoProviders: current.ssoProviders.map((provider) => (
       provider.id === existing.id ? updated : provider
@@ -256,12 +256,12 @@ router.patch('/current/security/sso/providers/:providerId', requirePermission('o
   res.json({ provider: sanitizeProvider(next.ssoProviders.find((item) => item.id === existing.id)) });
 });
 
-router.delete('/current/security/sso/providers/:providerId', requirePermission('organization.member.manage'), (req, res) => {
-  const security = getOrganizationSecurityState(req.organization.id);
+router.delete('/current/security/sso/providers/:providerId', requirePermission('organization.member.manage'), async (req, res) => {
+  const security = await getOrganizationSecurityState(req.organization.id);
   const existing = security.ssoProviders.find((item) => item.id === req.params.providerId);
   if (!existing) return res.status(404).json({ error: 'SSO provider not found.' });
 
-  updateOrganizationSecurityState(req.organization.id, (current) => ({
+  await updateOrganizationSecurityState(req.organization.id, (current) => ({
     ...current,
     ssoProviders: current.ssoProviders.filter((provider) => provider.id !== existing.id),
   }));
@@ -280,12 +280,12 @@ router.post('/sso/simulate-login', requirePermission('organization.read'), async
   const email = String(req.body?.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email is required.' });
 
-  const organization = findOrganizationByDomain(email);
+  const organization = await findOrganizationByDomain(email);
   if (!organization) {
     return res.status(404).json({ error: 'No organization domain mapping found for this email.' });
   }
 
-  const security = getOrganizationSecurityState(organization.id);
+  const security = await getOrganizationSecurityState(organization.id);
   const provider = security.ssoProviders.find((item) => item.enabled);
   if (!provider) {
     return res.status(400).json({ error: 'No active SSO provider configured for organization.' });
@@ -314,7 +314,7 @@ router.post('/sso/simulate-login', requirePermission('organization.read'), async
 });
 
 router.post('/current/security/ldap/import-users', requirePermission('organization.member.manage'), async (req, res) => {
-  const security = getOrganizationSecurityState(req.organization.id);
+  const security = await getOrganizationSecurityState(req.organization.id);
   const enabledLdapProviders = security.ssoProviders.filter((provider) => provider.type === 'ldap' && provider.enabled !== false);
   if (!enabledLdapProviders.length) {
     return res.status(400).json({ error: 'No enabled LDAP provider configured for this organization.' });

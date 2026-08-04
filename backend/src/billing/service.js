@@ -197,14 +197,14 @@ async function processBillingEvent(event) {
 }
 
 async function processDueWebhookJobs(limit = 20) {
-  const jobs = getDueWebhookJobs(limit);
+  const jobs = await getDueWebhookJobs(limit);
   for (const job of jobs) {
     try {
-      markWebhookJobProcessing(job.id);
+      await markWebhookJobProcessing(job.id);
       await processBillingEvent(job.payload);
-      markWebhookJobProcessed(job.id);
+      await markWebhookJobProcessed(job.id);
     } catch (error) {
-      markWebhookJobFailed(job.id, error instanceof Error ? error.message : 'Unknown error');
+      await markWebhookJobFailed(job.id, error instanceof Error ? error.message : 'Unknown error');
     }
   }
   return jobs.length;

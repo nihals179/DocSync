@@ -36,20 +36,20 @@ function getUserAgent(req) {
   return req.get?.('user-agent') || req.headers?.['user-agent'] || 'unknown';
 }
 
-function isOrgIpAllowedForUser(req, user) {
+async function isOrgIpAllowedForUser(req, user) {
   if (!user?.currentOrganizationId) return true;
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await getOrganizationSecurityState(user.currentOrganizationId);
   if (!security?.ipAllowlistEnabled || !Array.isArray(security.ipAllowlist) || security.ipAllowlist.length === 0) {
     return true;
   }
   return security.ipAllowlist.includes(getRequestIp(req));
 }
 
-function getOrgSessionDurationMs(user, remember) {
+async function getOrgSessionDurationMs(user, remember) {
   if (!user?.currentOrganizationId) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await getOrganizationSecurityState(user.currentOrganizationId);
   if (!security) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }
@@ -272,7 +272,7 @@ async function createSession(user, req, remember) {
   }
   const refreshToken = generateOpaqueToken();
   const csrfToken = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, remember)).toISOString();
+  const expiresAt = new Date(Date.now() + await getOrgSessionDurationMs(user, remember)).toISOString();
   const session = {
     id: uuidv4(),
     userId: user.id,
@@ -308,7 +308,7 @@ async function rotateSession(session, req) {
     where: { id: session.userId },
     select: { currentOrganizationId: true },
   });
-  session.expiresAt = new Date(Date.now() + getOrgSessionDurationMs(user, session.remember)).toISOString();
+  session.expiresAt = new Date(Date.now() + await getOrgSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);
   await prisma.authSession.upsert({

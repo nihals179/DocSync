@@ -212,7 +212,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     }
   }
 
-  if (!isOrgIpAllowedForUser(req, user)) {
+  if (!await isOrgIpAllowedForUser(req, user)) {
     audit(req, 'login-ip-policy', 'failure', user.id, {
       reason: 'ip-not-allowlisted',
       organizationId: user.currentOrganizationId,
@@ -220,7 +220,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
   }
 
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await getOrganizationSecurityState(user.currentOrganizationId);
   const hasActiveSsoProvider = Boolean(
     security?.ssoProviders?.some((provider) => provider && provider.enabled !== false),
   );

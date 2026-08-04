@@ -6,7 +6,6 @@ const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured
 const nowIso = () => runtimeNowIso();
 const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
 const toIsoOrNull = (value) => runtimeToIsoOrNull(value);
-const invoiceMemoryStore = new Map();
 
 function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	const resolvedEmail = String(input?.email || fallbackEmail || '').toLowerCase().trim();
@@ -230,111 +229,26 @@ async function getPlanById(planId) {
 	return getPlan(planId);
 }
 
-const PROFILE_TABLE_DEFAULTS = [
-	{
-		role: 'platform_admin',
-		canAccessAdminBoard: true,
-		canReviewSecurityAudit: true,
-		canManageGlobalSettings: true,
-		canManageMembers: false,
-		canManageMemberBillingAdmin: false,
-		canManageOrganizationBilling: false,
-		canManageWorkspacesDocuments: false,
-		canReadOrganizationResources: true,
-		canUseAiGrammarByPlan: true,
-		canManageBillingSettings: false,
-		canViewInvoicesSubscription: true,
-	},
-	{
-		role: 'organization_owner',
-		canAccessAdminBoard: false,
-		canReviewSecurityAudit: false,
-		canManageGlobalSettings: false,
-		canManageMembers: true,
-		canManageMemberBillingAdmin: true,
-		canManageOrganizationBilling: true,
-		canManageWorkspacesDocuments: true,
-		canReadOrganizationResources: true,
-		canUseAiGrammarByPlan: true,
-		canManageBillingSettings: true,
-		canViewInvoicesSubscription: true,
-	},
-	{
-		role: 'organization_member',
-		canAccessAdminBoard: false,
-		canReviewSecurityAudit: false,
-		canManageGlobalSettings: false,
-		canManageMembers: false,
-		canManageMemberBillingAdmin: false,
-		canManageOrganizationBilling: false,
-		canManageWorkspacesDocuments: true,
-		canReadOrganizationResources: true,
-		canUseAiGrammarByPlan: true,
-		canManageBillingSettings: false,
-		canViewInvoicesSubscription: false,
-	},
-	{
-		role: 'billing_admin',
-		canAccessAdminBoard: false,
-		canReviewSecurityAudit: false,
-		canManageGlobalSettings: false,
-		canManageMembers: false,
-		canManageMemberBillingAdmin: false,
-		canManageOrganizationBilling: true,
-		canManageWorkspacesDocuments: false,
-		canReadOrganizationResources: true,
-		canUseAiGrammarByPlan: false,
-		canManageBillingSettings: true,
-		canViewInvoicesSubscription: true,
-	},
-];
-
-function ensureProfileTableSeeded() {
-	if (profiles.size > 0) return;
-	const timestamp = nowIso();
-	for (const definition of PROFILE_TABLE_DEFAULTS) {
-		const id = uuidv4();
-		profiles.set(id, {
-			id,
-			role: definition.role,
-			canAccessAdminBoard: Boolean(definition.canAccessAdminBoard),
-			canReviewSecurityAudit: Boolean(definition.canReviewSecurityAudit),
-			canManageGlobalSettings: Boolean(definition.canManageGlobalSettings),
-			canManageMembers: Boolean(definition.canManageMembers),
-			canManageMemberBillingAdmin: Boolean(definition.canManageMemberBillingAdmin),
-			canManageOrganizationBilling: Boolean(definition.canManageOrganizationBilling),
-			canManageWorkspacesDocuments: Boolean(definition.canManageWorkspacesDocuments),
-			canReadOrganizationResources: Boolean(definition.canReadOrganizationResources),
-			canUseAiGrammarByPlan: Boolean(definition.canUseAiGrammarByPlan),
-			canManageBillingSettings: Boolean(definition.canManageBillingSettings),
-			canViewInvoicesSubscription: Boolean(definition.canViewInvoicesSubscription),
-			createdAt: timestamp,
-			updatedAt: timestamp,
-		});
-	}
-}
-
-function getProfileTable() {
-	ensureProfileTableSeeded();
-	return [...profiles.values()]
-		.map((profile) => ({
-			id: profile.id,
-			role: profile.role,
-			canAccessAdminBoard: Boolean(profile.canAccessAdminBoard),
-			canReviewSecurityAudit: Boolean(profile.canReviewSecurityAudit),
-			canManageGlobalSettings: Boolean(profile.canManageGlobalSettings),
-			canManageMembers: Boolean(profile.canManageMembers),
-			canManageMemberBillingAdmin: Boolean(profile.canManageMemberBillingAdmin),
-			canManageOrganizationBilling: Boolean(profile.canManageOrganizationBilling),
-			canManageWorkspacesDocuments: Boolean(profile.canManageWorkspacesDocuments),
-			canReadOrganizationResources: Boolean(profile.canReadOrganizationResources),
-			canUseAiGrammarByPlan: Boolean(profile.canUseAiGrammarByPlan),
-			canManageBillingSettings: Boolean(profile.canManageBillingSettings),
-			canViewInvoicesSubscription: Boolean(profile.canViewInvoicesSubscription),
-			createdAt: profile.createdAt,
-			updatedAt: profile.updatedAt,
-		}))
-		.sort((a, b) => a.role.localeCompare(b.role));
+async function getProfileTable() {
+	if (!isDatabaseConfigured()) return [];
+	const rows = await prisma.profile.findMany({ orderBy: { role: 'asc' } });
+	return rows.map((row) => ({
+		id: row.id,
+		role: row.role,
+		canAccessAdminBoard: Boolean(row.canAccessAdminBoard),
+		canReviewSecurityAudit: Boolean(row.canReviewSecurityAudit),
+		canManageGlobalSettings: Boolean(row.canManageGlobalSettings),
+		canManageMembers: Boolean(row.canManageMembers),
+		canManageMemberBillingAdmin: Boolean(row.canManageMemberBillingAdmin),
+		canManageOrganizationBilling: Boolean(row.canManageOrganizationBilling),
+		canManageWorkspacesDocuments: Boolean(row.canManageWorkspacesDocuments),
+		canReadOrganizationResources: Boolean(row.canReadOrganizationResources),
+		canUseAiGrammarByPlan: Boolean(row.canUseAiGrammarByPlan),
+		canManageBillingSettings: Boolean(row.canManageBillingSettings),
+		canViewInvoicesSubscription: Boolean(row.canViewInvoicesSubscription),
+		createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+		updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+	}));
 }
 
 function normalizeDomain(value) {
@@ -380,13 +294,14 @@ function ensureOrganizationSecurityState(organization) {
 	return organization.security;
 }
 
-function getOrganizationSecurityState(organizationId) {
+async function getOrganizationSecurityState(organizationId) {
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return null;
 	return ensureOrganizationSecurityState(organization);
 }
 
-function updateOrganizationSecurityState(organizationId, updater) {
-	const organization = organizations.get(organizationId);
+async function updateOrganizationSecurityState(organizationId, updater) {
+	const organization = await resolveOrganizationById(organizationId);
 	if (!organization) return null;
 	const current = ensureOrganizationSecurityState(organization);
 	const next = typeof updater === 'function' ? updater({ ...current }) : current;
@@ -398,17 +313,23 @@ function updateOrganizationSecurityState(organizationId, updater) {
 		updatedAt: nowIso(),
 	};
 	ensureOrganizationSecurityState(organization);
-	organizations.set(organization.id, organization);
+	await prisma.organization.update({
+		where: { id: organizationId },
+		data: { security: organization.security },
+	});
 	return organization.security;
 }
 
-function findOrganizationByDomain(emailOrDomain) {
+async function findOrganizationByDomain(emailOrDomain) {
 	const raw = String(emailOrDomain || '').toLowerCase();
 	const domain = raw.includes('@') ? raw.split('@').pop() : raw;
 	const normalized = normalizeDomain(domain);
 	if (!normalized) return null;
 
-	for (const organization of organizations.values()) {
+	if (!isDatabaseConfigured()) return null;
+	const rows = await prisma.organization.findMany();
+	for (const row of rows) {
+		const organization = mapDbOrganizationToRecord(row);
 		const security = ensureOrganizationSecurityState(organization);
 		if (security.domainMappings.includes(normalized)) return organization;
 	}
@@ -446,10 +367,7 @@ async function upsertOrganizationBillingState(organizationId, updates = {}) {
 		...updates,
 		updatedAt: nowIso(),
 	}, organizationId);
-	organizationBilling.set(organizationId, next);
-	if (isDatabaseConfigured()) {
-		await writeOrganizationBillingStateToDb(organizationId, next);
-	}
+	await writeOrganizationBillingStateToDb(organizationId, next);
 	return next;
 }
 
@@ -539,15 +457,7 @@ function isWithinPlanAccessDays(organization, accessDays) {
 }
 
 async function countOrganizationDocuments(organizationId) {
-	if (isDatabaseConfigured()) {
-		return prisma.document.count({ where: { organizationId } });
-	}
-
-	let total = 0;
-	for (const doc of documents.values()) {
-		if (doc.organizationId === organizationId) total += 1;
-	}
-	return total;
+	return prisma.document.count({ where: { organizationId } });
 }
 
 async function canCreateDocuments(organizationId, additionalDocuments = 1) {
@@ -662,21 +572,11 @@ async function canAssignCollaborators(organizationId, additionalCollaborators = 
 }
 
 async function calculateOrganizationStorageBytes(organizationId) {
-	if (isDatabaseConfigured()) {
-		const docs = await prisma.document.findMany({
-			where: { organizationId },
-			select: { content: true },
-		});
-		return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
-	}
-
-	let total = 0;
-	for (const doc of documents.values()) {
-		if (doc.organizationId === organizationId) {
-			total += Buffer.byteLength(String(doc.content || ''), 'utf8');
-		}
-	}
-	return total;
+	const docs = await prisma.document.findMany({
+		where: { organizationId },
+		select: { content: true },
+	});
+	return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
 }
 
 async function canConsumeAiRequests(organizationId, count = 1) {
@@ -777,11 +677,6 @@ function upsertInvoice(invoice) {
 			: null,
 	};
 
-	if (!isDatabaseConfigured()) {
-		invoiceMemoryStore.set(normalized.id, normalized);
-		return normalized;
-	}
-
 	return prisma.invoice.upsert({
 		where: { id: normalized.id },
 		update: {
@@ -842,110 +737,112 @@ function upsertInvoice(invoice) {
 }
 
 function listInvoicesByOrganization(organizationId) {
-	if (isDatabaseConfigured()) {
-		return prisma.invoice.findMany({
-			where: { organizationId },
-			orderBy: { issuedAt: 'desc' },
-		}).then((rows) => rows.map((row) => {
-			const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-				? row.metadata
-				: {};
-			return {
-				id: row.id,
-				organizationId: row.organizationId,
-				provider: row.provider,
-				invoiceNumber: row.invoiceNumber || null,
-				amountCents: row.amountCents,
-				currency: row.currency,
-				status: row.status,
-				periodStart: toIsoOrNull(metadata.periodStart),
-				periodEnd: toIsoOrNull(metadata.periodEnd),
-				issuedAt: toIsoOrNull(row.issuedAt),
-				dueAt: toIsoOrNull(row.dueAt),
-				paidAt: toIsoOrNull(row.paidAt),
-				hostedUrl: metadata.hostedUrl ? String(metadata.hostedUrl) : null,
-			};
-		}));
-	}
-
-	return [...invoiceMemoryStore.values()]
-		.filter((invoice) => invoice.organizationId === organizationId)
-		.sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime());
+	return prisma.invoice.findMany({
+		where: { organizationId },
+		orderBy: { issuedAt: 'desc' },
+	}).then((rows) => rows.map((row) => {
+		const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+			? row.metadata
+			: {};
+		return {
+			id: row.id,
+			organizationId: row.organizationId,
+			provider: row.provider,
+			invoiceNumber: row.invoiceNumber || null,
+			amountCents: row.amountCents,
+			currency: row.currency,
+			status: row.status,
+			periodStart: toIsoOrNull(metadata.periodStart),
+			periodEnd: toIsoOrNull(metadata.periodEnd),
+			issuedAt: toIsoOrNull(row.issuedAt),
+			dueAt: toIsoOrNull(row.dueAt),
+			paidAt: toIsoOrNull(row.paidAt),
+			hostedUrl: metadata.hostedUrl ? String(metadata.hostedUrl) : null,
+		};
+	}));
 }
 
-function enqueueWebhookJob(provider, event) {
+async function enqueueWebhookJob(provider, event) {
 	const eventId = String(event.id || uuidv4());
-	if (processedWebhookEvents.get(eventId)) {
-		return { skipped: true, reason: 'already-processed', eventId };
-	}
-	const existingJob = [...webhookJobs.values()].find((job) => job.eventId === eventId);
+	if (!isDatabaseConfigured()) return { skipped: true, reason: 'no-db', eventId };
+
+	const alreadyProcessed = await prisma.processedWebhookEvent.findUnique({ where: { eventId } });
+	if (alreadyProcessed) return { skipped: true, reason: 'already-processed', eventId };
+
+	const existingJob = await prisma.webhookJob.findFirst({ where: { eventId } });
 	if (existingJob) return { skipped: true, reason: 'already-queued', eventId, job: existingJob };
 
-	const now = nowIso();
-	const job = {
-		id: uuidv4(),
-		eventId,
-		provider,
-		type: String(event.type || 'unknown'),
-		payload: event,
-		status: 'queued',
-		attempts: 0,
-		maxAttempts: 8,
-		nextAttemptAt: now,
-		lastError: null,
-		createdAt: now,
-		updatedAt: now,
-	};
-	webhookJobs.set(job.id, job);
+	const job = await prisma.webhookJob.create({
+		data: {
+			id: uuidv4(),
+			eventId,
+			provider,
+			type: String(event.type || 'unknown'),
+			payload: event,
+			status: 'queued',
+			attempts: 0,
+			maxAttempts: 8,
+			nextAttemptAt: new Date(),
+		},
+	});
 	return { skipped: false, eventId, job };
 }
 
-function listWebhookJobs() {
-	return [...webhookJobs.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+async function listWebhookJobs() {
+	if (!isDatabaseConfigured()) return [];
+	return prisma.webhookJob.findMany({ orderBy: { createdAt: 'asc' } });
 }
 
-function getDueWebhookJobs(limit = 20) {
-	const nowMs = Date.now();
-	return [...webhookJobs.values()]
-		.filter((job) => (job.status === 'queued' || job.status === 'failed') && new Date(job.nextAttemptAt).getTime() <= nowMs)
-		.sort((a, b) => new Date(a.nextAttemptAt).getTime() - new Date(b.nextAttemptAt).getTime())
-		.slice(0, limit);
+async function getDueWebhookJobs(limit = 20) {
+	if (!isDatabaseConfigured()) return [];
+	return prisma.webhookJob.findMany({
+		where: {
+			status: { in: ['queued', 'failed'] },
+			nextAttemptAt: { lte: new Date() },
+		},
+		orderBy: { nextAttemptAt: 'asc' },
+		take: limit,
+	});
 }
 
-function markWebhookJobProcessing(jobId) {
-	const job = webhookJobs.get(jobId);
-	if (!job) return null;
-	job.status = 'processing';
-	job.updatedAt = nowIso();
-	webhookJobs.set(job.id, job);
-	return job;
+async function markWebhookJobProcessing(jobId) {
+	if (!isDatabaseConfigured()) return null;
+	return prisma.webhookJob.update({
+		where: { id: jobId },
+		data: { status: 'processing' },
+	});
 }
 
-function markWebhookJobProcessed(jobId) {
-	const job = webhookJobs.get(jobId);
-	if (!job) return null;
-	job.status = 'processed';
-	job.updatedAt = nowIso();
-	webhookJobs.set(job.id, job);
-	processedWebhookEvents.set(job.eventId, {
-		eventId: job.eventId,
-		provider: job.provider,
-		processedAt: nowIso(),
+async function markWebhookJobProcessed(jobId) {
+	if (!isDatabaseConfigured()) return null;
+	const job = await prisma.webhookJob.update({
+		where: { id: jobId },
+		data: { status: 'processed' },
+	});
+	await prisma.processedWebhookEvent.upsert({
+		where: { eventId: job.eventId },
+		update: { processedAt: new Date() },
+		create: { eventId: job.eventId, provider: job.provider },
 	});
 	return job;
 }
 
-function markWebhookJobFailed(jobId, errorMessage) {
-	const job = webhookJobs.get(jobId);
+async function markWebhookJobFailed(jobId, errorMessage) {
+	if (!isDatabaseConfigured()) return null;
+	const job = await prisma.webhookJob.findUnique({ where: { id: jobId } });
 	if (!job) return null;
-	job.attempts += 1;
-	job.lastError = String(errorMessage || 'Unknown webhook processing error');
-	job.status = job.attempts >= job.maxAttempts ? 'failed' : 'queued';
-	const backoffMs = Math.min(60 * 60 * 1000, Math.pow(2, job.attempts) * 1000);
-	job.nextAttemptAt = new Date(Date.now() + backoffMs).toISOString();
-	job.updatedAt = nowIso();
-	webhookJobs.set(job.id, job);
-	return job;
+	const attempts = (job.attempts || 0) + 1;
+	const status = attempts >= job.maxAttempts ? 'failed' : 'queued';
+	const backoffMs = Math.min(60 * 60 * 1000, Math.pow(2, attempts) * 1000);
+	return prisma.webhookJob.update({
+		where: { id: jobId },
+		data: {
+			attempts,
+			lastError: String(errorMessage || 'Unknown webhook processing error'),
+			status,
+			nextAttemptAt: new Date(Date.now() + backoffMs),
+		},
+	});
 }
 
 function mapWorkspaceRowToRecord(row) {
@@ -998,6 +895,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
 	const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
+	let organization = null;
 	if (row) {
 		organization = {
 			id: row.id,

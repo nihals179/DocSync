@@ -63,8 +63,8 @@ router.get('/mine', requireAuth, async (req, res) => {
   });
 });
 
-router.get('/profiles', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), (req, res) => {
-  res.json({ profiles: getProfileTable() });
+router.get('/profiles', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+  res.json({ profiles: await getProfileTable() });
 });
 
 router.post('/switch', requireAuth, async (req, res) => {

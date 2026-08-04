@@ -122,9 +122,9 @@ async function resolveUserFromSession(sessionId) {
   return { session, user };
 }
 
-function isIpAllowed(req, user) {
+async function isIpAllowed(req, user) {
   if (!user?.currentOrganizationId) return true;
-  const security = getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await getOrganizationSecurityState(user.currentOrganizationId);
   if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;
   const requestIp = getRequestIp(req);
   return security.ipAllowlist.includes(requestIp);
@@ -153,7 +153,7 @@ async function requireAuth(req, res, next) {
     if (!resolved || resolved.user.id !== payload.sub) {
       return res.status(401).json({ error: 'Session invalid or expired.' });
     }
-    if (!isIpAllowed(req, resolved.user)) {
+    if (!await isIpAllowed(req, resolved.user)) {
       return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
     }
 

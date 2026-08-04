@@ -157,7 +157,6 @@ async function listAuditLogs({ organizationId, userId, action, status, limit = 1
 
 		return rows.map((row) => {
 			const normalized = normalizeAuditEntry(row);
-			auditLogs.set(normalized.id, normalized);
 			return normalized;
 		});
 	}
