@@ -121,7 +121,7 @@ router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermiss
     });
   }
 
-  const session = createCheckoutSession({
+  const session = await createCheckoutSession({
     organizationId: req.organization.id,
     planId,
     purchasedSeats: requestedSeats,

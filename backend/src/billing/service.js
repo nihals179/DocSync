@@ -2,13 +2,12 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
 const {
-  PLAN_CATALOG,
   TRIAL_DAYS_BY_PLAN,
   enqueueWebhookJob,
   getDueWebhookJobs,
   getOrganizationBillingState,
   getOrganizationEntitlements,
-  getPlan,
+  getPlanById,
   listInvoicesByOrganization,
   markWebhookJobFailed,
   markWebhookJobProcessed,
@@ -45,7 +44,7 @@ async function applySubscriptionState({ organizationId, planId, purchasedSeats, 
 
   const billing = await getOrganizationBillingState(organizationId);
   const now = Date.now();
-  const plan = getPlan(planId);
+  const plan = await getPlanById(planId);
   const nextSeats = Math.max(1, Number(purchasedSeats || plan.limits.seats));
   const trialEligible = trialDays > 0 && !billing.trialUsed;
 
@@ -215,8 +214,8 @@ function queueBillingEvent(event, provider = 'mock') {
   return enqueueWebhookJob(provider, event);
 }
 
-function createCheckoutSession({ organizationId, planId, purchasedSeats, successUrl, cancelUrl, autoQueueCompletion = true }) {
-  const plan = PLAN_CATALOG[planId];
+async function createCheckoutSession({ organizationId, planId, purchasedSeats, successUrl, cancelUrl, autoQueueCompletion = true }) {
+  const plan = await getPlanById(planId);
   if (!plan) throw new Error('Invalid planId.');
 
   const sessionId = `chk_${uuidv4()}`;

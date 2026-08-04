@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
-const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN } = require('./catalog');
+const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 
 const nowIso = () => runtimeNowIso();
@@ -210,11 +210,24 @@ function monthKeyFromDate(input = new Date()) {
 }
 
 function getPlan(planId) {
+	if (isDatabaseConfigured()) {
+		void refreshPlanCatalogFromDb().catch(() => {});
+	}
 	return PLAN_CATALOG[planId] || PLAN_CATALOG.free;
 }
 
-function getAllPlans() {
+async function getAllPlans() {
+	if (isDatabaseConfigured()) {
+		await refreshPlanCatalogFromDb();
+	}
 	return Object.values(PLAN_CATALOG);
+}
+
+async function getPlanById(planId) {
+	if (isDatabaseConfigured()) {
+		await refreshPlanCatalogFromDb();
+	}
+	return getPlan(planId);
 }
 
 const PROFILE_TABLE_DEFAULTS = [
@@ -1123,6 +1136,7 @@ module.exports = {
 	PLAN_CATALOG,
 	TRIAL_DAYS_BY_PLAN,
 	getPlan,
+	getPlanById,
 	getAllPlans,
 	getOrganizationBillingState,
 	upsertOrganizationBillingState,
