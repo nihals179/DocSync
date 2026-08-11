@@ -1,30 +1,22 @@
 const express = require('express');
-
-const { processDueWebhookJobs, queueBillingEvent } = require('../billing/service');
+const { requestBillingService } = require('../lib/billing-service-client');
 
 const router = express.Router();
 
 router.post('/provider', async (req, res) => {
-  const event = req.body || {};
-  if (!event.type) {
-    return res.status(400).json({ error: 'Webhook payload must include event type.' });
-  }
-
-  const queued = queueBillingEvent(event, 'provider');
-  if (queued.skipped) {
-    return res.status(200).json({
-      message: 'Webhook already processed or queued.',
-      eventId: queued.eventId,
-      status: queued.reason,
+  try {
+    const response = await requestBillingService('/api/billing/webhooks/provider', {
+      method: 'POST',
+      body: req.body || {},
+    });
+    return res.status(response.status).json(response.payload);
+  } catch (error) {
+    return res.status(502).json({
+      error: 'Billing service is unavailable.',
+      code: 'billing_service_unavailable',
+      details: error instanceof Error ? error.message : String(error),
     });
   }
-
-  await processDueWebhookJobs(20);
-  return res.status(202).json({
-    message: 'Webhook accepted for processing.',
-    eventId: queued.eventId,
-    jobId: queued.job?.id || null,
-  });
 });
 
 module.exports = router;

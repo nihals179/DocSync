@@ -1,219 +1,71 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
-const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
-const {
-  nowIso,
-  listInvoicesByOrganization,
-} = require('../store');
-const {
-  buildBillingSnapshot,
-  createCheckoutSession,
-  processDueWebhookJobs,
-  queueBillingEvent,
-} = require('../billing/service');
+const { requestBillingService } = require('../lib/billing-service-client');
 
 const router = express.Router();
 
-router.get('/plans', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const rows = await prisma.planCatalog.findMany({
-    orderBy: { createdAt: 'asc' },
+function relayBillingServiceError(res, error) {
+  return res.status(502).json({
+    error: 'Billing service is unavailable.',
+    code: 'billing_service_unavailable',
+    details: error instanceof Error ? error.message : String(error),
   });
+}
 
-  if (!rows.length) {
-    return res.status(404).json({
-      error: 'No billing plans found in database.',
-      code: 'plan_catalog_empty',
-    });
+async function forwardToBillingService(res, pathname, options = {}) {
+  try {
+    const response = await requestBillingService(pathname, options);
+    return res.status(response.status).json(response.payload);
+  } catch (error) {
+    return relayBillingServiceError(res, error);
   }
+}
 
-  const plans = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    priceMonthlyCents: row.priceMonthlyCents,
-    displayPrice: row.displayPrice,
-    features: {
-      basicEditor: row.featureBasicEditor,
-      aiAssistant: row.featureAiAssistant,
-      grammarChecker: row.featureGrammarChecker,
-      prioritySupport: row.featurePrioritySupport,
-      communitySupport: row.featureCommunitySupport,
-      ssoSaml: row.featureSsoSaml,
-      customRolesRbac: row.featureCustomRolesRbac,
-      auditLogs: row.featureAuditLogs,
-      slaDedicatedSupport: row.featureSlaDedicatedSupport,
-      onPremiseOption: row.featureOnPremiseOption,
-      selfHostedDeployment: row.featureSelfHostedDeployment,
-      privateNetworkOnly: row.featurePrivateNetworkOnly,
-      customComplianceControls: row.featureCustomComplianceControls,
-      dedicatedSuccessTeam: row.featureDedicatedSuccessTeam,
-    },
-    limits: {
-      seats: row.limitSeats,
-      storageBytes: Number(row.limitStorageBytes),
-      aiRequestsPerMonth: row.limitAiRequestsPerMonth,
-      collaborators: row.limitCollaborators,
-      documents: row.limitDocuments,
-      documentUpdatesPerMonth: row.limitDocumentUpdatesPerMonth,
-      versionHistoryDays: row.limitVersionHistoryDays,
-      grammarAccessDays: row.limitGrammarAccessDays,
-      aiAccessDays: row.limitAiAccessDays,
-    },
-  }));
-
-  res.json({ plans });
+router.get('/plans', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+  return forwardToBillingService(res, '/api/billing/plans');
 });
 
 router.get('/current', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), attachEntitlements, async (req, res) => {
-  try {
-    const billingState = await prisma.organizationBilling.findUnique({
-      where: { organizationId: req.organization.id },
-    });
-    if (!billingState) {
-      return res.status(404).json({
-        error: 'Billing state not found in database.',
-        code: 'billing_state_not_found',
-      });
-    }
-
-    const snapshot = await buildBillingSnapshot(req.organization.id);
-    if (!snapshot) {
-      return res.status(404).json({
-        error: 'Billing snapshot unavailable for organization.',
-        code: 'billing_snapshot_unavailable',
-      });
-    }
-
-    return res.json({ snapshot });
-  } catch {
-    return res.status(500).json({
-      error: 'Billing service unavailable.',
-      code: 'billing_db_unavailable',
-    });
-  }
+  const pathname = `/api/billing/organizations/${req.organization.id}/current`;
+  return forwardToBillingService(res, pathname);
 });
 
 router.get('/invoices', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const invoices = await listInvoicesByOrganization(req.organization.id);
-  res.json({ invoices });
+  const pathname = `/api/billing/organizations/${req.organization.id}/invoices`;
+  return forwardToBillingService(res, pathname);
 });
 
 router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const planId = String(req.body?.planId || '').toLowerCase();
-  if (!planId) return res.status(400).json({ error: 'planId is required.' });
-
-  const plan = await prisma.planCatalog.findUnique({ where: { id: planId } });
-  if (!plan) return res.status(400).json({ error: 'Invalid planId.' });
-
-  const current = await prisma.organizationBilling.findUnique({
-    where: { organizationId: req.organization.id },
-  });
-  const requestedSeats = Math.max(1, Number(req.body?.purchasedSeats || plan.limitSeats));
-  const assignedSeats = await prisma.organizationMembership.count({
-    where: { organizationId: req.organization.id, status: 'active' },
-  });
-  if (requestedSeats < assignedSeats) {
-    return res.status(400).json({
-      error: `Cannot set seats below currently assigned members (${assignedSeats}).`,
-    });
-  }
-
-  const session = await createCheckoutSession({
-    organizationId: req.organization.id,
-    planId,
-    purchasedSeats: requestedSeats,
-    successUrl: req.body?.successUrl,
-    cancelUrl: req.body?.cancelUrl,
-    autoQueueCompletion: req.body?.autoQueueCompletion !== false,
-  });
-
-  res.status(201).json({
-    checkoutSession: session,
-    currentPlanId: current?.planId || 'free',
-    note: 'In mock mode, checkout completion is queued as a webhook event.',
+  const pathname = `/api/billing/organizations/${req.organization.id}/checkout`;
+  return forwardToBillingService(res, pathname, {
+    method: 'POST',
+    body: req.body || {},
   });
 });
 
 router.post('/subscription/change', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const planId = String(req.body?.planId || '').toLowerCase();
-  if (!planId) return res.status(400).json({ error: 'planId is required.' });
-
-  const plan = await prisma.planCatalog.findUnique({ where: { id: planId } });
-  if (!plan) return res.status(400).json({ error: 'Invalid planId.' });
-
-  const seats = Math.max(1, Number(req.body?.purchasedSeats || plan.limitSeats));
-  const assignedSeats = await prisma.organizationMembership.count({
-    where: { organizationId: req.organization.id, status: 'active' },
-  });
-  if (seats < assignedSeats) {
-    return res.status(400).json({
-      error: `Cannot reduce seats below currently assigned members (${assignedSeats}).`,
-    });
-  }
-
-  const event = {
-    id: `evt_${uuidv4()}`,
-    type: 'customer.subscription.updated',
-    data: {
-      organizationId: req.organization.id,
-      planId,
-      purchasedSeats: seats,
-      subscriptionId: req.body?.subscriptionId || null,
-      customerId: req.body?.customerId || null,
-    },
-    createdAt: nowIso(),
-  };
-
-  queueBillingEvent(event, 'mock');
-  void processDueWebhookJobs(20);
-
-  res.status(202).json({
-    message: 'Subscription change queued for webhook processing.',
-    eventId: event.id,
+  const pathname = `/api/billing/organizations/${req.organization.id}/subscription/change`;
+  return forwardToBillingService(res, pathname, {
+    method: 'POST',
+    body: req.body || {},
   });
 });
 
 router.patch('/seats', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const nextSeats = Math.max(1, Number(req.body?.purchasedSeats || 0));
-  const billing = await prisma.organizationBilling.findUnique({
-    where: { organizationId: req.organization.id },
-  });
-  if (!billing) return res.status(404).json({ error: 'Billing state not found.' });
-
-  const assignedSeats = await prisma.organizationMembership.count({
-    where: { organizationId: req.organization.id, status: 'active' },
-  });
-  if (nextSeats < assignedSeats) {
-    return res.status(400).json({
-      error: `Cannot set purchased seats below assigned seats (${assignedSeats}).`,
-    });
-  }
-
-  await prisma.organizationBilling.update({
-    where: { organizationId: req.organization.id },
-    data: {
-      purchasedSeats: nextSeats,
-      updatedAt: new Date(nowIso()),
-    },
-  });
-
-  res.json({
-    message: 'Purchased seats updated.',
-    purchasedSeats: nextSeats,
-    assignedSeats,
+  const pathname = `/api/billing/organizations/${req.organization.id}/seats`;
+  return forwardToBillingService(res, pathname, {
+    method: 'PATCH',
+    body: req.body || {},
   });
 });
 
 router.get('/webhooks/jobs', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const jobs = await prisma.webhookJob.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: 200,
+  return forwardToBillingService(res, '/api/billing/webhooks/jobs', {
+    query: { organizationId: req.organization.id },
   });
-  const filtered = jobs.filter((job) => String(job.payload?.data?.organizationId || '') === req.organization.id);
-  res.json({ jobs: filtered });
 });
 
 module.exports = router;

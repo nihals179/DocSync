@@ -128,6 +128,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
       : 'Account created successfully. You can now log in.',
     verificationRequired,
     user: publicUser(user),
+    billing,
     ...(verificationToken && authConfig.devMode
       ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink }
       : {}),

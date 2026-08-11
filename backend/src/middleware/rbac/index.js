@@ -74,7 +74,7 @@ async function resolveOrganizationContext(req, res, next) {
   }));
 
   if (activeMemberships.length === 0) {
-    return res.status(403).json({ error: 'No active organization membership.' });
+    return res.status(403).json({ error: 'No active membership.' });
   }
 
   const resolvedMembership = requestedOrganizationId

@@ -3,7 +3,8 @@ function nowIso() {
 }
 
 function isDatabaseConfigured() {
-  return Boolean(process.env.DATABASE_URL);
+  const value = String(process.env.DATABASE_URL || '').trim().toLowerCase();
+  return value.startsWith('postgres://') || value.startsWith('postgresql://');
 }
 
 function toIsoOrNull(value) {

@@ -1,5 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
-const { prisma } = require('../db/client');
+const { fromBackend } = require('../lib/backend-modules');
+
+const { prisma } = fromBackend('src/db/client');
 
 const {
   TRIAL_DAYS_BY_PLAN,
@@ -15,8 +17,8 @@ const {
   nowIso,
   upsertOrganizationBillingState,
   upsertInvoice,
-} = require('../store');
-const { isDatabaseConfigured } = require('../lib/runtime-utils');
+} = fromBackend('src/store');
+const { isDatabaseConfigured } = fromBackend('src/lib/runtime-utils');
 
 let workerStarted = false;
 

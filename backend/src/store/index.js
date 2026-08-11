@@ -380,11 +380,11 @@ async function ensureUserBillingState(user) {
 			await writeUserBillingStateToDb(direct);
 			return direct;
 		}
-		const created = normalizeUserBillingState(null, user.id, user.email);
+		const created = normalizeUserBillingState({ planId: 'free', status: 'active', trialUsed: false }, user.id, user.email);
 		await writeUserBillingStateToDb(created);
 		return created;
 	}
-	return null;
+	return normalizeUserBillingState({ planId: 'free', status: 'active', trialUsed: false }, user.id, user.email);
 }
 
 async function refreshBillingStatus(organizationId) {
@@ -857,6 +857,60 @@ function mapWorkspaceRowToRecord(row) {
 	};
 }
 
+async function ensureDefaultOrganizationForUser(user) {
+	if (!user?.id || !isDatabaseConfigured()) return null;
+
+	const organizationId = uuidv4();
+	const now = new Date();
+	const organizationName = String(user.name || '').trim() ? `${String(user.name).trim()}'s Organization` : 'Personal Organization';
+
+	await prisma.organization.create({
+		data: {
+			id: organizationId,
+			name: organizationName,
+			ownerUserId: user.id,
+			createdAt: now,
+			updatedAt: now,
+		},
+	});
+
+	await prisma.organizationMembership.create({
+		data: {
+			id: uuidv4(),
+			organizationId,
+			userId: user.id,
+			email: String(user.email || '').toLowerCase().trim(),
+			billingAdmin: true,
+			status: 'active',
+			createdAt: now,
+			updatedAt: now,
+		},
+	});
+
+	const organization = {
+		id: organizationId,
+		name: organizationName,
+		ownerUserId: user.id,
+		createdAt: now.toISOString(),
+		updatedAt: now.toISOString(),
+	};
+	ensureOrganizationSecurityState(organization);
+	await prisma.organization.update({
+		where: { id: organizationId },
+		data: { security: organization.security },
+	});
+
+	await ensureOrganizationBillingState(organization);
+
+	await prisma.user.update({
+		where: { id: user.id },
+		data: { currentOrganizationId: organizationId },
+	});
+
+	user.currentOrganizationId = organizationId;
+	return organization;
+}
+
 async function syncCurrentOrganizationFromMembership(user) {
 	if (!user) return null;
 	if (!isDatabaseConfigured()) return null;
@@ -1026,7 +1080,7 @@ async function ensureTenantBootstrapForUser(user) {
 		return organization;
 	}
 
-	return null;
+	return ensureDefaultOrganizationForUser(user);
 }
 
 module.exports = {
@@ -1064,6 +1118,7 @@ module.exports = {
 	markWebhookJobProcessed,
 	markWebhookJobFailed,
 	ensureTenantBootstrapForUser,
+	ensureDefaultOrganizationForUser,
 	syncCurrentOrganizationFromMembership,
 	ensureWorkspaceForUserProvisioned,
 	getProfileTable,

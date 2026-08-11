@@ -364,9 +364,9 @@ Map Stripe's `checkout.session.completed`, `customer.subscription.updated`, etc.
 | File                                                  | Purpose                                              |
 |-------------------------------------------------------|------------------------------------------------------|
 | `backend/src/store/index.js`                          | Plan catalog, all state maps, entitlement logic       |
-| `backend/src/billing/service.js`                      | Checkout, webhook processing, worker, snapshot        |
+| `billing-service/src/billing/service.js`              | Checkout, webhook processing, worker, snapshot        |
 | `backend/src/middleware/entitlements.js`              | Route-level enforcement guards                        |
-| `backend/src/routes/billing.routes.js`                | REST API for billing portal and seat management       |
-| `backend/src/routes/billing-webhooks.routes.js`       | Inbound webhook receiver (provider → queue)           |
+| `backend/src/routes/billing.routes.js`                | Authenticated proxy to standalone billing service     |
+| `backend/src/routes/billing-webhooks.routes.js`       | Webhook proxy (provider → billing service)            |
 | `frontend/src/components/pages/BillingPortalPage.tsx` | Billing UI: plans, invoices, seats, usage             |
 | `frontend/src/lib/api.ts`                             | `billingApi` — typed client for all billing endpoints |

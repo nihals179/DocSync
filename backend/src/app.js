@@ -18,7 +18,6 @@ const organizationsRoutes = require('./routes/organizations.routes');
 const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
 const billingRoutes = require('./routes/billing.routes');
 const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
-const { startBillingWebhookWorker } = require('./billing/service');
 
 const app = express();
 
@@ -94,7 +93,5 @@ app.use('/api/docs/:docId/todos', todosRoutes);
 // AI & Grammar
 app.use('/api/ai', aiRoutes);
 app.use('/api/grammar', grammarRoutes);
-
-startBillingWebhookWorker();
 
 module.exports = app;
