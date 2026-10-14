@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../../db/client');
 const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
-  getOrganizationSecurityState,
+  gettenantSecurityState,
 } = require('../../store');
 const {
   generateOpaqueToken,
@@ -36,25 +36,27 @@ function getUserAgent(req) {
   return req.get?.('user-agent') || req.headers?.['user-agent'] || 'unknown';
 }
 
-async function isOrgIpAllowedForUser(req, user) {
-  if (!user?.currentOrganizationId) return true;
-  const security = await getOrganizationSecurityState(user.currentOrganizationId);
+async function isTenantIpAllowedForUser(req, user) {
+  const tenantId = user?.currentTenantId;
+  if (!tenantId) return true;
+  const security = await gettenantSecurityState(tenantId);
   if (!security?.ipAllowlistEnabled || !Array.isArray(security.ipAllowlist) || security.ipAllowlist.length === 0) {
     return true;
   }
   return security.ipAllowlist.includes(getRequestIp(req));
 }
 
-async function getOrgSessionDurationMs(user, remember) {
-  if (!user?.currentOrganizationId) {
+async function getTenantSessionDurationMs(user, remember) {
+  const tenantId = user?.currentTenantId;
+  if (!tenantId) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }
-  const security = await getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await gettenantSecurityState(tenantId);
   if (!security) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }
-  const orgMs = Math.min(24, Math.max(1, Number(security.sessionDurationHours || 8))) * 60 * 60 * 1000;
-  return remember ? Math.min(REMEMBER_SESSION_MS, orgMs) : orgMs;
+  const tenantMs = Math.min(24, Math.max(1, Number(security.sessionDurationHours || 8))) * 60 * 60 * 1000;
+  return remember ? Math.min(REMEMBER_SESSION_MS, tenantMs) : tenantMs;
 }
 
 function ensureUserShape(user) {
@@ -66,7 +68,7 @@ function ensureUserShape(user) {
   if (typeof user.twoFactorEnabled !== 'boolean') user.twoFactorEnabled = false;
   if (user.twoFactorSecret === undefined) user.twoFactorSecret = null;
   if (user.twoFactorTempSecret === undefined) user.twoFactorTempSecret = null;
-  if (user.currentOrganizationId === undefined) user.currentOrganizationId = null;
+  if (user.currentTenantId === undefined) user.currentTenantId = null;
   return user;
 }
 
@@ -93,7 +95,7 @@ function createAuthRouteHelpers({
     const user = userId && routeUsers?.get ? routeUsers.get(userId) : null;
     return writeAuditLog({
       userId,
-      organizationId: user?.currentOrganizationId || metadata.organizationId || null,
+      tenantId: user?.currentTenantId || null,
       action,
       status,
       ipAddress: routeGetRequestIp(req),
@@ -122,37 +124,40 @@ function createAuthRouteHelpers({
         twoFactorEnabled: Boolean(user.twoFactorEnabled),
         twoFactorSecret: user.twoFactorSecret || null,
         twoFactorTempSecret: user.twoFactorTempSecret || null,
-        currentOrganizationId: user.currentOrganizationId || null,
+        currentTenantId: user.currentTenantId || null,
       },
     });
 
-    await routePrisma.userBilling.upsert({
-      where: { email: user.email },
-      update: {
-        userId: user.id,
-        email: user.email,
-        planId: billing.planId,
-        status: billing.status,
-        trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
-        trialUsed: Boolean(billing.trialUsed),
-        subscriptionId: billing.subscriptionId || null,
-        customerId: billing.customerId || null,
-        currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
-        graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
-      },
-      create: {
-        userId: user.id,
-        email: user.email,
-        planId: billing.planId,
-        status: billing.status,
-        trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
-        trialUsed: Boolean(billing.trialUsed),
-        subscriptionId: billing.subscriptionId || null,
-        customerId: billing.customerId || null,
-        currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
-        graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
-      },
+    const normalizedEmail = String(user.email || '').toLowerCase().trim();
+    const billingData = {
+      userId: user.id,
+      email: normalizedEmail,
+      planId: billing.planId,
+      status: billing.status,
+      trialEndsAt: billing.trialEndsAt ? new Date(billing.trialEndsAt) : null,
+      trialUsed: Boolean(billing.trialUsed),
+      subscriptionId: billing.subscriptionId || null,
+      customerId: billing.customerId || null,
+      currentPeriodEndAt: billing.currentPeriodEndAt ? new Date(billing.currentPeriodEndAt) : null,
+      graceEndsAt: billing.graceEndsAt ? new Date(billing.graceEndsAt) : null,
+    };
+
+    const billingUpdated = await routePrisma.userBilling.updateMany({
+      where: { email: normalizedEmail },
+      data: billingData,
     });
+    if (billingUpdated.count === 0) {
+      try {
+        await routePrisma.userBilling.create({
+          data: billingData,
+        });
+      } catch {
+        await routePrisma.userBilling.updateMany({
+          where: { email: normalizedEmail },
+          data: billingData,
+        });
+      }
+    }
   }
 
   return {
@@ -172,7 +177,7 @@ function publicUser(user) {
     emailVerified: current.emailVerified,
     twoFactorEnabled: current.twoFactorEnabled,
     role: current.role || 'user',
-    currentOrganizationId: current.currentOrganizationId || null,
+    currentTenantId: current.currentTenantId || null,
   };
 }
 
@@ -187,21 +192,37 @@ async function issueOneTimeToken(userId, type, ttlMs) {
   };
 
   if (isDatabaseConfigured()) {
-    await prisma.authToken.upsert({
+    const updated = await prisma.authToken.updateMany({
       where: { id: token },
-      update: {
+      data: {
         userId,
         type,
         expiresAt: new Date(record.expiresAt),
-      },
-      create: {
-        id: token,
-        userId,
-        type,
-        expiresAt: new Date(record.expiresAt),
-        createdAt: new Date(record.createdAt),
       },
     });
+
+    if (updated.count === 0) {
+      try {
+        await prisma.authToken.create({
+          data: {
+            id: token,
+            userId,
+            type,
+            expiresAt: new Date(record.expiresAt),
+            createdAt: new Date(record.createdAt),
+          },
+        });
+      } catch {
+        await prisma.authToken.updateMany({
+          where: { id: token },
+          data: {
+            userId,
+            type,
+            expiresAt: new Date(record.expiresAt),
+          },
+        });
+      }
+    }
   }
 
   return token;
@@ -272,7 +293,7 @@ async function createSession(user, req, remember) {
   }
   const refreshToken = generateOpaqueToken();
   const csrfToken = generateOpaqueToken();
-  const expiresAt = new Date(Date.now() + await getOrgSessionDurationMs(user, remember)).toISOString();
+  const expiresAt = new Date(Date.now() + await getTenantSessionDurationMs(user, remember)).toISOString();
   const session = {
     id: uuidv4(),
     userId: user.id,
@@ -306,26 +327,40 @@ async function rotateSession(session, req) {
   session.lastUsedAt = nowIso();
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: { currentOrganizationId: true },
+    select: { currentTenantId: true },
   });
-  session.expiresAt = new Date(Date.now() + await getOrgSessionDurationMs(user, session.remember)).toISOString();
+  session.expiresAt = new Date(Date.now() + await getTenantSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);
-  await prisma.authSession.upsert({
+  const sessionUpdateData = {
+    refreshTokenHash: session.refreshTokenHash,
+    csrfToken: session.csrfToken,
+    lastUsedAt: new Date(session.lastUsedAt),
+    expiresAt: new Date(session.expiresAt),
+    userAgent: session.userAgent,
+    ipAddress: session.ipAddress,
+  };
+
+  const updated = await prisma.authSession.updateMany({
     where: { id: session.id },
-    update: {
-      refreshTokenHash: session.refreshTokenHash,
-      csrfToken: session.csrfToken,
-      lastUsedAt: new Date(session.lastUsedAt),
-      expiresAt: new Date(session.expiresAt),
-      userAgent: session.userAgent,
-      ipAddress: session.ipAddress,
-    },
-    create: {
-      id: session.id,
-      ...toSessionWriteData(session),
-    },
+    data: sessionUpdateData,
   });
+
+  if (updated.count === 0) {
+    try {
+      await prisma.authSession.create({
+        data: {
+          id: session.id,
+          ...toSessionWriteData(session),
+        },
+      });
+    } catch {
+      await prisma.authSession.updateMany({
+        where: { id: session.id },
+        data: sessionUpdateData,
+      });
+    }
+  }
   return { refreshToken, csrfToken, session };
 }
 
@@ -465,7 +500,7 @@ module.exports = {
   nowIso,
   getRequestIp,
   getUserAgent,
-  isOrgIpAllowedForUser,
+  isTenantIpAllowedForUser,
   ensureUserShape,
   createAuthRouteHelpers,
   publicUser,

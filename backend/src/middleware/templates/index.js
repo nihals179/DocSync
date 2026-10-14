@@ -11,6 +11,11 @@ function cloneTemplates(list) {
 
 function readTemplateCache() {
   if (!templateCache.items) return null;
+  if (!Array.isArray(templateCache.items) || templateCache.items.length === 0) {
+    templateCache.items = null;
+    templateCache.expiresAt = 0;
+    return null;
+  }
   if (Date.now() >= templateCache.expiresAt) {
     templateCache.items = null;
     templateCache.expiresAt = 0;
@@ -20,6 +25,11 @@ function readTemplateCache() {
 }
 
 function writeTemplateCache(list) {
+  if (!Array.isArray(list) || list.length === 0) {
+    templateCache.items = null;
+    templateCache.expiresAt = 0;
+    return;
+  }
   templateCache.items = cloneTemplates(list);
   templateCache.expiresAt = Date.now() + TEMPLATE_CACHE_TTL_MS;
 }

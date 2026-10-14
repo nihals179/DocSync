@@ -4,7 +4,7 @@ const { prisma } = require('../db/client');
 
 const { ensureWorkspaceForUserProvisioned } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
 const { isWorkspaceVisibleToUser, sortWorkspacesForUser } = require('../middleware/workspaces');
 
@@ -14,7 +14,7 @@ const router = express.Router();
  * GET /api/workspaces
  * Returns all workspaces the current user can access.
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.read'), async (req, res) => {
+router.get('/', requireAuth, resolveTenantContext, requirePermission('workspace.read'), async (req, res) => {
   try {
     await ensureWorkspaceForUserProvisioned(req.user);
   } catch {
@@ -24,8 +24,8 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('work
   const rows = await prisma.workspace.findMany({
     where: {
       OR: [
-        { organizationId: req.organization.id },
-        { organizationId: req.user.id },
+        { tenantId: req.tenant.id },
+        { userId: req.user.id },
       ],
     },
     orderBy: { updatedAt: 'desc' },
@@ -36,7 +36,7 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('work
     name: row.name,
     ownerId: row.ownerId,
     memberIds: Array.isArray(row.memberIds) ? row.memberIds : [],
-    organizationId: row.organizationId,
+    tenantId: row.tenantId,
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
   })).filter((workspace) => isWorkspaceVisibleToUser(workspace, req.user.id)), req.user.id);
@@ -48,7 +48,7 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('work
  * Creates a workspace owned by current user.
  * Body: { name? }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('workspace.create'), attachEntitlements, async (req, res) => {
+router.post('/', requireAuth, resolveTenantContext, requirePermission('workspace.create'), attachEntitlements, async (req, res) => {
   const planId = String(req.entitlements?.billing?.planId || 'free').toLowerCase();
   if (planId === 'free') {
     return res.status(402).json({
@@ -67,7 +67,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('wor
     name,
     ownerId: req.user.id,
     memberIds: [],
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     createdAt: now,
     updatedAt: now,
   };
@@ -78,7 +78,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('wor
         id: workspace.id,
         name: workspace.name,
         ownerId: workspace.ownerId,
-        organizationId: workspace.organizationId,
+        tenantId: workspace.tenantId,
         memberIds: workspace.memberIds,
         createdAt: new Date(workspace.createdAt),
       },
@@ -90,6 +90,52 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('wor
   }
 
   return res.status(201).json({ workspace });
+});
+
+/**
+ * DELETE /api/workspaces/:workspaceId
+ * Deletes a workspace visible to the current user and clears workspace links from documents.
+ */
+router.delete('/:workspaceId', requireAuth, resolveTenantContext, requirePermission('workspace.delete'), async (req, res) => {
+  const workspaceId = String(req.params.workspaceId || '').trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: 'Workspace id is required.' });
+  }
+
+  const row = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+  if (!row) {
+    return res.status(404).json({ error: 'Workspace not found.' });
+  }
+
+  const workspace = {
+    id: row.id,
+    name: row.name,
+    ownerId: row.ownerId,
+    memberIds: Array.isArray(row.memberIds) ? row.memberIds : [],
+    tenantId: row.tenantId,
+    createdAt: new Date(row.createdAt).toISOString(),
+    updatedAt: new Date(row.updatedAt).toISOString(),
+  };
+  if (!isWorkspaceVisibleToUser(workspace, req.user.id)) {
+    return res.status(404).json({ error: 'Workspace not found.' });
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.document.updateMany({
+        where: {
+          workspaceId,
+          tenantId: req.tenant.id,
+        },
+        data: { workspaceId: null },
+      }),
+      prisma.workspace.delete({ where: { id: workspaceId } }),
+    ]);
+  } catch {
+    return res.status(500).json({ error: 'Failed to delete workspace.' });
+  }
+
+  return res.json({ message: 'Workspace deleted.' });
 });
 
 module.exports = router;

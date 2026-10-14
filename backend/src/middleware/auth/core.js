@@ -2,11 +2,41 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { prisma } = require('../../db/client');
 const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
-const { syncCurrentOrganizationFromMembership, getOrganizationSecurityState } = require('../../store');
+const { syncCurrenttenantFromMembership, gettenantSecurityState } = require('../../store');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
-const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
+const SESSION_ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
+const TENANT_SECURITY_CACHE_TTL_MS = Number(process.env.TENANT_SECURITY_CACHE_TTL_MS || 5000);
+
+const tenantSecurityCache = new Map();
+
+function parseDurationToMs(input, fallbackMs) {
+  const raw = String(input || '').trim().toLowerCase();
+  if (!raw) return fallbackMs;
+
+  const asNumber = Number(raw);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return asNumber;
+  }
+
+  const match = raw.match(/^(\d+)\s*(ms|s|m|h|d)$/);
+  if (!match) return fallbackMs;
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  const unitMultiplier = {
+    ms: 1,
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return value * unitMultiplier[unit];
+}
+
+const ACCESS_TOKEN_TTL_MS = parseDurationToMs(ACCESS_TOKEN_TTL, 15 * 60 * 1000);
 const INACTIVITY_TTL_MS = 30 * 60 * 1000; // Session expires after 30 min of UI inactivity
 const REFRESH_COOKIE = 'docsync_refresh';
 const CSRF_COOKIE = 'docsync_csrf';
@@ -59,7 +89,27 @@ function getCsrfCookieOptions(expiresAt) {
   };
 }
 
+function getCachedTenantSecurityState(tenantId) {
+  if (!tenantId) return null;
+  const cached = tenantSecurityCache.get(tenantId);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    tenantSecurityCache.delete(tenantId);
+    return null;
+  }
+  return cached.value;
+}
+
+function setCachedTenantSecurityState(tenantId, value) {
+  if (!tenantId) return;
+  tenantSecurityCache.set(tenantId, {
+    value,
+    expiresAt: Date.now() + TENANT_SECURITY_CACHE_TTL_MS,
+  });
+}
+
 function signAccessToken(user, sessionId) {
+  const expiresAtMs = Date.now() + ACCESS_TOKEN_TTL_MS;
   const token = jwt.sign(
     { sub: user.id, sid: sessionId, type: 'access' },
     JWT_SECRET,
@@ -67,7 +117,7 @@ function signAccessToken(user, sessionId) {
   );
   return {
     token,
-    expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
   };
 }
 
@@ -118,13 +168,20 @@ async function resolveUserFromSession(sessionId) {
   const dbUser = await prisma.user.findUnique({ where: { id: session.userId } });
   const user = mapDbUserToAuthUser(dbUser);
   if (!user) return null;
-  await syncCurrentOrganizationFromMembership(user);
+  // Avoid extra membership sync reads on every request when tenant context is already known.
+  if (!user.currentTenantId) {
+    await syncCurrenttenantFromMembership(user);
+  }
   return { session, user };
 }
 
 async function isIpAllowed(req, user) {
-  if (!user?.currentOrganizationId) return true;
-  const security = await getOrganizationSecurityState(user.currentOrganizationId);
+  if (!user?.currentTenantId) return true;
+  let security = getCachedTenantSecurityState(user.currentTenantId);
+  if (!security) {
+    security = await gettenantSecurityState(user.currentTenantId);
+    setCachedTenantSecurityState(user.currentTenantId, security || null);
+  }
   if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;
   const requestIp = getRequestIp(req);
   return security.ipAllowlist.includes(requestIp);
@@ -163,17 +220,20 @@ async function requireAuth(req, res, next) {
       email: resolved.user.email,
       emailVerified: resolved.user.emailVerified,
       twoFactorEnabled: resolved.user.twoFactorEnabled,
-      currentOrganizationId: resolved.user.currentOrganizationId || null,
+      currentTenantId: resolved.user.currentTenantId || null,
     };
     req.authSession = resolved.session;
     req.accessToken = token;
 
     // Slide the inactivity window: any authenticated request counts as activity.
-    resolved.session.lastUsedAt = new Date().toISOString();
-    await prisma.authSession.updateMany({
-      where: { id: resolved.session.id },
-      data: { lastUsedAt: new Date(resolved.session.lastUsedAt) },
-    });
+    const previousLastUsedAtMs = new Date(resolved.session.lastUsedAt).getTime();
+    if (!Number.isFinite(previousLastUsedAtMs) || previousLastUsedAtMs + SESSION_ACTIVITY_WRITE_THROTTLE_MS <= Date.now()) {
+      resolved.session.lastUsedAt = new Date().toISOString();
+      await prisma.authSession.updateMany({
+        where: { id: resolved.session.id },
+        data: { lastUsedAt: new Date(resolved.session.lastUsedAt) },
+      });
+    }
 
     next();
   } catch {

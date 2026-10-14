@@ -6,20 +6,20 @@ const {
   canAssignCollaborators,
   canAssignSeats,
   ensureWorkspaceForUserProvisioned,
-  getOrganizationBillingState,
-  getOrganizationEntitlements,
+  gettenantBillingState,
+  gettenantEntitlements,
   getProfileTable,
 } = require('../store');
 const { requireAuth, generateOpaqueToken } = require('../middleware/auth/core');
 const {
-  resolveOrganizationContext,
+  resolveTenantContext,
   requirePermission,
-  getUserOrganizations,
+  getUserTenants,
 } = require('../middleware/rbac');
 const {
   mapInviteResponse,
   parseBooleanInput,
-} = require('../middleware/organizations');
+} = require('../middleware/tenants');
 const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
@@ -55,48 +55,48 @@ function mapInviteRecord(invite) {
 }
 
 router.get('/mine', requireAuth, async (req, res) => {
-  const orgs = await getUserOrganizations(req.user.id);
-  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { currentOrganizationId: true } });
+  const tenants = await getUserTenants(req.user.id);
+  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { currentTenantId: true } });
   res.json({
-    organizations: orgs,
-    currentOrganizationId: user?.currentOrganizationId || null,
+    tenants: tenants,
+    currentTenantId: user?.currentTenantId || null,
   });
 });
 
-router.get('/profiles', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+router.get('/profiles', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
   res.json({ profiles: await getProfileTable() });
 });
 
 router.post('/switch', requireAuth, async (req, res) => {
-  const organizationId = String(req.body?.organizationId || '');
-  if (!organizationId) return res.status(400).json({ error: 'organizationId is required.' });
+  const tenantId = String(req.body?.tenants || '');
+  if (!tenantId) return res.status(400).json({ error: 'Tenant id is required.' });
 
-  const membership = await prisma.organizationMembership.findFirst({
+  const membership = await prisma.tenantMembership.findFirst({
     where: {
-      organizationId,
+      tenantId,
       userId: req.user.id,
       status: 'active',
     },
   });
-  if (!membership) return res.status(403).json({ error: 'Organization membership required.' });
+  if (!membership) return res.status(403).json({ error: 'Tenant membership required.' });
 
   const updated = await prisma.user.updateMany({
     where: { id: req.user.id },
-    data: { currentOrganizationId: organizationId },
+    data: { currentTenantId: tenantId },
   });
   if (!updated.count) return res.status(404).json({ error: 'User not found.' });
 
-  res.json({ message: 'Organization context updated.', organizationId });
+  res.json({ message: 'Tenant context updated.', tenantId });
 });
 
-router.get('/current', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), (req, res) => {
-  res.json({ organization: req.organization, membership: req.membership });
+router.get('/current', requireAuth, resolveTenantContext, requirePermission('tenant.read'), (req, res) => {
+  res.json({ tenant: req.tenant, membership: req.membership });
 });
 
-router.get('/current/members', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const memberships = await prisma.organizationMembership.findMany({
+router.get('/current/members', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
+  const memberships = await prisma.tenantMembership.findMany({
     where: {
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       status: 'active',
     },
   });
@@ -114,10 +114,10 @@ router.get('/current/members', requireAuth, resolveOrganizationContext, requireP
   res.json({ members });
 });
 
-router.get('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.invite.read'), async (req, res) => {
-  const invites = (await prisma.organizationInvite.findMany({
+router.get('/current/invites', requireAuth, resolveTenantContext, requirePermission('tenant.invite.read'), async (req, res) => {
+  const invites = (await prisma.tenantInvite.findMany({
     where: {
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       status: 'pending',
     },
   }))
@@ -127,7 +127,7 @@ router.get('/current/invites', requireAuth, resolveOrganizationContext, requireP
   res.json({ invites });
 });
 
-router.post('/current/invites', requireAuth, resolveOrganizationContext, requirePermission('organization.member.invite'), async (req, res) => {
+router.post('/current/invites', requireAuth, resolveTenantContext, requirePermission('tenant.member.invite'), async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim();
   const billingAdminInput = parseBooleanInput(req.body?.billingAdmin, 'billingAdmin');
   if (!billingAdminInput.ok) return res.status(400).json({ error: billingAdminInput.error });
@@ -137,29 +137,29 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
   if (!email) return res.status(400).json({ error: 'email is required.' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email address.' });
 
-  const seatCheck = await canAssignSeats(req.organization.id, 1);
+  const seatCheck = await canAssignSeats(req.tenant.id, 1);
   if (!seatCheck.allowed) {
     return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
   }
-  const collaboratorCheck = await canAssignCollaborators(req.organization.id, 1);
+  const collaboratorCheck = await canAssignCollaborators(req.tenant.id, 1);
   if (!collaboratorCheck.allowed) {
     return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
   }
 
-  const existingMembership = await prisma.organizationMembership.findFirst({
+  const existingMembership = await prisma.tenantMembership.findFirst({
     where: {
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       status: 'active',
       email,
     },
   });
   if (existingMembership) {
-    return res.status(409).json({ error: 'User is already a member of this organization.' });
+    return res.status(409).json({ error: 'User is already a member of this tenant.' });
   }
 
-  const duplicateInvite = await prisma.organizationInvite.findFirst({
+  const duplicateInvite = await prisma.tenantInvite.findFirst({
     where: {
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       email,
       status: 'pending',
     },
@@ -168,11 +168,11 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
     return res.status(409).json({ error: 'Pending invite already exists for this email.' });
   }
 
-  const invite = await prisma.organizationInvite.create({
+  const invite = await prisma.tenantInvite.create({
     data: {
       id: uuidv4(),
       token: generateOpaqueToken(),
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       email,
       billingAdmin,
       status: 'pending',
@@ -188,8 +188,8 @@ router.post('/current/invites', requireAuth, resolveOrganizationContext, require
 
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
-    action: 'organization.invite.create',
+    tenantId: req.tenant.id,
+    action: 'tenant.invite.create',
     metadata: {
       email: inviteRecord.email,
       billingAdmin: inviteRecord.billingAdmin,
@@ -206,14 +206,14 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'Invite token is required.' });
 
-  const invite = await prisma.organizationInvite.findUnique({
+  const invite = await prisma.tenantInvite.findUnique({
     where: { token },
   });
   if (!invite || invite.status !== 'pending') {
     return res.status(404).json({ error: 'Invite not found or already consumed.' });
   }
   if (new Date(invite.expiresAt).getTime() <= Date.now()) {
-    await prisma.organizationInvite.update({
+    await prisma.tenantInvite.update({
       where: { id: invite.id },
       data: {
         status: 'expired',
@@ -229,30 +229,30 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Invite email does not match signed-in account.' });
   }
 
-  const existingMembership = await prisma.organizationMembership.findFirst({
+  const existingMembership = await prisma.tenantMembership.findFirst({
     where: {
-      organizationId: invite.organizationId,
+      tenantId: invite.tenantId,
       userId: user.id,
     },
   });
 
   const needsSeat = !existingMembership || existingMembership.status !== 'active';
   if (needsSeat) {
-    const seatCheck = await canAssignSeats(invite.organizationId, 1);
+    const seatCheck = await canAssignSeats(invite.tenantId, 1);
     if (!seatCheck.allowed) {
       return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
     }
   }
 
   if (!existingMembership || existingMembership.status !== 'active') {
-    const collaboratorCheck = await canAssignCollaborators(invite.organizationId, 1);
+    const collaboratorCheck = await canAssignCollaborators(invite.tenantId, 1);
     if (!collaboratorCheck.allowed) {
       return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
     }
   }
 
   if (existingMembership) {
-    await prisma.organizationMembership.update({
+    await prisma.tenantMembership.update({
       where: { id: existingMembership.id },
       data: {
         status: 'active',
@@ -262,10 +262,10 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
       },
     });
   } else {
-    await prisma.organizationMembership.create({
+    await prisma.tenantMembership.create({
       data: {
         id: uuidv4(),
-        organizationId: invite.organizationId,
+        tenantId: invite.tenantId,
         userId: user.id,
         email: user.email,
         billingAdmin: invite.billingAdmin,
@@ -276,7 +276,7 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     });
   }
 
-  await prisma.organizationInvite.update({
+  await prisma.tenantInvite.update({
     where: { id: invite.id },
     data: {
       status: 'accepted',
@@ -286,10 +286,10 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   });
 
   const userUpdateData = {
-    currentOrganizationId: invite.organizationId,
+    currentTenantId: invite.tenantId,
   };
-  const orgBilling = await getOrganizationBillingState(invite.organizationId);
-  if (orgBilling?.planId === 'enterprise') {
+  const tenantBilling = await getTenantBillingState(invite.tenantId);
+  if (tenantBilling?.planId === 'enterprise') {
     userUpdateData.accountType = 'Enterprise';
   }
   await prisma.user.update({
@@ -305,19 +305,19 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
 
   writeAuditLog({
     userId: req.user.id,
-    organizationId: invite.organizationId,
-    action: 'organization.invite.accept',
+    tenantId: invite.tenantId,
+    action: 'tenant.invite.accept',
     metadata: { inviteId: invite.id },
   });
 
-  res.json({ message: 'Organization invite accepted.', organizationId: invite.organizationId });
+  res.json({ message: 'Tenant invite accepted.', tenantId: invite.tenantId });
 });
 
-router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationContext, requirePermission('organization.member.manage'), async (req, res) => {
-  const targetMembership = await prisma.organizationMembership.findUnique({
+router.patch('/current/members/:membershipId', requireAuth, resolveTenantContext, requirePermission('tenant.member.manage'), async (req, res) => {
+  const targetMembership = await prisma.tenantMembership.findUnique({
     where: { id: req.params.membershipId },
   });
-  if (!targetMembership || targetMembership.organizationId !== req.organization.id || targetMembership.status !== 'active') {
+  if (!targetMembership || targetMembership.tenantId !== req.tenant.id || targetMembership.status !== 'active') {
     return res.status(404).json({ error: 'Member not found.' });
   }
 
@@ -327,11 +327,11 @@ router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationC
     ? billingAdminInput.value
     : Boolean(targetMembership.billingAdmin);
 
-  if (targetMembership.userId === req.organization.ownerUserId && req.user.id !== req.organization.ownerUserId) {
-    return res.status(403).json({ error: 'Only organization owner can manage owner membership.' });
+  if (targetMembership.userId === req.tenant.ownerUserId && req.user.id !== req.tenant.ownerUserId) {
+    return res.status(403).json({ error: 'Only tenant owner can manage owner membership.' });
   }
 
-  const updatedMembership = await prisma.organizationMembership.update({
+  const updatedMembership = await prisma.tenantMembership.update({
     where: { id: targetMembership.id },
     data: {
       billingAdmin: nextBillingAdmin,
@@ -341,8 +341,8 @@ router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationC
 
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
-    action: 'organization.member.update',
+    tenantId: req.tenant.id,
+    action: 'tenant.member.update',
     metadata: {
       membershipId: updatedMembership.id,
       targetUserId: updatedMembership.userId,
@@ -357,19 +357,19 @@ router.patch('/current/members/:membershipId', requireAuth, resolveOrganizationC
   res.json({ member: mapMembershipRecord(updatedMembership, targetUser) });
 });
 
-router.delete('/current/members/:membershipId', requireAuth, resolveOrganizationContext, requirePermission('organization.member.manage'), async (req, res) => {
-  const targetMembership = await prisma.organizationMembership.findUnique({
+router.delete('/current/members/:membershipId', requireAuth, resolveTenantContext, requirePermission('tenant.member.manage'), async (req, res) => {
+  const targetMembership = await prisma.tenantMembership.findUnique({
     where: { id: req.params.membershipId },
   });
-  if (!targetMembership || targetMembership.organizationId !== req.organization.id || targetMembership.status !== 'active') {
+  if (!targetMembership || targetMembership.tenantId !== req.tenant.id || targetMembership.status !== 'active') {
     return res.status(404).json({ error: 'Member not found.' });
   }
 
-  if (targetMembership.userId === req.organization.ownerUserId) {
+  if (targetMembership.userId === req.tenant.ownerUserId) {
     return res.status(403).json({ error: 'Owner cannot be removed.' });
   }
 
-  await prisma.organizationMembership.update({
+  await prisma.tenantMembership.update({
     where: { id: targetMembership.id },
     data: {
       status: 'removed',
@@ -379,33 +379,33 @@ router.delete('/current/members/:membershipId', requireAuth, resolveOrganization
 
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
-    action: 'organization.member.remove',
+    tenantId: req.tenant.id,
+    action: 'tenant.member.remove',
     metadata: { membershipId: targetMembership.id, targetUserId: targetMembership.userId },
   });
 
   const removedUser = await prisma.user.findUnique({ where: { id: targetMembership.userId } });
-  if (removedUser && removedUser.currentOrganizationId === req.organization.id) {
-    const fallback = await prisma.organizationMembership.findFirst({
+  if (removedUser && removedUser.currentTenantId === req.tenant.id) {
+    const fallback = await prisma.tenantMembership.findFirst({
       where: {
         userId: removedUser.id,
         status: 'active',
-        organizationId: { not: req.organization.id },
+        tenantId: { not: req.tenant.id },
       },
       orderBy: { createdAt: 'asc' },
-      select: { organizationId: true },
+      select: { tenantId: true },
     });
     await prisma.user.update({
       where: { id: removedUser.id },
-      data: { currentOrganizationId: fallback ? fallback.organizationId : null },
+      data: { currentTenantId: fallback ? fallback.tenantId : null },
     });
   }
 
   res.json({ message: 'Member removed.' });
 });
 
-router.get('/current/entitlements', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const entitlements = await getOrganizationEntitlements(req.organization.id);
+router.get('/current/entitlements', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
+  const entitlements = await gettenantEntitlements(req.tenant.id);
   if (!entitlements) return res.status(404).json({ error: 'Entitlements unavailable.' });
   res.json({ entitlements });
 });

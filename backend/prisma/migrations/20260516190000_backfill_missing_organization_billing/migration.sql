@@ -1,5 +1,5 @@
-INSERT INTO "organization_billing" (
-  "organizationId",
+INSERT INTO "tenant_billing" (
+  "tenantId",
   "planId",
   "status",
   "purchasedSeats",
@@ -12,7 +12,7 @@ INSERT INTO "organization_billing" (
   "updatedAt"
 )
 SELECT
-  o."id" AS "organizationId",
+  o."id" AS "tenantId",
   'free' AS "planId",
   'active' AS "status",
   1 AS "purchasedSeats",
@@ -23,6 +23,6 @@ SELECT
   NULL AS "currentPeriodEndAt",
   NULL AS "graceEndsAt",
   CURRENT_TIMESTAMP AS "updatedAt"
-FROM "organizations" o
-LEFT JOIN "organization_billing" ob ON ob."organizationId" = o."id"
-WHERE ob."organizationId" IS NULL;
+FROM "tenants" o
+LEFT JOIN "tenant_billing" ob ON ob."tenantId" = o."id"
+WHERE ob."tenantId" IS NULL;

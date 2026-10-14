@@ -22,23 +22,23 @@ VALUES
         CURRENT_TIMESTAMP
     ),
     (
-        'profile-organization-owner',
-        'organization_owner',
-        '["Invite and remove organization members", "Manage member billing admin status", "Manage organization billing and entitlements", "Create, edit, and delete workspaces and documents"]'::jsonb,
+        'profile-tenant-owner',
+        'tenant_owner',
+        '["Invite and remove tenant members", "Manage member billing admin status", "Manage tenant billing and entitlements", "Create, edit, and delete workspaces and documents"]'::jsonb,
         CURRENT_TIMESTAMP,
         CURRENT_TIMESTAMP
     ),
     (
-        'profile-organization-member',
-        'organization_member',
-        '["Read organization resources", "Create, edit, and delete workspaces and documents", "Use AI and grammar features allowed by plan"]'::jsonb,
+        'profile-tenant-member',
+        'tenant_member',
+        '["Read tenant resources", "Create, edit, and delete workspaces and documents", "Use AI and grammar features allowed by plan"]'::jsonb,
         CURRENT_TIMESTAMP,
         CURRENT_TIMESTAMP
     ),
     (
         'profile-billing-admin',
         'billing_admin',
-        '["Manage organization billing settings", "View invoices and subscription status"]'::jsonb,
+        '["Manage tenant billing settings", "View invoices and subscription status"]'::jsonb,
         CURRENT_TIMESTAMP,
         CURRENT_TIMESTAMP
     )

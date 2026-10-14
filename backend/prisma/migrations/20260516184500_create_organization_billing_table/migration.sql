@@ -1,5 +1,5 @@
-CREATE TABLE IF NOT EXISTS "organization_billing" (
-  "organizationId" TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS "tenant_billing" (
+  "tenantId" TEXT NOT NULL,
   "planId" TEXT NOT NULL,
   "status" TEXT NOT NULL,
   "purchasedSeats" INTEGER NOT NULL,
@@ -10,11 +10,11 @@ CREATE TABLE IF NOT EXISTS "organization_billing" (
   "currentPeriodEndAt" TIMESTAMP(3),
   "graceEndsAt" TIMESTAMP(3),
   "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "organization_billing_pkey" PRIMARY KEY ("organizationId")
+  CONSTRAINT "tenant_billing_pkey" PRIMARY KEY ("tenantId")
 );
 
-INSERT INTO "organization_billing" (
-  "organizationId",
+INSERT INTO "tenant_billing" (
+  "tenantId",
   "planId",
   "status",
   "purchasedSeats",
@@ -27,7 +27,7 @@ INSERT INTO "organization_billing" (
   "updatedAt"
 )
 SELECT
-  o."id" AS "organizationId",
+  o."id" AS "tenantId",
   COALESCE(NULLIF(o."billing"->>'planId', ''), 'free') AS "planId",
   COALESCE(NULLIF(o."billing"->>'status', ''), 'active') AS "status",
   COALESCE(NULLIF(o."billing"->>'purchasedSeats', '')::INTEGER, 1) AS "purchasedSeats",
@@ -50,10 +50,10 @@ SELECT
     WHEN NULLIF(o."billing"->>'updatedAt', '') IS NULL THEN CURRENT_TIMESTAMP
     ELSE (o."billing"->>'updatedAt')::TIMESTAMP(3)
   END AS "updatedAt"
-FROM "organizations" o
+FROM "tenants" o
 WHERE o."billing" IS NOT NULL
   AND jsonb_typeof(o."billing") = 'object'
-ON CONFLICT ("organizationId") DO UPDATE
+ON CONFLICT ("tenantId") DO UPDATE
 SET
   "planId" = EXCLUDED."planId",
   "status" = EXCLUDED."status",
@@ -66,5 +66,5 @@ SET
   "graceEndsAt" = EXCLUDED."graceEndsAt",
   "updatedAt" = EXCLUDED."updatedAt";
 
-ALTER TABLE "organizations"
+ALTER TABLE "tenants"
 DROP COLUMN IF EXISTS "billing";

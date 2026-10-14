@@ -4,19 +4,19 @@ const { prisma } = require('../db/client');
 
 const { getVersionHistoryRetentionDays } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { filterVersionsByRetention } = require('../middleware/versions');
 
 const router = express.Router({ mergeParams: true });
 
-async function getDocForOrg(docId, organizationId, res) {
+async function getDocForTenant(docId, tenantId, res) {
   const doc = await prisma.document.findUnique({ where: { id: docId } });
   if (!doc) {
     res.status(404).json({ error: 'Document not found.' });
     return null;
   }
-  if (doc.organizationId !== organizationId) {
-    res.status(403).json({ error: 'Access denied.' });
+  if (doc.tenantId !== tenantId) {
+    res.status(404).json({ error: 'Document not found.' });
     return null;
   }
   return doc;
@@ -25,9 +25,9 @@ async function getDocForOrg(docId, organizationId, res) {
 /**
  * GET /api/docs/:docId/versions
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.read'), async (req, res) => {
-  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
-  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
+router.get('/', requireAuth, resolveTenantContext, requirePermission('document.version.read'), async (req, res) => {
+  if (!await getDocForTenant(req.params.docId, req.tenant.id, res)) return;
+  const retentionDays = await getVersionHistoryRetentionDays(req.tenant.id);
   const rows = await prisma.version.findMany({
     where: { docId: req.params.docId },
     orderBy: { savedAt: 'desc' },
@@ -45,8 +45,8 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
  * POST /api/docs/:docId/versions
  * Body: { preview?, content }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.version.write'), async (req, res) => {
-  const doc = await getDocForOrg(req.params.docId, req.organization.id, res);
+router.post('/', requireAuth, resolveTenantContext, requirePermission('document.version.write'), async (req, res) => {
+  const doc = await getDocForTenant(req.params.docId, req.tenant.id, res);
   if (!doc) return;
   const { content, preview } = req.body;
   if (typeof content !== 'string') return res.status(400).json({ error: 'content is required.' });
@@ -87,8 +87,8 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
  * POST /api/docs/:docId/versions/:versionId/restore
  * Overwrites document content with this version's content.
  */
-router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requirePermission('document.version.restore'), async (req, res) => {
-  const doc = await getDocForOrg(req.params.docId, req.organization.id, res);
+router.post('/:versionId/restore', requireAuth, resolveTenantContext, requirePermission('document.version.restore'), async (req, res) => {
+  const doc = await getDocForTenant(req.params.docId, req.tenant.id, res);
   if (!doc) return;
 
   const version = await prisma.version.findFirst({
@@ -101,7 +101,7 @@ router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requ
     return res.status(404).json({ error: 'Version not found.' });
   }
 
-  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
+  const retentionDays = await getVersionHistoryRetentionDays(req.tenant.id);
   const retainedList = filterVersionsByRetention([version], retentionDays);
   if (!retainedList.length) {
     return res.status(404).json({ error: 'Version not found.' });
@@ -117,8 +117,8 @@ router.post('/:versionId/restore', requireAuth, resolveOrganizationContext, requ
 /**
  * DELETE /api/docs/:docId/versions/:versionId
  */
-router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePermission('document.version.delete'), async (req, res) => {
-  if (!await getDocForOrg(req.params.docId, req.organization.id, res)) return;
+router.delete('/:versionId', requireAuth, resolveTenantContext, requirePermission('document.version.delete'), async (req, res) => {
+  if (!await getDocForTenant(req.params.docId, req.tenant.id, res)) return;
 
   const version = await prisma.version.findFirst({
     where: {
@@ -128,7 +128,7 @@ router.delete('/:versionId', requireAuth, resolveOrganizationContext, requirePer
   });
   if (!version) return res.status(404).json({ error: 'Version not found.' });
 
-  const retentionDays = await getVersionHistoryRetentionDays(req.organization.id);
+  const retentionDays = await getVersionHistoryRetentionDays(req.tenant.id);
   const retained = filterVersionsByRetention([version], retentionDays);
   if (!retained.length) {
     return res.status(404).json({ error: 'Version not found.' });

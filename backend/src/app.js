@@ -10,6 +10,7 @@ const docsRoutes = require('./routes/docs.routes');
 const commentsRoutes = require('./routes/comments.routes');
 const versionsRoutes = require('./routes/versions.routes');
 const todosRoutes = require('./routes/todos.routes');
+const editorRoutes = require('./routes/editor.routes');
 const aiRoutes = require('./routes/ai.routes');
 const grammarRoutes = require('./routes/grammar.routes');
 const workspacesRoutes = require('./routes/workspaces.routes');
@@ -66,6 +67,9 @@ app.use('/api/auth', securityRoutes);
 
 // Documents
 app.use('/api/docs', docsRoutes);
+
+// Editor bootstrap
+app.use('/api/editor', editorRoutes);
 
 // Workspaces
 app.use('/api/workspaces', workspacesRoutes);

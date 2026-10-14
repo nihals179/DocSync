@@ -1,8 +1,4 @@
-const LEGACY_INVITE_ROLE = 'organization_member';
-
-function nowIso() {
-  return new Date().toISOString();
-}
+const LEGACY_INVITE_ROLE = 'tenant_member';
 
 function mapInviteResponse(invite) {
   return {
@@ -29,7 +25,6 @@ function parseBooleanInput(value, fieldName) {
 }
 
 module.exports = {
-  nowIso,
   mapInviteResponse,
   parseBooleanInput,
 };

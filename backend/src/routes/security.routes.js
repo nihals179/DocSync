@@ -18,7 +18,7 @@ const {
   nowIso,
   getRequestIp,
   getUserAgent,
-  isOrgIpAllowedForUser,
+  isTenantIpAllowedForUser,
   ensureUserShape,
   publicUser,
   createSession,
@@ -52,7 +52,7 @@ async function getUserById(userId) {
 function audit(req, action, status, userId = null, metadata = {}) {
   return writeAuditLog({
     userId,
-    organizationId: req.user?.currentOrganizationId || metadata.organizationId || null,
+    tenantId: req.user?.currentTenantId || metadata.tenantId || null,
     action,
     status,
     ipAddress: getRequestIp(req),
@@ -82,12 +82,12 @@ router.post('/login/2fa', loginRateLimit, async (req, res) => {
     return res.status(400).json({ error: 'Two-factor authentication is not configured.' });
   }
 
-  if (!isOrgIpAllowedForUser(req, user)) {
+  if (!await isTenantIpAllowedForUser(req, user)) {
     audit(req, 'login-2fa-ip-policy', 'failure', user.id, {
       reason: 'ip-not-allowlisted',
-      organizationId: user.currentOrganizationId,
+      tenantId: user.currentTenantId,
     });
-    return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
+    return res.status(403).json({ error: 'Your tenant only allows login from approved IP addresses.' });
   }
 
   const valid = authenticator.check(code, user.twoFactorSecret);

@@ -2,7 +2,7 @@ const express = require('express');
 const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { cloneTemplates, readTemplateCache, writeTemplateCache } = require('../middleware/templates');
 
 const router = express.Router();
@@ -359,7 +359,7 @@ const TEMPLATES = [
       '</td>' +
       '<td style="width:67%; vertical-align:top; border:1px solid #e0e7ff; padding:12px;">' +
       '<h2 style="font-family:Montserrat; font-size:22px; color:#3730a3; margin:0 0 8px;">Challenge</h2>' +
-      '<p style="font-family:Raleway; font-size:15px; color:#312e81; line-height:1.7;">The support organization managed complex workflows across disconnected tools, creating delays and inconsistent ownership. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur sed purus in erat ultrices aliquet.</p>' +
+      '<p style="font-family:Raleway; font-size:15px; color:#312e81; line-height:1.7;">The support tenant managed complex workflows across disconnected tools, creating delays and inconsistent ownership. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur sed purus in erat ultrices aliquet.</p>' +
       '<h2 style="font-family:Montserrat; font-size:22px; color:#3730a3; margin:14px 0 8px;">Approach</h2>' +
       '<p style="font-family:Raleway; font-size:15px; color:#312e81; line-height:1.7;">We introduced role-based triage queues, standardized incident playbooks, and real-time performance dashboards. Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium.</p>' +
       '<h2 style="font-family:Montserrat; font-size:22px; color:#3730a3; margin:14px 0 8px;">Outcome</h2>' +
@@ -370,7 +370,7 @@ const TEMPLATES = [
   },
 ];
 
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (_req, res) => {
+router.get('/', requireAuth, resolveTenantContext, requirePermission('document.read'), async (_req, res) => {
   if (!process.env.DATABASE_URL) {
     return res.json({ templates: TEMPLATES });
   }
@@ -391,6 +391,11 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
       },
       orderBy: { title: 'asc' },
     });
+
+    if (!dbTemplates.length) {
+      writeTemplateCache(TEMPLATES);
+      return res.json({ templates: TEMPLATES });
+    }
 
     writeTemplateCache(dbTemplates);
 

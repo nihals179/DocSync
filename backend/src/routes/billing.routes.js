@@ -1,8 +1,7 @@
 const express = require('express');
 
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
-const { attachEntitlements } = require('../middleware/entitlements');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { requestBillingService } = require('../lib/billing-service-client');
 
 const router = express.Router();
@@ -24,47 +23,47 @@ async function forwardToBillingService(res, pathname, options = {}) {
   }
 }
 
-router.get('/plans', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
+router.get('/plans', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
   return forwardToBillingService(res, '/api/billing/plans');
 });
 
-router.get('/current', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), attachEntitlements, async (req, res) => {
-  const pathname = `/api/billing/organizations/${req.organization.id}/current`;
+router.get('/current', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
+  const pathname = `/api/billing/tenants/${req.tenant.id}/current`;
   return forwardToBillingService(res, pathname);
 });
 
-router.get('/invoices', requireAuth, resolveOrganizationContext, requirePermission('organization.read'), async (req, res) => {
-  const pathname = `/api/billing/organizations/${req.organization.id}/invoices`;
+router.get('/invoices', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
+  const pathname = `/api/billing/tenants/${req.tenant.id}/invoices`;
   return forwardToBillingService(res, pathname);
 });
 
-router.post('/checkout', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const pathname = `/api/billing/organizations/${req.organization.id}/checkout`;
+router.post('/checkout', requireAuth, resolveTenantContext, requirePermission('tenant.billing.manage'), async (req, res) => {
+  const pathname = `/api/billing/tenants/${req.tenant.id}/checkout`;
   return forwardToBillingService(res, pathname, {
     method: 'POST',
     body: req.body || {},
   });
 });
 
-router.post('/subscription/change', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const pathname = `/api/billing/organizations/${req.organization.id}/subscription/change`;
+router.post('/subscription/change', requireAuth, resolveTenantContext, requirePermission('tenant.billing.manage'), async (req, res) => {
+  const pathname = `/api/billing/tenants/${req.tenant.id}/subscription/change`;
   return forwardToBillingService(res, pathname, {
     method: 'POST',
     body: req.body || {},
   });
 });
 
-router.patch('/seats', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
-  const pathname = `/api/billing/organizations/${req.organization.id}/seats`;
+router.patch('/seats', requireAuth, resolveTenantContext, requirePermission('tenant.billing.manage'), async (req, res) => {
+  const pathname = `/api/billing/tenants/${req.tenant.id}/seats`;
   return forwardToBillingService(res, pathname, {
     method: 'PATCH',
     body: req.body || {},
   });
 });
 
-router.get('/webhooks/jobs', requireAuth, resolveOrganizationContext, requirePermission('organization.billing.manage'), async (req, res) => {
+router.get('/webhooks/jobs', requireAuth, resolveTenantContext, requirePermission('tenant.billing.manage'), async (req, res) => {
   return forwardToBillingService(res, '/api/billing/webhooks/jobs', {
-    query: { organizationId: req.organization.id },
+    query: { tenantId: req.tenant.id },
   });
 });
 

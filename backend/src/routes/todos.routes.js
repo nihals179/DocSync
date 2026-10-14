@@ -3,62 +3,50 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { getDoc } = require('../middleware/todos');
 
 const router = express.Router({ mergeParams: true });
-const DOC_TODOS_MAP = 'doc_todos';
 
-function normalizeTodoList(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === 'object')
-    .map((item) => ({
-      id: String(item.id || ''),
-      text: String(item.text || ''),
-      done: Boolean(item.done),
-    }))
-    .filter((item) => item.id && item.text);
+function docTodoScopeId(docId) {
+  return `doc:${docId}`;
 }
 
-async function getTodosForDoc(docId) {
-  const row = await prisma.localStoreEntry.findUnique({
-    where: {
-      mapName_entryKey: {
-        mapName: DOC_TODOS_MAP,
-        entryKey: docId,
-      },
-    },
-    select: { value: true },
-  });
-  return normalizeTodoList(row?.value);
+function mapDbTodoToApiTodo(row) {
+  return {
+    id: row.id,
+    text: row.title,
+    done: Boolean(row.completed),
+  };
 }
 
-async function saveTodosForDoc(docId, list) {
-  await prisma.localStoreEntry.upsert({
+async function getTodosForDoc(docId, tenantId) {
+  const scopedId = docTodoScopeId(docId);
+  const rows = await prisma.todo.findMany({
     where: {
-      mapName_entryKey: {
-        mapName: DOC_TODOS_MAP,
-        entryKey: docId,
-      },
+      OR: [
+        { workspaceId: scopedId },
+        { workspaceId: docId },
+      ],
+      tenantId,
     },
-    update: {
-      value: list,
-    },
-    create: {
-      mapName: DOC_TODOS_MAP,
-      entryKey: docId,
-      value: list,
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      title: true,
+      completed: true,
     },
   });
+
+  return rows.map(mapDbTodoToApiTodo);
 }
 
 /**
  * GET /api/docs/:docId/todos
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.todo.read'), async (req, res) => {
-  if (!await getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = await getTodosForDoc(req.params.docId);
+router.get('/', requireAuth, resolveTenantContext, requirePermission('document.todo.read'), async (req, res) => {
+  if (!await getDoc(req.params.docId, req.tenant.id, res)) return;
+  const list = await getTodosForDoc(req.params.docId, req.tenant.id);
   res.json({ todos: list });
 });
 
@@ -66,44 +54,87 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
  * POST /api/docs/:docId/todos
  * Body: { text }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.todo.write'), async (req, res) => {
-  if (!await getDoc(req.params.docId, req.organization.id, res)) return;
+router.post('/', requireAuth, resolveTenantContext, requirePermission('document.todo.write'), async (req, res) => {
+  if (!await getDoc(req.params.docId, req.tenant.id, res)) return;
   const { text } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text is required.' });
 
-  const todo = { id: uuidv4(), text: text.trim(), done: false };
-  const list = await getTodosForDoc(req.params.docId);
-  list.push(todo);
-  await saveTodosForDoc(req.params.docId, list);
-  res.status(201).json({ todo });
+  const created = await prisma.todo.create({
+    data: {
+      id: uuidv4(),
+      workspaceId: docTodoScopeId(req.params.docId),
+      tenantId: req.tenant.id,
+      userId: req.user.id,
+      title: text.trim(),
+      completed: false,
+    },
+    select: {
+      id: true,
+      title: true,
+      completed: true,
+    },
+  });
+
+  res.status(201).json({ todo: mapDbTodoToApiTodo(created) });
 });
 
 /**
  * PUT /api/docs/:docId/todos/:todoId
  * Body: { done?, text? }
  */
-router.put('/:todoId', requireAuth, resolveOrganizationContext, requirePermission('document.todo.write'), async (req, res) => {
-  if (!await getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = await getTodosForDoc(req.params.docId);
-  const todo = list.find((t) => t.id === req.params.todoId);
-  if (!todo) return res.status(404).json({ error: 'Todo not found.' });
+router.put('/:todoId', requireAuth, resolveTenantContext, requirePermission('document.todo.write'), async (req, res) => {
+  if (!await getDoc(req.params.docId, req.tenant.id, res)) return;
+  const scopedId = docTodoScopeId(req.params.docId);
+  const existing = await prisma.todo.findFirst({
+    where: {
+      id: req.params.todoId,
+      OR: [
+        { workspaceId: scopedId },
+        { workspaceId: req.params.docId },
+      ],
+      tenantId: req.tenant.id,
+    },
+    select: { id: true },
+  });
+  if (!existing) return res.status(404).json({ error: 'Todo not found.' });
 
-  if (req.body.done !== undefined) todo.done = Boolean(req.body.done);
-  if (req.body.text !== undefined && req.body.text.trim()) todo.text = req.body.text.trim();
-  await saveTodosForDoc(req.params.docId, list);
-  res.json({ todo });
+  const data = {};
+  if (req.body.done !== undefined) data.completed = Boolean(req.body.done);
+  if (req.body.text !== undefined && req.body.text.trim()) data.title = req.body.text.trim();
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: 'No valid fields to update.' });
+  }
+
+  const updated = await prisma.todo.update({
+    where: { id: req.params.todoId },
+    data,
+    select: {
+      id: true,
+      title: true,
+      completed: true,
+    },
+  });
+
+  res.json({ todo: mapDbTodoToApiTodo(updated) });
 });
 
 /**
  * DELETE /api/docs/:docId/todos/:todoId
  */
-router.delete('/:todoId', requireAuth, resolveOrganizationContext, requirePermission('document.todo.delete'), async (req, res) => {
-  if (!await getDoc(req.params.docId, req.organization.id, res)) return;
-  const list = await getTodosForDoc(req.params.docId);
-  const idx = list.findIndex((t) => t.id === req.params.todoId);
-  if (idx === -1) return res.status(404).json({ error: 'Todo not found.' });
-  list.splice(idx, 1);
-  await saveTodosForDoc(req.params.docId, list);
+router.delete('/:todoId', requireAuth, resolveTenantContext, requirePermission('document.todo.delete'), async (req, res) => {
+  if (!await getDoc(req.params.docId, req.tenant.id, res)) return;
+  const scopedId = docTodoScopeId(req.params.docId);
+  const deleted = await prisma.todo.deleteMany({
+    where: {
+      id: req.params.todoId,
+      OR: [
+        { workspaceId: scopedId },
+        { workspaceId: req.params.docId },
+      ],
+      tenantId: req.tenant.id,
+    },
+  });
+  if (deleted.count === 0) return res.status(404).json({ error: 'Todo not found.' });
   res.json({ message: 'Todo deleted.' });
 });
 

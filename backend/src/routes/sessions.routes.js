@@ -10,7 +10,7 @@ const {
 const {
   getRequestIp,
   getUserAgent,
-  isOrgIpAllowedForUser,
+  isTenantIpAllowedForUser,
   ensureUserShape,
   publicUser,
   clearAuthCookies,
@@ -31,7 +31,7 @@ const router = express.Router();
 function audit(req, action, status, userId = null, metadata = {}) {
   return writeAuditLog({
     userId,
-    organizationId: req.user?.currentOrganizationId || metadata.organizationId || null,
+    tenantId: req.user?.currentTenantId || metadata.tenantId || null,
     action,
     status,
     ipAddress: getRequestIp(req),
@@ -65,14 +65,14 @@ router.post('/refresh', authRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
 
-  if (!isOrgIpAllowedForUser(req, resolved.user)) {
+  if (!await isTenantIpAllowedForUser(req, resolved.user)) {
     clearAuthCookies(res, authScope);
     audit(req, 'session-refresh-ip-policy', 'failure', resolved.user.id, {
       reason: 'ip-not-allowlisted',
-      organizationId: resolved.user.currentOrganizationId,
+      tenantId: resolved.user.currentTenantId,
       sessionId: resolved.session.id,
     });
-    return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
+    return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
   }
 
   const rotated = await rotateSession(resolved.session, req);

@@ -17,7 +17,5 @@ function filterVersionsByRetention(versionsList, retentionDays) {
 }
 
 module.exports = {
-  parseSavedAtMs,
-  getRetentionCutoffMs,
   filterVersionsByRetention,
 };

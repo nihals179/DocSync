@@ -24,47 +24,39 @@ const MEMBER_PERMISSIONS = new Set([
   'grammar.use',
 ]);
 
-async function getUserOrganizations(userId) {
-  const memberships = await prisma.organizationMembership.findMany({
+async function getUserTenants(userId) {
+  const memberships = await prisma.tenantMembership.findMany({
     where: { userId, status: 'active' },
     orderBy: { createdAt: 'asc' },
-    select: { organizationId: true },
+    select: { tenantId: true },
   });
 
-  const organizationIds = [...new Set(memberships.map((membership) => membership.organizationId))];
-  if (!organizationIds.length) return [];
+  const tenantIds = [...new Set(memberships.map((membership) => membership.tenantId))];
+  if (!tenantIds.length) return [];
 
-  const rows = await prisma.organization.findMany({
-    where: { id: { in: organizationIds } },
+  const rows = await prisma.tenant.findMany({
+    where: { id: { in: tenantIds } },
     orderBy: { createdAt: 'asc' },
   });
 
-  return rows.map((dbOrg) => ({
-    ...dbOrg,
-    createdAt: dbOrg.createdAt instanceof Date ? dbOrg.createdAt.toISOString() : dbOrg.createdAt,
-    updatedAt: dbOrg.updatedAt instanceof Date ? dbOrg.updatedAt.toISOString() : dbOrg.updatedAt,
+  return rows.map((dbTenant) => ({
+    ...dbTenant,
+    createdAt: dbTenant.createdAt instanceof Date ? dbTenant.createdAt.toISOString() : dbTenant.createdAt,
+    updatedAt: dbTenant.updatedAt instanceof Date ? dbTenant.updatedAt.toISOString() : dbTenant.updatedAt,
   }));
 }
 
-function resolveRequestedOrganizationId(req) {
-  const fromHeader = req.get('x-organization-id');
+function resolveRequestedTenantId(req) {
+  const fromHeader = req.get('x-tenant-id');
   if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim();
-  if (req.query?.organizationId && String(req.query.organizationId).trim()) return String(req.query.organizationId).trim();
-  if (req.body?.organizationId && String(req.body.organizationId).trim()) return String(req.body.organizationId).trim();
+  if (req.query?.tenantId && String(req.query.tenantId).trim()) return String(req.query.tenantId).trim();
+  if (req.body?.tenantId && String(req.body.tenantId).trim()) return String(req.body.tenantId).trim();
   return null;
 }
 
-async function resolveOrganizationContext(req, res, next) {
-  const dbUser = await prisma.user.findUnique({ where: { id: req.user.id } });
-  const user = dbUser ? {
-    ...dbUser,
-    createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
-    updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
-  } : null;
-  if (!user) return res.status(401).json({ error: 'User not found.' });
-
-  const requestedOrganizationId = resolveRequestedOrganizationId(req) || user.currentOrganizationId || null;
-  const activeMemberships = (await prisma.organizationMembership.findMany({
+async function resolveTenantContext(req, res, next) {
+  const requestedTenantId = resolveRequestedTenantId(req) || req.user.currentTenantId || null;
+  const activeMemberships = (await prisma.tenantMembership.findMany({
     where: { userId: req.user.id, status: 'active' },
     orderBy: { createdAt: 'asc' },
   })).map((membership) => ({
@@ -77,30 +69,31 @@ async function resolveOrganizationContext(req, res, next) {
     return res.status(403).json({ error: 'No active membership.' });
   }
 
-  const resolvedMembership = requestedOrganizationId
-    ? activeMemberships.find((membership) => membership.organizationId === requestedOrganizationId) || null
+  const resolvedMembership = requestedTenantId
+    ? activeMemberships.find((membership) => membership.tenantId === requestedTenantId) || null
     : activeMemberships[0];
 
   if (!resolvedMembership) {
-    return res.status(403).json({ error: 'Organization membership required.' });
+    return res.status(403).json({ error: 'Tenant membership required.' });
   }
 
-  const dbOrg = await prisma.organization.findUnique({ where: { id: resolvedMembership.organizationId } });
-  const organization = dbOrg ? {
-    ...dbOrg,
-    createdAt: dbOrg.createdAt instanceof Date ? dbOrg.createdAt.toISOString() : dbOrg.createdAt,
-    updatedAt: dbOrg.updatedAt instanceof Date ? dbOrg.updatedAt.toISOString() : dbOrg.updatedAt,
+  const dbTenant = await prisma.tenant.findUnique({ where: { id: resolvedMembership.tenantId } });
+  const tenant = dbTenant ? {
+    ...dbTenant,
+    createdAt: dbTenant.createdAt instanceof Date ? dbTenant.createdAt.toISOString() : dbTenant.createdAt,
+    updatedAt: dbTenant.updatedAt instanceof Date ? dbTenant.updatedAt.toISOString() : dbTenant.updatedAt,
   } : null;
-  if (!organization) return res.status(404).json({ error: 'Organization not found.' });
+  if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
 
-  if (user.currentOrganizationId !== organization.id) {
+  if (req.user.currentTenantId !== tenant.id) {
     await prisma.user.updateMany({
-      where: { id: user.id },
-      data: { currentOrganizationId: organization.id },
+      where: { id: req.user.id },
+      data: { currentTenantId: tenant.id },
     });
+    req.user.currentTenantId = tenant.id;
   }
 
-  req.organization = organization;
+  req.tenant = tenant;
   req.membership = resolvedMembership;
   next();
 }
@@ -111,22 +104,22 @@ function hasPermission(membership, permission) {
   return MEMBER_PERMISSIONS.has(permission);
 }
 
-function isOrganizationOwner(req) {
-  return req.organization?.ownerUserId === req.user?.id;
+function isTenantOwner(req) {
+  return req.tenant?.ownerUserId === req.user?.id;
 }
 
 function requirePermission(permission) {
   return (req, res, next) => {
-    if (permission === 'organization.member.invite' || permission === 'organization.member.manage' || permission === 'organization.invite.read') {
-      if (!isOrganizationOwner(req)) {
+    if (permission === 'tenant.member.invite' || permission === 'tenant.member.manage' || permission === 'tenant.invite.read') {
+      if (!isTenantOwner(req)) {
         return res.status(403).json({ error: 'Permission denied.' });
       }
       return next();
     }
 
-    const billingAction = permission === 'organization.billing.manage';
+    const billingAction = permission === 'tenant.billing.manage';
     if (billingAction) {
-      const isOwner = isOrganizationOwner(req);
+      const isOwner = isTenantOwner(req);
       if (!isOwner && !req.membership?.billingAdmin) {
         return res.status(403).json({ error: 'Permission denied.' });
       }
@@ -141,7 +134,7 @@ function requirePermission(permission) {
 }
 
 module.exports = {
-  getUserOrganizations,
-  resolveOrganizationContext,
+  getUserTenants,
+  resolveTenantContext,
   requirePermission,
 };

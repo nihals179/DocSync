@@ -29,9 +29,9 @@ function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	return state;
 }
 
-function normalizeOrganizationBillingState(input, organizationId) {
+function normalizetenantBillingState(input, tenantId) {
 	const state = {
-		organizationId,
+		tenantId,
 		planId: input?.planId,
 		status: input?.status,
 		purchasedSeats: Number(input?.purchasedSeats || 0),
@@ -69,75 +69,84 @@ async function writeUserBillingStateToDb(state) {
 	if (!isDatabaseConfigured() || !state?.userId) return;
 	const normalizedEmail = String(state.email || '').toLowerCase().trim();
 	if (!normalizedEmail) return;
-	await prisma.userBilling.upsert({
+	const data = {
+		userId: state.userId,
+		email: normalizedEmail,
+		planId: state.planId,
+		status: state.status,
+		trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+		trialUsed: Boolean(state.trialUsed),
+		subscriptionId: state.subscriptionId || null,
+		customerId: state.customerId || null,
+		currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+		graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+	};
+
+	const updated = await prisma.userBilling.updateMany({
 		where: { email: normalizedEmail },
-		update: {
-			userId: state.userId,
-			email: normalizedEmail,
-			planId: state.planId,
-			status: state.status,
-			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
-			trialUsed: Boolean(state.trialUsed),
-			subscriptionId: state.subscriptionId || null,
-			customerId: state.customerId || null,
-			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
-			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
-		},
-		create: {
-			userId: state.userId,
-			email: normalizedEmail,
-			planId: state.planId,
-			status: state.status,
-			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
-			trialUsed: Boolean(state.trialUsed),
-			subscriptionId: state.subscriptionId || null,
-			customerId: state.customerId || null,
-			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
-			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
-		},
+		data,
 	});
+	if (updated.count > 0) return;
+
+	try {
+		await prisma.userBilling.create({
+			data,
+		});
+	} catch {
+		// Another request may create the row concurrently.
+		await prisma.userBilling.updateMany({
+			where: { email: normalizedEmail },
+			data,
+		});
+	}
 }
 
-async function readOrganizationBillingStateFromDb(organizationId) {
+async function readtenantBillingStateFromDb(tenantId) {
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.organizationBilling.findUnique({
-		where: { organizationId },
+	const row = await prisma.tenantBilling.findUnique({
+		where: { tenantId },
 	});
 	if (!row) return null;
-	return normalizeOrganizationBillingState(row, organizationId);
+	return normalizetenantBillingState(row, tenantId);
 }
 
-async function writeOrganizationBillingStateToDb(organizationId, state) {
-	if (!isDatabaseConfigured() || !organizationId || !state) return;
-	await prisma.organizationBilling.upsert({
-		where: { organizationId },
-		update: {
-			planId: state.planId,
-			status: state.status,
-			purchasedSeats: state.purchasedSeats,
-			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
-			trialUsed: Boolean(state.trialUsed),
-			subscriptionId: state.subscriptionId || null,
-			customerId: state.customerId || null,
-			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
-			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
-		},
-		create: {
-			organizationId,
-			planId: state.planId,
-			status: state.status,
-			purchasedSeats: state.purchasedSeats,
-			trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
-			trialUsed: Boolean(state.trialUsed),
-			subscriptionId: state.subscriptionId || null,
-			customerId: state.customerId || null,
-			currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
-			graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
-		},
+async function writetenantBillingStateToDb(tenantId, state) {
+	if (!isDatabaseConfigured() || !tenantId || !state) return;
+	const data = {
+		planId: state.planId,
+		status: state.status,
+		purchasedSeats: state.purchasedSeats,
+		trialEndsAt: state.trialEndsAt ? new Date(state.trialEndsAt) : null,
+		trialUsed: Boolean(state.trialUsed),
+		subscriptionId: state.subscriptionId || null,
+		customerId: state.customerId || null,
+		currentPeriodEndAt: state.currentPeriodEndAt ? new Date(state.currentPeriodEndAt) : null,
+		graceEndsAt: state.graceEndsAt ? new Date(state.graceEndsAt) : null,
+	};
+
+	const updated = await prisma.tenantBilling.updateMany({
+		where: { tenantId },
+		data,
 	});
+	if (updated.count > 0) return;
+
+	try {
+		await prisma.tenantBilling.create({
+			data: {
+				tenantId,
+				...data,
+			},
+		});
+	} catch {
+		// Another request may create the row concurrently.
+		await prisma.tenantBilling.updateMany({
+			where: { tenantId },
+			data,
+		});
+	}
 }
 
-function mapDbOrganizationToRecord(row) {
+function mapDbtenantToRecord(row) {
 	if (!row) return null;
 	return {
 		id: row.id,
@@ -149,58 +158,66 @@ function mapDbOrganizationToRecord(row) {
 	};
 }
 
-async function resolveOrganizationById(organizationId) {
-	if (!organizationId) return null;
+async function resolvetenantById(tenantId) {
+	if (!tenantId) return null;
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.organization.findUnique({ where: { id: organizationId } });
+	const row = await prisma.tenant.findUnique({ where: { id: tenantId } });
 	if (!row) return null;
-	const organization = mapDbOrganizationToRecord(row);
-	return organization;
+	const tenant = mapDbtenantToRecord(row);
+	return tenant;
 }
 
-function normalizeUsageState(input, organizationId, monthKey) {
+function normalizeUsageState(input, tenantId, monthKey) {
 	return {
-		organizationId,
+		tenantId,
 		monthKey,
 		aiRequests: Number(input?.aiRequests || 0),
 		documentUpdates: Number(input?.documentUpdates || 0),
 	};
 }
 
-async function readOrganizationUsageFromDb(organizationId, monthKey) {
+async function readtenantUsageFromDb(tenantId, monthKey) {
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.organizationUsage.findUnique({
+	const row = await prisma.tenantUsage.findUnique({
 		where: {
-			organizationId_monthKey: {
-				organizationId,
+			tenantId_monthKey: {
+				tenantId,
 				monthKey,
 			},
 		},
 	});
 	if (!row) return null;
-	return normalizeUsageState(row, organizationId, monthKey);
+	return normalizeUsageState(row, tenantId, monthKey);
 }
 
-async function writeOrganizationUsageToDb(organizationId, monthKey, usage) {
-	if (!isDatabaseConfigured() || !organizationId || !monthKey || !usage) return;
-	await prisma.organizationUsage.upsert({
-		where: {
-			organizationId_monthKey: {
-				organizationId,
-				monthKey,
-			},
-		},
-		update: {
-			aiRequests: Number(usage.aiRequests || 0),
-			documentUpdates: Number(usage.documentUpdates || 0),
-		},
-		create: {
-			organizationId,
-			monthKey,
-			aiRequests: Number(usage.aiRequests || 0),
-			documentUpdates: Number(usage.documentUpdates || 0),
-		},
+async function writetenantUsageToDb(tenantId, monthKey, usage) {
+	if (!isDatabaseConfigured() || !tenantId || !monthKey || !usage) return;
+	const data = {
+		aiRequests: Number(usage.aiRequests || 0),
+		documentUpdates: Number(usage.documentUpdates || 0),
+	};
+
+	const updated = await prisma.tenantUsage.updateMany({
+		where: { tenantId, monthKey },
+		data,
 	});
+	if (updated.count > 0) return;
+
+	try {
+		await prisma.tenantUsage.create({
+			data: {
+				tenantId,
+				monthKey,
+				...data,
+			},
+		});
+	} catch {
+		// Another request may create the row concurrently.
+		await prisma.tenantUsage.updateMany({
+			where: { tenantId, monthKey },
+			data,
+		});
+	}
 }
 
 function monthKeyFromDate(input = new Date()) {
@@ -240,9 +257,9 @@ async function getProfileTable() {
 		canManageGlobalSettings: Boolean(row.canManageGlobalSettings),
 		canManageMembers: Boolean(row.canManageMembers),
 		canManageMemberBillingAdmin: Boolean(row.canManageMemberBillingAdmin),
-		canManageOrganizationBilling: Boolean(row.canManageOrganizationBilling),
+		canManagetenantBilling: Boolean(row.canManagetenantBilling),
 		canManageWorkspacesDocuments: Boolean(row.canManageWorkspacesDocuments),
-		canReadOrganizationResources: Boolean(row.canReadOrganizationResources),
+		canReadtenantResources: Boolean(row.canReadtenantResources),
 		canUseAiGrammarByPlan: Boolean(row.canUseAiGrammarByPlan),
 		canManageBillingSettings: Boolean(row.canManageBillingSettings),
 		canViewInvoicesSubscription: Boolean(row.canViewInvoicesSubscription),
@@ -259,9 +276,9 @@ function normalizeIp(value) {
 	return String(value || '').trim();
 }
 
-function ensureOrganizationSecurityState(organization) {
-	if (!organization.security) {
-		organization.security = {
+function ensuretenantSecurityState(tenant) {
+	if (!tenant.security) {
+		tenant.security = {
 			requireMfa: false,
 			sessionDurationHours: 8,
 			ipAllowlistEnabled: false,
@@ -272,102 +289,102 @@ function ensureOrganizationSecurityState(organization) {
 		};
 	}
 
-	if (typeof organization.security.requireMfa !== 'boolean') organization.security.requireMfa = false;
-	if (typeof organization.security.ipAllowlistEnabled !== 'boolean') organization.security.ipAllowlistEnabled = false;
-	if (!Array.isArray(organization.security.ipAllowlist)) organization.security.ipAllowlist = [];
-	if (!Array.isArray(organization.security.domainMappings)) organization.security.domainMappings = [];
-	if (!Array.isArray(organization.security.ssoProviders)) organization.security.ssoProviders = [];
+	if (typeof tenant.security.requireMfa !== 'boolean') tenant.security.requireMfa = false;
+	if (typeof tenant.security.ipAllowlistEnabled !== 'boolean') tenant.security.ipAllowlistEnabled = false;
+	if (!Array.isArray(tenant.security.ipAllowlist)) tenant.security.ipAllowlist = [];
+	if (!Array.isArray(tenant.security.domainMappings)) tenant.security.domainMappings = [];
+	if (!Array.isArray(tenant.security.ssoProviders)) tenant.security.ssoProviders = [];
 
-	organization.security.sessionDurationHours = Math.min(
+	tenant.security.sessionDurationHours = Math.min(
 		24,
-		Math.max(1, Number(organization.security.sessionDurationHours || 8)),
+		Math.max(1, Number(tenant.security.sessionDurationHours || 8)),
 	);
 
-	organization.security.ipAllowlist = organization.security.ipAllowlist
+	tenant.security.ipAllowlist = tenant.security.ipAllowlist
 		.map(normalizeIp)
 		.filter(Boolean);
-	organization.security.domainMappings = organization.security.domainMappings
+	tenant.security.domainMappings = tenant.security.domainMappings
 		.map(normalizeDomain)
 		.filter(Boolean);
 
-	if (!organization.security.updatedAt) organization.security.updatedAt = nowIso();
-	return organization.security;
+	if (!tenant.security.updatedAt) tenant.security.updatedAt = nowIso();
+	return tenant.security;
 }
 
-async function getOrganizationSecurityState(organizationId) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return null;
-	return ensureOrganizationSecurityState(organization);
+async function gettenantSecurityState(tenantId) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return null;
+	return ensuretenantSecurityState(tenant);
 }
 
-async function updateOrganizationSecurityState(organizationId, updater) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return null;
-	const current = ensureOrganizationSecurityState(organization);
+async function updatetenantSecurityState(tenantId, updater) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return null;
+	const current = ensuretenantSecurityState(tenant);
 	const next = typeof updater === 'function' ? updater({ ...current }) : current;
 	if (!next) return current;
 
-	organization.security = {
+	tenant.security = {
 		...current,
 		...next,
 		updatedAt: nowIso(),
 	};
-	ensureOrganizationSecurityState(organization);
-	await prisma.organization.update({
-		where: { id: organizationId },
-		data: { security: organization.security },
+	ensuretenantSecurityState(tenant);
+	await prisma.tenant.update({
+		where: { id: tenantId },
+		data: { security: tenant.security },
 	});
-	return organization.security;
+	return tenant.security;
 }
 
-async function findOrganizationByDomain(emailOrDomain) {
+async function findtenantByDomain(emailOrDomain) {
 	const raw = String(emailOrDomain || '').toLowerCase();
 	const domain = raw.includes('@') ? raw.split('@').pop() : raw;
 	const normalized = normalizeDomain(domain);
 	if (!normalized) return null;
 
 	if (!isDatabaseConfigured()) return null;
-	const rows = await prisma.organization.findMany();
+	const rows = await prisma.tenant.findMany();
 	for (const row of rows) {
-		const organization = mapDbOrganizationToRecord(row);
-		const security = ensureOrganizationSecurityState(organization);
-		if (security.domainMappings.includes(normalized)) return organization;
+		const tenant = mapDbtenantToRecord(row);
+		const security = ensuretenantSecurityState(tenant);
+		if (security.domainMappings.includes(normalized)) return tenant;
 	}
 	return null;
 }
 
-async function ensureOrganizationBillingState(organization) {
-	if (!organization?.id) return null;
+async function ensuretenantBillingState(tenant) {
+	if (!tenant?.id) return null;
 	let billing = null;
 	if (isDatabaseConfigured()) {
-		billing = await readOrganizationBillingStateFromDb(organization.id);
+		billing = await readtenantBillingStateFromDb(tenant.id);
 	}
 
 	if (!billing) {
-		billing = normalizeOrganizationBillingState(null, organization.id);
+		billing = normalizetenantBillingState(null, tenant.id);
 		if (isDatabaseConfigured()) {
-			await writeOrganizationBillingStateToDb(organization.id, billing);
+			await writetenantBillingStateToDb(tenant.id, billing);
 		}
 	}
 	return billing;
 }
 
-async function getOrganizationBillingState(organizationId) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return null;
-	return ensureOrganizationBillingState(organization);
+async function gettenantBillingState(tenantId) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return null;
+	return ensuretenantBillingState(tenant);
 }
 
-async function upsertOrganizationBillingState(organizationId, updates = {}) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return null;
-	const current = await ensureOrganizationBillingState(organization);
-	const next = normalizeOrganizationBillingState({
+async function upserttenantBillingState(tenantId, updates = {}) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return null;
+	const current = await ensuretenantBillingState(tenant);
+	const next = normalizetenantBillingState({
 		...current,
 		...updates,
 		updatedAt: nowIso(),
-	}, organizationId);
-	await writeOrganizationBillingStateToDb(organizationId, next);
+	}, tenantId);
+	await writetenantBillingStateToDb(tenantId, next);
 	return next;
 }
 
@@ -387,16 +404,18 @@ async function ensureUserBillingState(user) {
 	return normalizeUserBillingState({ planId: 'free', status: 'active', trialUsed: false }, user.id, user.email);
 }
 
-async function refreshBillingStatus(organizationId) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return null;
-	const billing = await ensureOrganizationBillingState(organization);
+async function refreshBillingStatus(tenantId) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return null;
+	const billing = await ensuretenantBillingState(tenant);
 	const nowMs = Date.now();
+	let changed = false;
 
 	if ((billing.status === 'past_due' || billing.status === 'grace') && billing.graceEndsAt) {
 		if (new Date(billing.graceEndsAt).getTime() <= nowMs) {
 			billing.status = 'suspended';
 			billing.updatedAt = nowIso();
+			changed = true;
 		}
 	}
 
@@ -404,6 +423,7 @@ async function refreshBillingStatus(organizationId) {
 		if (new Date(billing.trialEndsAt).getTime() <= nowMs) {
 			billing.status = 'active';
 			billing.updatedAt = nowIso();
+			changed = true;
 		}
 	}
 
@@ -416,11 +436,12 @@ async function refreshBillingStatus(organizationId) {
 			billing.currentPeriodEndAt = null;
 			billing.graceEndsAt = null;
 			billing.updatedAt = nowIso();
+			changed = true;
 		}
 	}
 
-	if (isDatabaseConfigured()) {
-		await writeOrganizationBillingStateToDb(organization.id, billing);
+	if (changed && isDatabaseConfigured()) {
+		await writetenantBillingStateToDb(tenant.id, billing);
 	}
 	return billing;
 }
@@ -430,45 +451,45 @@ function isBillingWriteBlocked(billingState) {
 	return billingState.status === 'suspended';
 }
 
-async function getOrganizationUsage(organizationId) {
+async function gettenantUsage(tenantId) {
 	const monthKey = monthKeyFromDate(new Date());
 	let usage = null;
 	if (isDatabaseConfigured()) {
-		usage = await readOrganizationUsageFromDb(organizationId, monthKey);
+		usage = await readtenantUsageFromDb(tenantId, monthKey);
 	}
 
 	if (!usage) {
-		usage = normalizeUsageState(null, organizationId, monthKey);
+		usage = normalizeUsageState(null, tenantId, monthKey);
 		if (isDatabaseConfigured()) {
-			await writeOrganizationUsageToDb(organizationId, monthKey, usage);
+			await writetenantUsageToDb(tenantId, monthKey, usage);
 		}
 	}
 	return usage;
 }
 
-function isWithinPlanAccessDays(organization, accessDays) {
-	if (!organization) return false;
+function isWithinPlanAccessDays(tenant, accessDays) {
+	if (!tenant) return false;
 	if (accessDays === null || accessDays === undefined) return true;
 	const parsedDays = Number(accessDays);
 	if (!Number.isFinite(parsedDays) || parsedDays <= 0) return false;
-	const startAtMs = new Date(organization.createdAt || nowIso()).getTime();
+	const startAtMs = new Date(tenant.createdAt || nowIso()).getTime();
 	const expiresAtMs = startAtMs + parsedDays * 24 * 60 * 60 * 1000;
 	return Date.now() <= expiresAtMs;
 }
 
-async function countOrganizationDocuments(organizationId) {
-	return prisma.document.count({ where: { organizationId } });
+async function counttenantDocuments(tenantId) {
+	return prisma.document.count({ where: { tenantId } });
 }
 
-async function canCreateDocuments(organizationId, additionalDocuments = 1) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+async function canCreateDocuments(tenantId, additionalDocuments = 1) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documents;
 	if (limit === null || limit === undefined) {
-		return { allowed: true, current: await countOrganizationDocuments(organizationId), limit: null };
+		return { allowed: true, current: await counttenantDocuments(tenantId), limit: null };
 	}
-	const current = await countOrganizationDocuments(organizationId);
+	const current = await counttenantDocuments(tenantId);
 	const nextTotal = current + Math.max(0, additionalDocuments);
 	if (nextTotal > limit) {
 		return {
@@ -479,12 +500,12 @@ async function canCreateDocuments(organizationId, additionalDocuments = 1) {
 	return { allowed: true, current, limit };
 }
 
-async function canUpdateDocuments(organizationId, additionalUpdates = 1) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+async function canUpdateDocuments(tenantId, additionalUpdates = 1) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documentUpdatesPerMonth;
-	const usage = await getOrganizationUsage(organizationId);
+	const usage = await gettenantUsage(tenantId);
 	if (limit === null || limit === undefined) {
 		return { allowed: true, usage, limit: null };
 	}
@@ -500,24 +521,24 @@ async function canUpdateDocuments(organizationId, additionalUpdates = 1) {
 	return { allowed: true, usage, limit };
 }
 
-async function consumeDocumentUpdates(organizationId, count = 1) {
-	const check = await canUpdateDocuments(organizationId, count);
+async function consumeDocumentUpdates(tenantId, count = 1) {
+	const check = await canUpdateDocuments(tenantId, count);
 	if (!check.allowed) return check;
-	const usage = await getOrganizationUsage(organizationId);
+	const usage = await gettenantUsage(tenantId);
 	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
 	if (isDatabaseConfigured()) {
-		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
+		await writetenantUsageToDb(tenantId, usage.monthKey, usage);
 	}
 	return { allowed: true, usage };
 }
 
-async function canUseGrammar(organizationId) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return { allowed: false, reason: 'Organization not found.' };
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+async function canUseGrammar(tenantId) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return { allowed: false, reason: 'Tenant not found.' };
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	const plan = getPlan(billing.planId);
-	if (isWithinPlanAccessDays(organization, plan.limits.grammarAccessDays)) {
+	if (isWithinPlanAccessDays(tenant, plan.limits.grammarAccessDays)) {
 		return { allowed: true };
 	}
 	return {
@@ -526,11 +547,11 @@ async function canUseGrammar(organizationId) {
 	};
 }
 
-async function getAssignedSeatCount(organizationId) {
+async function getAssignedSeatCount(tenantId) {
 	if (isDatabaseConfigured()) {
-		return prisma.organizationMembership.count({
+		return prisma.tenantMembership.count({
 			where: {
-				organizationId,
+				tenantId,
 				status: 'active',
 			},
 		});
@@ -538,14 +559,14 @@ async function getAssignedSeatCount(organizationId) {
 }
 
 
-async function getCollaboratorCount(organizationId) {
-	return getAssignedSeatCount(organizationId);
+async function getCollaboratorCount(tenantId) {
+	return getAssignedSeatCount(tenantId);
 }
 
-async function canAssignSeats(organizationId, additionalSeats = 1) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
-	const assignedSeats = await getAssignedSeatCount(organizationId);
+async function canAssignSeats(tenantId, additionalSeats = 1) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
+	const assignedSeats = await getAssignedSeatCount(tenantId);
 	const nextAssigned = assignedSeats + Math.max(0, additionalSeats);
 	if (nextAssigned > billing.purchasedSeats) {
 		return {
@@ -556,11 +577,11 @@ async function canAssignSeats(organizationId, additionalSeats = 1) {
 	return { allowed: true, assignedSeats, purchasedSeats: billing.purchasedSeats };
 }
 
-async function canAssignCollaborators(organizationId, additionalCollaborators = 1) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+async function canAssignCollaborators(tenantId, additionalCollaborators = 1) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	const plan = getPlan(billing.planId);
-	const current = await getCollaboratorCount(organizationId);
+	const current = await getCollaboratorCount(tenantId);
 	const nextTotal = current + Math.max(0, additionalCollaborators);
 	if (nextTotal > plan.limits.collaborators) {
 		return {
@@ -571,30 +592,41 @@ async function canAssignCollaborators(organizationId, additionalCollaborators = 
 	return { allowed: true, current, limit: plan.limits.collaborators };
 }
 
-async function calculateOrganizationStorageBytes(organizationId) {
-	const docs = await prisma.document.findMany({
-		where: { organizationId },
-		select: { content: true },
-	});
-	return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
+async function calculatetenantStorageBytes(tenantId) {
+	try {
+		const rows = await prisma.$queryRaw`
+			SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0)::bigint AS total
+			FROM documents
+			WHERE "tenantId" = ${tenantId}
+		`;
+		const total = Array.isArray(rows) && rows[0] ? rows[0].total : 0;
+		if (typeof total === 'bigint') return Number(total);
+		return Number(total || 0);
+	} catch {
+		const docs = await prisma.document.findMany({
+			where: { tenantId },
+			select: { content: true },
+		});
+		return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
+	}
 }
 
-async function canConsumeAiRequests(organizationId, count = 1) {
-	const organization = await resolveOrganizationById(organizationId);
-	if (!organization) return { allowed: false, reason: 'Organization not found.' };
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
-	if (!billing) return { allowed: false, reason: 'Organization not found.' };
+async function canConsumeAiRequests(tenantId, count = 1) {
+	const tenant = await resolvetenantById(tenantId);
+	if (!tenant) return { allowed: false, reason: 'Tenant not found.' };
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
+	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	if (billing.status === 'suspended') {
 		return { allowed: false, reason: 'Subscription suspended due to failed payments.' };
 	}
 	const plan = getPlan(billing.planId);
-	if (!isWithinPlanAccessDays(organization, plan.limits.aiAccessDays)) {
+	if (!isWithinPlanAccessDays(tenant, plan.limits.aiAccessDays)) {
 		return {
 			allowed: false,
 			reason: `AI assistant access expired for ${plan.name} plan.`,
 		};
 	}
-	const usage = await getOrganizationUsage(organizationId);
+	const usage = await gettenantUsage(tenantId);
 	const nextUsage = usage.aiRequests + Math.max(0, count);
 	if (nextUsage > plan.limits.aiRequestsPerMonth) {
 		return {
@@ -605,25 +637,27 @@ async function canConsumeAiRequests(organizationId, count = 1) {
 	return { allowed: true, usage, limit: plan.limits.aiRequestsPerMonth };
 }
 
-async function consumeAiRequests(organizationId, count = 1) {
-	const check = await canConsumeAiRequests(organizationId, count);
+async function consumeAiRequests(tenantId, count = 1) {
+	const check = await canConsumeAiRequests(tenantId, count);
 	if (!check.allowed) return check;
-	const usage = await getOrganizationUsage(organizationId);
+	const usage = await gettenantUsage(tenantId);
 	usage.aiRequests += Math.max(0, count);
 	if (isDatabaseConfigured()) {
-		await writeOrganizationUsageToDb(organizationId, usage.monthKey, usage);
+		await writetenantUsageToDb(tenantId, usage.monthKey, usage);
 	}
 	return { allowed: true, usage };
 }
 
-async function getOrganizationEntitlements(organizationId) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
+async function gettenantEntitlements(tenantId) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
-	const usage = await getOrganizationUsage(organizationId);
-	const assignedSeats = await getAssignedSeatCount(organizationId);
-	const storageUsedBytes = await calculateOrganizationStorageBytes(organizationId);
-	const collaboratorsAssigned = await getCollaboratorCount(organizationId);
+	const [usage, assignedSeats, storageUsedBytes] = await Promise.all([
+		gettenantUsage(tenantId),
+		getAssignedSeatCount(tenantId),
+		calculatetenantStorageBytes(tenantId),
+	]);
+	const collaboratorsAssigned = assignedSeats;
 
 	return {
 		billing,
@@ -650,8 +684,8 @@ async function getOrganizationEntitlements(organizationId) {
 	};
 }
 
-async function getVersionHistoryRetentionDays(organizationId) {
-	const billing = await refreshBillingStatus(organizationId) || await getOrganizationBillingState(organizationId);
+async function getVersionHistoryRetentionDays(tenantId) {
+	const billing = await refreshBillingStatus(tenantId) || await gettenantBillingState(tenantId);
 	if (!billing) return null;
 	const plan = getPlan(billing.planId);
 	return plan.limits.versionHistoryDays;
@@ -660,7 +694,7 @@ async function getVersionHistoryRetentionDays(organizationId) {
 function upsertInvoice(invoice) {
 	const normalized = {
 		id: String(invoice?.id || `inv_${uuidv4()}`),
-		organizationId: String(invoice?.organizationId || ''),
+		tenantId: String(invoice?.tenantId || ''),
 		provider: String(invoice?.provider || 'mock'),
 		invoiceNumber: invoice?.invoiceNumber ? String(invoice.invoiceNumber) : null,
 		amountCents: Number(invoice?.amountCents || 0),
@@ -680,7 +714,7 @@ function upsertInvoice(invoice) {
 	return prisma.invoice.upsert({
 		where: { id: normalized.id },
 		update: {
-			organizationId: normalized.organizationId,
+			tenantId: normalized.tenantId,
 			provider: normalized.provider,
 			invoiceNumber: normalized.invoiceNumber,
 			amountCents: normalized.amountCents,
@@ -698,7 +732,7 @@ function upsertInvoice(invoice) {
 		},
 		create: {
 			id: normalized.id,
-			organizationId: normalized.organizationId,
+			tenantId: normalized.tenantId,
 			provider: normalized.provider,
 			invoiceNumber: normalized.invoiceNumber,
 			amountCents: normalized.amountCents,
@@ -720,7 +754,7 @@ function upsertInvoice(invoice) {
 			: {};
 		return {
 			id: row.id,
-			organizationId: row.organizationId,
+			tenantId: row.tenantId,
 			provider: row.provider,
 			invoiceNumber: row.invoiceNumber || null,
 			amountCents: row.amountCents,
@@ -736,9 +770,9 @@ function upsertInvoice(invoice) {
 	});
 }
 
-function listInvoicesByOrganization(organizationId) {
+function listInvoicesBytenant(tenantId) {
 	return prisma.invoice.findMany({
-		where: { organizationId },
+		where: { tenantId },
 		orderBy: { issuedAt: 'desc' },
 	}).then((rows) => rows.map((row) => {
 		const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
@@ -746,7 +780,7 @@ function listInvoicesByOrganization(organizationId) {
 			: {};
 		return {
 			id: row.id,
-			organizationId: row.organizationId,
+			tenantId: row.tenantId,
 			provider: row.provider,
 			invoiceNumber: row.invoiceNumber || null,
 			amountCents: row.amountCents,
@@ -851,33 +885,33 @@ function mapWorkspaceRowToRecord(row) {
 		name: row.name,
 		ownerId: row.ownerId,
 		memberIds: Array.isArray(row.memberIds) ? row.memberIds : [row.ownerId],
-		organizationId: row.organizationId || null,
+		tenantId: row.tenantId || null,
 		createdAt: new Date(row.createdAt).toISOString(),
 		updatedAt: new Date(row.updatedAt).toISOString(),
 	};
 }
 
-async function ensureDefaultOrganizationForUser(user) {
+async function ensureDefaulttenantForUser(user) {
 	if (!user?.id || !isDatabaseConfigured()) return null;
 
-	const organizationId = uuidv4();
+	const tenantId = uuidv4();
 	const now = new Date();
-	const organizationName = String(user.name || '').trim() ? `${String(user.name).trim()}'s Organization` : 'Personal Organization';
+	const tenantName = String(user.name || '').trim() ? `${String(user.name).trim()}'s Tenant` : 'Personal Tenant';
 
-	await prisma.organization.create({
+	await prisma.tenant.create({
 		data: {
-			id: organizationId,
-			name: organizationName,
+			id: tenantId,
+			name: tenantName,
 			ownerUserId: user.id,
 			createdAt: now,
 			updatedAt: now,
 		},
 	});
 
-	await prisma.organizationMembership.create({
+	await prisma.tenantMembership.create({
 		data: {
 			id: uuidv4(),
-			organizationId,
+			tenantId: tenantId,
 			userId: user.id,
 			email: String(user.email || '').toLowerCase().trim(),
 			billingAdmin: true,
@@ -887,31 +921,31 @@ async function ensureDefaultOrganizationForUser(user) {
 		},
 	});
 
-	const organization = {
-		id: organizationId,
-		name: organizationName,
+	const tenant = {
+		id: tenantId,
+		name: tenantName,
 		ownerUserId: user.id,
 		createdAt: now.toISOString(),
 		updatedAt: now.toISOString(),
 	};
-	ensureOrganizationSecurityState(organization);
-	await prisma.organization.update({
-		where: { id: organizationId },
-		data: { security: organization.security },
+	ensuretenantSecurityState(tenant);
+	await prisma.tenant.update({
+		where: { id: tenantId },
+		data: { security: tenant.security },
 	});
 
-	await ensureOrganizationBillingState(organization);
+	await ensuretenantBillingState(tenant);
 
 	await prisma.user.update({
 		where: { id: user.id },
-		data: { currentOrganizationId: organizationId },
+		data: { currentTenantId: tenantId },
 	});
 
-	user.currentOrganizationId = organizationId;
-	return organization;
+	user.currentTenantId = tenantId;
+	return tenant;
 }
 
-async function syncCurrentOrganizationFromMembership(user) {
+async function syncCurrenttenantFromMembership(user) {
 	if (!user) return null;
 	if (!isDatabaseConfigured()) return null;
 
@@ -924,7 +958,7 @@ async function syncCurrentOrganizationFromMembership(user) {
 	});
 	if (!dbUser) return null;
 
-	const activeMemberships = await prisma.organizationMembership.findMany({
+	const activeMemberships = await prisma.tenantMembership.findMany({
 		where: {
 			userId: dbUser.id,
 			status: 'active',
@@ -935,23 +969,23 @@ async function syncCurrentOrganizationFromMembership(user) {
 	});
 
 	if (!activeMemberships.length) {
-		user.currentOrganizationId = null;
+		user.currentTenantId = null;
 		await prisma.user.updateMany({
 			where: { email: normalizedEmail },
-			data: { currentOrganizationId: null },
+			data: { currentTenantId: null },
 		});
 		return null;
 	}
 
 	const existingCurrent = activeMemberships.find(
-	(membership) => membership.organizationId === user.currentOrganizationId,
+		(membership) => membership.tenantId === (user.currentTenantId),
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
-	const row = await prisma.organization.findUnique({ where: { id: selectedMembership.organizationId } });
-	let organization = null;
+	const row = await prisma.tenant.findUnique({ where: { id: selectedMembership.tenantId } });
+	let tenant = null;
 	if (row) {
-		organization = {
+		tenant = {
 			id: row.id,
 			name: row.name,
 			ownerUserId: row.ownerUserId,
@@ -961,24 +995,24 @@ async function syncCurrentOrganizationFromMembership(user) {
 		};
 	}
 
-	if (!organization) {
-		user.currentOrganizationId = null;
+	if (!tenant) {
+		user.currentTenantId = null;
 		await prisma.user.updateMany({
 			where: { email: normalizedEmail },
-			data: { currentOrganizationId: null },
+			data: { currentTenantId: null },
 		});
 		return null;
 	}
 
-	await ensureOrganizationBillingState(organization);
-	ensureOrganizationSecurityState(organization);
-	user.currentOrganizationId = organization.id;
+	await ensuretenantBillingState(tenant);
+	ensuretenantSecurityState(tenant);
+	user.currentTenantId = tenant.id;
 	await prisma.user.updateMany({
 		where: { email: normalizedEmail },
-		data: { currentOrganizationId: organization.id },
+		data: { currentTenantId: tenant.id },
 	});
 
-	return organization;
+	return tenant;
 }
 
 async function ensureWorkspaceForUserProvisioned(user) {
@@ -990,7 +1024,7 @@ async function ensureWorkspaceForUserProvisioned(user) {
 	let row = await prisma.workspace.findFirst({
 		where: {
 			ownerId: user.id,
-			organizationId: personalScopeId,
+			tenantId: personalScopeId,
 		},
 		orderBy: {
 			createdAt: 'asc',
@@ -1002,7 +1036,7 @@ async function ensureWorkspaceForUserProvisioned(user) {
 			name: `${user.name}'s Workspace`,
 			ownerId: user.id,
 			memberIds: [user.id],
-			organizationId: personalScopeId,
+			tenantId: personalScopeId,
 			createdAt: nowIso(),
 			updatedAt: nowIso(),
 		};
@@ -1012,7 +1046,7 @@ async function ensureWorkspaceForUserProvisioned(user) {
 				id: workspace.id,
 				name: workspace.name,
 				ownerId: workspace.ownerId,
-				organizationId: workspace.organizationId,
+				tenantId: workspace.tenantId,
 				memberIds: workspace.memberIds,
 				createdAt: new Date(workspace.createdAt),
 			},
@@ -1029,12 +1063,12 @@ async function ensureTenantBootstrapForUser(user) {
 
 	const dbUser = await prisma.user.findUnique({
 		where: { email: normalizedEmail },
-		select: { id: true, name: true, currentOrganizationId: true, email: true },
+		select: { id: true, name: true, currentTenantId: true, email: true },
 	});
 	if (!dbUser) return null;
 
 	const membershipEmail = dbUser.email;
-	const activeMemberships = await prisma.organizationMembership.findMany({
+	const activeMemberships = await prisma.tenantMembership.findMany({
 		where: {
 			email: membershipEmail,
 			status: 'active',
@@ -1051,57 +1085,54 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		const organization = await prisma.organization.findUnique({ where: { id: activeMemberships[0].organizationId } });
-		if (!organization) return null;
+		const tenant = await prisma.tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
+		if (!tenant) return null;
 
-		await ensureOrganizationBillingState(organization);
-		const security = ensureOrganizationSecurityState(organization);
-		await prisma.organization.updateMany({
-			where: { id: organization.id },
+		await ensuretenantBillingState(tenant);
+		const security = ensuretenantSecurityState(tenant);
+		await prisma.tenant.updateMany({
+			where: { id: tenant.id },
 			data: { security },
 		});
 
-		user.currentOrganizationId = organization.id;
+		user.currentTenantId = tenant.id;
 		await prisma.user.updateMany({
 			where: { email: normalizedEmail },
-			data: { currentOrganizationId: organization.id },
+			data: { currentTenantId: tenant.id },
 		});
 
 		await prisma.document.updateMany({
 			where: {
 				userId: user.id,
-				organizationId: null,
+				tenantId: null,
 			},
 			data: {
-				organizationId: organization.id,
+				tenantId: tenant.id,
 			},
 		});
 
-		return organization;
+		return tenant;
 	}
 
-	return ensureDefaultOrganizationForUser(user);
+	return ensureDefaulttenantForUser(user);
 }
 
 module.exports = {
 	nowIso,
-	PLAN_CATALOG,
 	TRIAL_DAYS_BY_PLAN,
 	getPlan,
-	getPlanById,
 	getAllPlans,
-	getOrganizationBillingState,
-	upsertOrganizationBillingState,
+	gettenantBillingState,
+	upserttenantBillingState,
 	ensureUserBillingState,
-	getOrganizationSecurityState,
-	findOrganizationByDomain,
-	updateOrganizationSecurityState,
+	gettenantSecurityState,
+	findtenantByDomain,
+	updatetenantSecurityState,
 	refreshBillingStatus,
 	isBillingWriteBlocked,
-	getOrganizationEntitlements,
+	gettenantEntitlements,
 	canAssignSeats,
 	canAssignCollaborators,
-	calculateOrganizationStorageBytes,
 	canConsumeAiRequests,
 	consumeAiRequests,
 	canCreateDocuments,
@@ -1110,16 +1141,13 @@ module.exports = {
 	canUseGrammar,
 	getVersionHistoryRetentionDays,
 	upsertInvoice,
-	listInvoicesByOrganization,
+	listInvoicesBytenant,
 	enqueueWebhookJob,
 	listWebhookJobs,
-	getDueWebhookJobs,
 	markWebhookJobProcessing,
 	markWebhookJobProcessed,
-	markWebhookJobFailed,
 	ensureTenantBootstrapForUser,
-	ensureDefaultOrganizationForUser,
-	syncCurrentOrganizationFromMembership,
+	syncCurrenttenantFromMembership,
 	ensureWorkspaceForUserProvisioned,
 	getProfileTable,
 };

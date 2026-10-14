@@ -7,8 +7,8 @@ const {
   ensureTenantBootstrapForUser,
   ensureUserBillingState,
   ensureWorkspaceForUserProvisioned,
-  getOrganizationSecurityState,
-  syncCurrentOrganizationFromMembership,
+  gettenantSecurityState,
+  syncCurrenttenantFromMembership,
 } = require('../store');
 const { writeAuditLog } = require('../lib/audit');
 const {
@@ -21,7 +21,7 @@ const {
   nowIso,
   getRequestIp,
   getUserAgent,
-  isOrgIpAllowedForUser,
+  isTenantIpAllowedForUser,
   createAuthRouteHelpers,
   publicUser,
   issueOneTimeToken,
@@ -139,14 +139,15 @@ router.post('/login', loginRateLimit, async (req, res) => {
   const authConfig = await getAuthConfig();
   const authScope = String(req?.get?.('x-auth-scope') || '').toLowerCase() === 'admin' ? 'admin' : 'workspace';
   const { email, username, remember = false } = req.body ?? {};
+  let decryptedPassword;
   try {
-    resolvePasswordFromBody(req.body);
+    decryptedPassword = resolvePasswordFromBody(req.body);
   } catch {
     audit(req, 'login', 'failure', null, { reason: 'invalid-password-encryption' });
     return res.status(400).json({ error: 'Invalid encrypted password payload.' });
   }
   const identifier = String(email || username || '').toLowerCase();
-  if (!identifier || !resolvePasswordFromBody(req.body)) {
+  if (!identifier || !decryptedPassword) {
     audit(req, 'login', 'failure', null, { reason: 'missing-credentials' });
     return res.status(400).json({ error: 'email/username and password are required.' });
   }
@@ -162,7 +163,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(423).json({ error: 'Account temporarily locked after repeated failed attempts.' });
   }
 
-  const valid = await bcrypt.compare(String(resolvePasswordFromBody(req.body)), user.passwordHash);
+  const valid = await bcrypt.compare(String(decryptedPassword), user.passwordHash);
   if (!valid) {
     const nextFailedAttempts = Number(user.failedLoginAttempts || 0) + 1;
     const nextLockoutUntil = nextFailedAttempts >= authConfig.lockoutThreshold
@@ -198,39 +199,39 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   // Legacy users may exist without org membership; bootstrap tenant context on login.
   await ensureTenantBootstrapForUser(user);
-  await syncCurrentOrganizationFromMembership(user);
+  await syncCurrenttenantFromMembership(user);
 
-  if (user.currentOrganizationId) {
+  if (user.currentTenantId) {
     try {
       await ensureWorkspaceForUserProvisioned(user);
     } catch (error) {
       audit(req, 'login', 'failure', user.id, {
         reason: 'workspace-provision-failed',
-        organizationId: user.currentOrganizationId,
+        tenantId: user.currentTenantId,
         error: String(error?.message || error),
       });
       return res.status(500).json({ error: 'Failed to provision your workspace. Please try again.' });
     }
   }
 
-  if (!await isOrgIpAllowedForUser(req, user)) {
+  if (!await isTenantIpAllowedForUser(req, user)) {
     audit(req, 'login-ip-policy', 'failure', user.id, {
       reason: 'ip-not-allowlisted',
-      organizationId: user.currentOrganizationId,
+      tenantId: user.currentTenantId,
     });
-    return res.status(403).json({ error: 'Your organization only allows login from approved IP addresses.' });
+    return res.status(403).json({ error: 'Your tenant only allows login from approved IP addresses.' });
   }
 
-  const security = await getOrganizationSecurityState(user.currentOrganizationId);
+  const security = await gettenantSecurityState(user.currentTenantId);
   const hasActiveSsoProvider = Boolean(
     security?.ssoProviders?.some((provider) => provider && provider.enabled !== false),
   );
   if (security?.requireMfa && !hasActiveSsoProvider && !user.twoFactorEnabled) {
     audit(req, 'login-mfa-policy', 'failure', user.id, {
-      reason: 'mfa-required-by-organization',
-      organizationId: user.currentOrganizationId,
+      reason: 'mfa-required-by-tenant',
+      tenantId: user.currentTenantId,
     });
-    return res.status(403).json({ error: 'Your organization requires MFA. Enable two-factor authentication first.' });
+    return res.status(403).json({ error: 'Your tenant requires MFA. Enable two-factor authentication first.' });
   }
 
   if (user.twoFactorEnabled) {
@@ -250,7 +251,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
       data: {
         failedLoginAttempts: 0,
         lockoutUntil: null,
-        currentOrganizationId: user.currentOrganizationId || null,
+        currentTenantId: user.currentTenantId || null,
         lastLoginAt: new Date(user.lastLoginAt),
       },
     });

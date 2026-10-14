@@ -1,7 +1,7 @@
 const { prisma } = require('../db/client');
 const { isDatabaseConfigured } = require('../lib/runtime-utils');
 
-const PLAN_CATALOG = {
+const DEFAULT_PLAN_CATALOG = {
   free: {
     id: 'free',
     name: 'Free',
@@ -35,7 +35,108 @@ const PLAN_CATALOG = {
       aiAccessDays: null,
     },
   },
+  pro: {
+    id: 'pro',
+    name: 'Pro',
+    priceMonthlyCents: 1900,
+    displayPrice: '$19',
+    features: {
+      basicEditor: true,
+      aiAssistant: true,
+      grammarChecker: true,
+      prioritySupport: true,
+      communitySupport: true,
+      ssoSaml: false,
+      customRolesRbac: false,
+      auditLogs: false,
+      slaDedicatedSupport: false,
+      onPremiseOption: false,
+      selfHostedDeployment: false,
+      privateNetworkOnly: false,
+      customComplianceControls: false,
+      dedicatedSuccessTeam: false,
+    },
+    limits: {
+      seats: 10,
+      storageBytes: 107374182400,
+      aiRequestsPerMonth: 5000,
+      collaborators: 50,
+      documents: null,
+      documentUpdatesPerMonth: null,
+      versionHistoryDays: 365,
+      grammarAccessDays: null,
+      aiAccessDays: null,
+    },
+  },
+  enterprise: {
+    id: 'enterprise',
+    name: 'Enterprise',
+    priceMonthlyCents: 9900,
+    displayPrice: '$99',
+    features: {
+      basicEditor: true,
+      aiAssistant: true,
+      grammarChecker: true,
+      prioritySupport: true,
+      communitySupport: true,
+      ssoSaml: true,
+      customRolesRbac: true,
+      auditLogs: true,
+      slaDedicatedSupport: true,
+      onPremiseOption: false,
+      selfHostedDeployment: false,
+      privateNetworkOnly: false,
+      customComplianceControls: true,
+      dedicatedSuccessTeam: true,
+    },
+    limits: {
+      seats: 100,
+      storageBytes: 1099511627776,
+      aiRequestsPerMonth: 100000,
+      collaborators: 500,
+      documents: null,
+      documentUpdatesPerMonth: null,
+      versionHistoryDays: null,
+      grammarAccessDays: null,
+      aiAccessDays: null,
+    },
+  },
+  onprem: {
+    id: 'onprem',
+    name: 'On-Prem',
+    priceMonthlyCents: 0,
+    displayPrice: 'Custom',
+    features: {
+      basicEditor: true,
+      aiAssistant: true,
+      grammarChecker: true,
+      prioritySupport: true,
+      communitySupport: false,
+      ssoSaml: true,
+      customRolesRbac: true,
+      auditLogs: true,
+      slaDedicatedSupport: true,
+      onPremiseOption: true,
+      selfHostedDeployment: true,
+      privateNetworkOnly: true,
+      customComplianceControls: true,
+      dedicatedSuccessTeam: true,
+    },
+    limits: {
+      seats: 1000,
+      storageBytes: 10995116277760,
+      aiRequestsPerMonth: 1000000,
+      collaborators: 5000,
+      documents: null,
+      documentUpdatesPerMonth: null,
+      versionHistoryDays: null,
+      grammarAccessDays: null,
+      aiAccessDays: null,
+    },
+  },
 };
+
+const PLAN_CATALOG = JSON.parse(JSON.stringify(DEFAULT_PLAN_CATALOG));
 
 const TRIAL_DAYS_BY_PLAN = {
   free: 0,
@@ -92,13 +193,9 @@ function mapDbPlanToCatalogRecord(row) {
 }
 
 function replaceCatalogRecords(plans) {
-  const next = Object.create(null);
+  const next = JSON.parse(JSON.stringify(DEFAULT_PLAN_CATALOG));
   for (const plan of plans) {
     next[plan.id] = plan;
-  }
-
-  if (!next.free) {
-    next.free = PLAN_CATALOG.free;
   }
 
   for (const key of Object.keys(PLAN_CATALOG)) {

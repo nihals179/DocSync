@@ -14,13 +14,13 @@ CREATE TABLE "public"."users" (
     "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false,
     "twoFactorSecret" TEXT,
     "twoFactorTempSecret" TEXT,
-    "currentOrganizationId" TEXT,
+    "currenttenantId" TEXT,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "public"."organizations" (
+CREATE TABLE "public"."tenants" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "ownerUserId" TEXT NOT NULL,
@@ -29,13 +29,13 @@ CREATE TABLE "public"."organizations" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "organizations_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "tenants_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "public"."organization_memberships" (
+CREATE TABLE "public"."tenant_memberships" (
     "id" TEXT NOT NULL,
-    "organizationId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "role" TEXT NOT NULL,
     "billingAdmin" BOOLEAN NOT NULL DEFAULT false,
@@ -43,14 +43,14 @@ CREATE TABLE "public"."organization_memberships" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "organization_memberships_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "tenant_memberships_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "public"."organization_invites" (
+CREATE TABLE "public"."tenant_invites" (
     "id" TEXT NOT NULL,
     "token" TEXT NOT NULL,
-    "organizationId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
     "email" TEXT NOT NULL,
     "role" TEXT NOT NULL,
     "billingAdmin" BOOLEAN NOT NULL DEFAULT false,
@@ -61,7 +61,7 @@ CREATE TABLE "public"."organization_invites" (
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "acceptedAt" TIMESTAMP(3),
 
-    CONSTRAINT "organization_invites_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "tenant_invites_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -84,7 +84,7 @@ CREATE TABLE "public"."auth_sessions" (
 -- CreateTable
 CREATE TABLE "public"."invoices" (
     "id" TEXT NOT NULL,
-    "organizationId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
     "provider" TEXT NOT NULL,
     "invoiceNumber" TEXT,
     "amountCents" INTEGER NOT NULL,
@@ -117,14 +117,14 @@ CREATE TABLE "public"."user_billing" (
 );
 
 -- CreateTable
-CREATE TABLE "public"."organization_usage" (
-    "organizationId" TEXT NOT NULL,
+CREATE TABLE "public"."tenant_usage" (
+    "tenantId" TEXT NOT NULL,
     "monthKey" TEXT NOT NULL,
     "aiRequests" INTEGER NOT NULL DEFAULT 0,
     "documentUpdates" INTEGER NOT NULL DEFAULT 0,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "organization_usage_pkey" PRIMARY KEY ("organizationId","monthKey")
+    CONSTRAINT "tenant_usage_pkey" PRIMARY KEY ("tenantId","monthKey")
 );
 
 -- CreateTable
@@ -180,7 +180,7 @@ CREATE TABLE "public"."auth_tokens" (
 CREATE TABLE "public"."audit_logs" (
     "id" TEXT NOT NULL,
     "userId" TEXT,
-    "organizationId" TEXT,
+    "tenantId" TEXT,
     "action" TEXT NOT NULL,
     "status" TEXT NOT NULL,
     "ipAddress" TEXT,
@@ -195,7 +195,7 @@ CREATE TABLE "public"."audit_logs" (
 CREATE TABLE "public"."documents" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "organizationId" TEXT,
+    "tenantId" TEXT,
     "workspaceId" TEXT,
     "title" TEXT NOT NULL,
     "content" TEXT NOT NULL,
@@ -234,7 +234,7 @@ CREATE TABLE "public"."versions" (
 CREATE TABLE "public"."todos" (
     "id" TEXT NOT NULL,
     "workspaceId" TEXT,
-    "organizationId" TEXT,
+    "tenantId" TEXT,
     "userId" TEXT NOT NULL,
     "title" TEXT NOT NULL,
     "completed" BOOLEAN NOT NULL DEFAULT false,
@@ -250,7 +250,7 @@ CREATE TABLE "public"."workspaces" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "ownerId" TEXT NOT NULL,
-    "organizationId" TEXT,
+    "tenantId" TEXT,
     "memberIds" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -262,10 +262,10 @@ CREATE TABLE "public"."workspaces" (
 CREATE UNIQUE INDEX "users_email_key" ON "public"."users"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "organization_memberships_organizationId_userId_key" ON "public"."organization_memberships"("organizationId", "userId");
+CREATE UNIQUE INDEX "ation_memberships_tenantId_userId_key" ON "public"."tenant_memberships"("tenantId", "userId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "organization_invites_token_key" ON "public"."organization_invites"("token");
+CREATE UNIQUE INDEX "tenant_invites_token_key" ON "public"."tenant_invites"("token");
 
 -- CreateIndex
 CREATE INDEX "webhook_jobs_eventId_idx" ON "public"."webhook_jobs"("eventId");
@@ -274,13 +274,13 @@ CREATE INDEX "webhook_jobs_eventId_idx" ON "public"."webhook_jobs"("eventId");
 CREATE INDEX "audit_logs_userId_idx" ON "public"."audit_logs"("userId");
 
 -- CreateIndex
-CREATE INDEX "audit_logs_organizationId_idx" ON "public"."audit_logs"("organizationId");
+CREATE INDEX "audit_logs_tenantId_idx" ON "public"."audit_logs"("tenantId");
 
 -- CreateIndex
 CREATE INDEX "documents_userId_idx" ON "public"."documents"("userId");
 
 -- CreateIndex
-CREATE INDEX "documents_organizationId_idx" ON "public"."documents"("organizationId");
+CREATE INDEX "documents_tenantId_idx" ON "public"."documents"("tenantId");
 
 -- CreateIndex
 CREATE INDEX "comments_docId_idx" ON "public"."comments"("docId");
@@ -292,10 +292,10 @@ CREATE INDEX "versions_docId_idx" ON "public"."versions"("docId");
 CREATE INDEX "todos_workspaceId_idx" ON "public"."todos"("workspaceId");
 
 -- CreateIndex
-CREATE INDEX "todos_organizationId_idx" ON "public"."todos"("organizationId");
+CREATE INDEX "todos_tenantId_idx" ON "public"."todos"("tenantId");
 
 -- CreateIndex
 CREATE INDEX "workspaces_ownerId_idx" ON "public"."workspaces"("ownerId");
 
 -- CreateIndex
-CREATE INDEX "workspaces_organizationId_idx" ON "public"."workspaces"("organizationId");
+CREATE INDEX "workspaces_tenantId_idx" ON "public"."workspaces"("tenantId");

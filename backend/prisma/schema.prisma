@@ -4,18 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://postgres:postgres@localhost:5432/docsync?schema=public"
-}
-
-model LocalStoreEntry {
-  mapName   String
-  entryKey  String
-  value     Json
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@id([mapName, entryKey])
-  @@map("local_store_entries")
+  url      = env("DATABASE_URL")
 }
 
 model PlanCatalog {
@@ -60,6 +49,7 @@ model User {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
   accountType           String   @default("individual")
+  isSubscribed          Boolean  @default(false)
   emailVerified         Boolean  @default(false)
   failedLoginAttempts   Int      @default(0)
   lockoutUntil          DateTime?
@@ -68,12 +58,12 @@ model User {
   twoFactorEnabled      Boolean  @default(false)
   twoFactorSecret       String?
   twoFactorTempSecret   String?
-  currentOrganizationId String?
+  currentTenantId       String?  
 
   @@map("users")
 }
 
-model Organization {
+model Tenant {
   id          String   @id
   name        String
   ownerUserId String
@@ -81,11 +71,11 @@ model Organization {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@map("organizations")
+  @@map("tenants")
 }
 
-model OrganizationBilling {
-  organizationId     String   @id
+model tenantBilling {
+  tenantId          String   @id 
   planId             String
   status             String
   purchasedSeats     Int
@@ -97,12 +87,12 @@ model OrganizationBilling {
   graceEndsAt        DateTime?
   updatedAt          DateTime @updatedAt
 
-  @@map("organization_billing")
+  @@map("tenant_billing")
 }
 
-model OrganizationMembership {
+model tenantMembership {
   id             String   @id
-  organizationId String
+  tenantId String 
   userId         String
   email          String?
   billingAdmin   Boolean  @default(false)
@@ -110,10 +100,10 @@ model OrganizationMembership {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  @@unique([organizationId, userId])
-  @@unique([organizationId, email])
+  @@unique([tenantId, userId])
+  @@unique([tenantId, email])
   @@index([email])
-  @@map("organization_memberships")
+  @@map("tenant_memberships")
 }
 
 model Profile {
@@ -124,9 +114,9 @@ model Profile {
   canManageGlobalSettings        Boolean  @default(false)
   canManageMembers               Boolean  @default(false)
   canManageMemberBillingAdmin    Boolean  @default(false)
-  canManageOrganizationBilling   Boolean  @default(false)
+  canManageTenantBilling         Boolean  @default(false)
   canManageWorkspacesDocuments   Boolean  @default(false)
-  canReadOrganizationResources   Boolean  @default(false)
+  canReadTenantResources         Boolean  @default(false)
   canUseAiGrammarByPlan          Boolean  @default(false)
   canManageBillingSettings       Boolean  @default(false)
   canViewInvoicesSubscription    Boolean  @default(false)
@@ -148,10 +138,10 @@ model Template {
   @@map("templates")
 }
 
-model OrganizationInvite {
+model tenantsInvite {
   id              String   @id
   token           String   @unique
-  organizationId  String
+  tenantId        String
   email           String
   billingAdmin    Boolean  @default(false)
   status          String
@@ -161,7 +151,7 @@ model OrganizationInvite {
   expiresAt       DateTime
   acceptedAt      DateTime?
 
-  @@map("organization_invites")
+  @@map("tenant_invites")
 }
 
 model AuthSession {
@@ -182,7 +172,7 @@ model AuthSession {
 
 model Invoice {
   id             String   @id
-  organizationId String
+  tenantId       String
   provider       String
   invoiceNumber  String?
   amountCents    Int
@@ -214,15 +204,15 @@ model UserBilling {
   @@map("user_billing")
 }
 
-model OrganizationUsage {
-  organizationId  String
+model TenantsUsage {
+  tenantId        String
   monthKey        String
   aiRequests      Int      @default(0)
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
 
-  @@id([organizationId, monthKey])
-  @@map("organization_usage")
+  @@id([tenantId, monthKey])
+  @@map("tenant_usage")
 }
 
 model UserUsage {
@@ -286,7 +276,7 @@ model AppConfig {
 model AuditLog {
   id             String   @id
   userId         String?
-  organizationId String?
+  tenantId        String
   action         String
   status         String
   ipAddress      String?
@@ -295,14 +285,14 @@ model AuditLog {
   createdAt      DateTime @default(now())
 
   @@index([userId])
-  @@index([organizationId])
+  @@index([tenantId])
   @@map("audit_logs")
 }
 
 model Document {
   id             String   @id
   userId         String
-  organizationId String?
+  tenantId       String
   workspaceId    String?
   title          String
   content        String
@@ -310,7 +300,7 @@ model Document {
   updatedAt      DateTime @updatedAt
 
   @@index([userId])
-  @@index([organizationId])
+  @@index([tenantId])
   @@map("documents")
 }
 
@@ -342,7 +332,7 @@ model Version {
 model Todo {
   id             String   @id
   workspaceId    String?
-  organizationId String?
+  tenantId       String
   userId         String
   title          String
   completed      Boolean  @default(false)
@@ -351,7 +341,7 @@ model Todo {
   updatedAt      DateTime @updatedAt
 
   @@index([workspaceId])
-  @@index([organizationId])
+  @@index([tenantId])
   @@map("todos")
 }
 
@@ -359,12 +349,12 @@ model Workspace {
   id             String   @id
   name           String
   ownerId        String
-  organizationId String?
+  tenantId        String
   memberIds      Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@index([ownerId])
-  @@index([organizationId])
+  @@index([tenantId])
   @@map("workspaces")
 }

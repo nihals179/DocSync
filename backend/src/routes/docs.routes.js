@@ -6,10 +6,10 @@ const {
   canCreateDocuments,
   canUpdateDocuments,
   consumeDocumentUpdates,
-  getOrganizationEntitlements,
+  gettenantEntitlements,
 } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
 const { bytes } = require('../middleware/docs');
 const { writeAuditLog } = require('../lib/audit');
@@ -22,7 +22,7 @@ function formatDoc(doc) {
     title: doc.title,
     content: doc.content,
     userId: doc.userId,
-    organizationId: doc.organizationId,
+    tenantId: doc.tenantId,
     createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
     updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
     parentId: null,
@@ -32,8 +32,8 @@ function formatDoc(doc) {
   };
 }
 
-async function getDocForOrgDb(docId, organizationId) {
-  return prisma.document.findFirst({ where: { id: docId, organizationId } });
+async function getDocForTenantDb(docId, tenantId) {
+  return prisma.document.findFirst({ where: { id: docId, tenantId } });
 }
 
 function hasWorkspaceAccess(workspace, userId) {
@@ -43,7 +43,7 @@ function hasWorkspaceAccess(workspace, userId) {
   return false;
 }
 
-async function resolveWorkspaceForOrganization(workspaceId, organizationId, userId) {
+async function resolveWorkspaceForTenant(workspaceId, tenantId, userId) {
   if (workspaceId === undefined) {
     return { ok: true, workspaceId: undefined };
   }
@@ -58,25 +58,37 @@ async function resolveWorkspaceForOrganization(workspaceId, organizationId, user
 
   const workspace = await prisma.workspace.findUnique({
     where: { id: normalizedWorkspaceId },
-    select: { id: true, organizationId: true, ownerId: true, memberIds: true },
+    select: { id: true, tenantId: true, ownerId: true, memberIds: true },
   });
 
   const inAllowedScope = workspace
-    && (workspace.organizationId === organizationId || workspace.organizationId === userId);
+    && (workspace.tenantId === tenantId || workspace.tenantId === userId);
 
   if (!workspace || !inAllowedScope || !hasWorkspaceAccess(workspace, userId)) {
-    return { ok: false, error: 'Workspace not found for organization.' };
+    return { ok: false, error: 'Workspace not found for tenant.' };
   }
 
   return { ok: true, workspaceId: workspace.id };
 }
 
-async function calculateOrganizationStorageBytesDb(organizationId) {
-  const docs = await prisma.document.findMany({
-    where: { organizationId },
-    select: { content: true },
-  });
-  return docs.reduce((total, doc) => total + bytes(doc.content), 0);
+async function calculateTenantStorageBytesDb(tenantId) {
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0)::bigint AS total
+      FROM documents
+      WHERE "tenantId" = ${tenantId}
+    `;
+    const total = Array.isArray(rows) && rows[0] ? rows[0].total : 0;
+    if (typeof total === 'bigint') return Number(total);
+    return Number(total || 0);
+  } catch {
+    // Fallback for environments where SQL aggregation support varies.
+    const docs = await prisma.document.findMany({
+      where: { tenantId },
+      select: { content: true },
+    });
+    return docs.reduce((total, doc) => total + bytes(doc.content), 0);
+  }
 }
 
 /**
@@ -84,18 +96,18 @@ async function calculateOrganizationStorageBytesDb(organizationId) {
  * Create a new document.
  * Body: { title?, content? }
  */
-router.post('/', requireAuth, resolveOrganizationContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
+router.post('/', requireAuth, resolveTenantContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
   const { title = 'Untitled', content = '' } = req.body;
-  const workspaceResolution = await resolveWorkspaceForOrganization(
+  const workspaceResolution = await resolveWorkspaceForTenant(
     req.body.workspaceId ?? null,
-    req.organization.id,
+    req.tenant.id,
     req.user.id,
   );
   if (!workspaceResolution.ok) {
     return res.status(400).json({ error: workspaceResolution.error });
   }
 
-  const createCheck = await canCreateDocuments(req.organization.id, 1);
+  const createCheck = await canCreateDocuments(req.tenant.id, 1);
   if (!createCheck.allowed) {
     return res.status(402).json({
       error: createCheck.reason,
@@ -103,10 +115,10 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
     });
   }
 
-  const entitlements = await getOrganizationEntitlements(req.organization.id);
-  if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
+  const entitlements = await gettenantEntitlements(req.tenant.id);
+  if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
 
-  const currentStorage = await calculateOrganizationStorageBytesDb(req.organization.id);
+  const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
   const incomingBytes = bytes(content);
   const limitBytes = entitlements.limits.storageBytes;
   if (currentStorage + incomingBytes > limitBytes) {
@@ -123,7 +135,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
       title,
       content,
       userId: req.user.id,
-      organizationId: req.organization.id,
+      tenantId: req.tenant.id,
       workspaceId: workspaceResolution.workspaceId,
     },
   });
@@ -131,7 +143,7 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
 
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     action: 'document.create',
     metadata: { docId: doc.id, title: doc.title },
   });
@@ -142,16 +154,16 @@ router.post('/', requireAuth, resolveOrganizationContext, requirePermission('doc
  * GET /api/docs
  * List all documents belonging to the current user.
  */
-router.get('/', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (req, res) => {
+router.get('/', requireAuth, resolveTenantContext, requirePermission('document.read'), async (req, res) => {
   const rows = await prisma.document.findMany({
-    where: { organizationId: req.organization.id },
+    where: { tenantId: req.tenant.id },
     orderBy: { updatedAt: 'desc' },
   });
   const docs = rows.map((doc) => ({
     id: doc.id,
     title: doc.title,
     userId: doc.userId,
-    organizationId: doc.organizationId,
+    tenantId: doc.tenantId,
     createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
     updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
     parentId: null,
@@ -161,7 +173,7 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
   }));
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     action: 'document.list',
     metadata: { count: docs.length },
   });
@@ -172,13 +184,13 @@ router.get('/', requireAuth, resolveOrganizationContext, requirePermission('docu
  * GET /api/docs/:id
  * Fetch a single document.
  */
-router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.read'), async (req, res) => {
-  const row = await getDocForOrgDb(req.params.id, req.organization.id);
+router.get('/:id', requireAuth, resolveTenantContext, requirePermission('document.read'), async (req, res) => {
+  const row = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!row) return res.status(404).json({ error: 'Document not found.' });
   const doc = formatDoc(row);
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     action: 'document.read',
     metadata: { docId: doc.id },
   });
@@ -190,20 +202,20 @@ router.get('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
  * Update title and/or content.
  * Body: { title?, content? }
  */
-router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.update'), attachEntitlements, async (req, res) => {
-  const existing = await getDocForOrgDb(req.params.id, req.organization.id);
+router.put('/:id', requireAuth, resolveTenantContext, requirePermission('document.update'), attachEntitlements, async (req, res) => {
+  const existing = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!existing) return res.status(404).json({ error: 'Document not found.' });
 
-  const workspaceResolution = await resolveWorkspaceForOrganization(
+  const workspaceResolution = await resi(
     req.body.workspaceId,
-    req.organization.id,
+    req.tenant.id,
     req.user.id,
   );
   if (!workspaceResolution.ok) {
     return res.status(400).json({ error: workspaceResolution.error });
   }
 
-  const updateCheck = await canUpdateDocuments(req.organization.id, 1);
+  const updateCheck = await canUpdateDocuments(req.tenant.id, 1);
   if (!updateCheck.allowed) {
     return res.status(402).json({
       error: updateCheck.reason,
@@ -212,10 +224,10 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
   }
 
   if (req.body.content !== undefined) {
-    const entitlements = await getOrganizationEntitlements(req.organization.id);
-    if (!entitlements) return res.status(404).json({ error: 'Organization entitlements unavailable.' });
+    const entitlements = await gettenantEntitlements(req.tenant.id);
+    if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
 
-    const currentStorage = await calculateOrganizationStorageBytesDb(req.organization.id);
+    const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
     const nextBytes = bytes(req.body.content);
     const previousBytes = bytes(existing.content);
     const projectedStorage = currentStorage - previousBytes + nextBytes;
@@ -235,11 +247,11 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
       ...(workspaceResolution.workspaceId !== undefined ? { workspaceId: workspaceResolution.workspaceId } : {}),
     },
   });
-  await consumeDocumentUpdates(req.organization.id, 1);
+  await consumeDocumentUpdates(req.tenant.id, 1);
   const doc = formatDoc(updated);
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     action: 'document.update',
     metadata: { docId: doc.id },
   });
@@ -250,14 +262,14 @@ router.put('/:id', requireAuth, resolveOrganizationContext, requirePermission('d
  * DELETE /api/docs/:id
  * Delete a document.
  */
-router.delete('/:id', requireAuth, resolveOrganizationContext, requirePermission('document.delete'), attachEntitlements, async (req, res) => {
-  const row = await getDocForOrgDb(req.params.id, req.organization.id);
+router.delete('/:id', requireAuth, resolveTenantContext, requirePermission('document.delete'), attachEntitlements, async (req, res) => {
+  const row = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!row) return res.status(404).json({ error: 'Document not found.' });
 
   await prisma.document.delete({ where: { id: row.id } });
   writeAuditLog({
     userId: req.user.id,
-    organizationId: req.organization.id,
+    tenantId: req.tenant.id,
     action: 'document.delete',
     metadata: { docId: row.id },
   });
