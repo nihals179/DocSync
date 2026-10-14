@@ -15,7 +15,7 @@ const aiRoutes = require('./routes/ai.routes');
 const grammarRoutes = require('./routes/grammar.routes');
 const workspacesRoutes = require('./routes/workspaces.routes');
 const templatesRoutes = require('./routes/templates.routes');
-const organizationsRoutes = require('./routes/organizations.routes');
+const tenantsRoutes = require('./routes/tenants.routes');
 const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
 const billingRoutes = require('./routes/billing.routes');
 const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
@@ -77,11 +77,11 @@ app.use('/api/workspaces', workspacesRoutes);
 // Templates
 app.use('/api/templates', templatesRoutes);
 
-// Organizations
-app.use('/api/organizations', organizationsRoutes);
+// Tenants
+app.use('/api/tenants', tenantsRoutes);
 
 // Enterprise security and audit console
-app.use('/api/organizations', enterpriseSecurityRoutes);
+app.use('/api/tenants', enterpriseSecurityRoutes);
 
 // Billing portal and plan management
 app.use('/api/billing', billingRoutes);

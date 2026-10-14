@@ -1,6 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth/core');
-const { requirePermission, resolveOrganizationContext } = require('../middleware/rbac');
+const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
 const { requireGrammarAccess } = require('../middleware/grammar/entitlements');
 
@@ -13,7 +13,7 @@ const router = express.Router();
  * Returns an array of grammar/spelling/style issues.
  * Plug in LanguageTool, Grammarly API, or an LLM prompt here.
  */
-router.post('/check', requireAuth, resolveOrganizationContext, requirePermission('grammar.use'), attachEntitlements, requireGrammarAccess, (req, res) => {
+router.post('/check', requireAuth, resolveTenantContext, requirePermission('grammar.use'), attachEntitlements, requireGrammarAccess, (req, res) => {
   const { text } = req.body;
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'text is required.' });

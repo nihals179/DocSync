@@ -4,7 +4,7 @@ const { prisma } = require('./client');
 
 const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
   ? path.resolve(process.env.AUDIT_LOG_FILE_PATH)
-  : path.resolve(process.cwd(), 'audit-logs.ndjson');
+  : path.resolve(process.cwd(), 'audit-logs.json');
 const BATCH_SIZE = 500;
 
 function normalizeLine(rawLine) {
@@ -32,7 +32,7 @@ function normalizeLine(rawLine) {
   return {
     id: String(parsed.id),
     userId: parsed.userId ? String(parsed.userId) : null,
-    organizationId: parsed.organizationId ? String(parsed.organizationId) : null,
+    tenantId: parsed.tenantId ? String(parsed.tenantId) : null,
     action: String(parsed.action),
     status: String(parsed.status || 'success'),
     ipAddress: parsed.ipAddress ? String(parsed.ipAddress) : null,

@@ -1,7 +1,7 @@
 const { prisma } = require('../../db/client');
 
 const MEMBER_PERMISSIONS = new Set([
-  'organization.read',
+  'tenant.read',
   'workspace.read',
   'workspace.create',
   'workspace.update',

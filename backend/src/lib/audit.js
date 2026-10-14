@@ -7,7 +7,7 @@ const { auditLogs, nowIso } = require('../store');
 
 const AUDIT_LOG_FILE_PATH = process.env.AUDIT_LOG_FILE_PATH
 	? path.resolve(process.env.AUDIT_LOG_FILE_PATH)
-	: path.resolve(process.cwd(), 'audit-logs.ndjson');
+	: path.resolve(process.cwd(), 'audit-logs.json');
 
 let auditFileReady = false;
 const THIS_FILE = path.resolve(__filename);
@@ -21,7 +21,7 @@ function normalizeAuditEntry(entry) {
 	return {
 		id: entry.id,
 		userId: entry.userId || null,
-		organizationId: entry.organizationId || null,
+		tenantId: entry.tenantId || null,
 		action: entry.action,
 		status: entry.status,
 		ipAddress: entry.ipAddress || null,
@@ -87,7 +87,7 @@ function appendAuditLogToFile(entry) {
 
 function writeAuditLog({
 	userId,
-	organizationId = null,
+	tenantId = null,
 	action,
 	status = 'success',
 	ipAddress = null,
@@ -105,7 +105,7 @@ function writeAuditLog({
 	const entry = {
 		id: uuidv4(),
 		userId,
-		organizationId,
+		tenantId,
 		action,
 		status,
 		ipAddress,
@@ -120,7 +120,7 @@ function writeAuditLog({
 			data: {
 				id: entry.id,
 				userId: entry.userId,
-				organizationId: entry.organizationId,
+				tenantId: entry.tenantId,
 				action: entry.action,
 				status: entry.status,
 				ipAddress: entry.ipAddress,
@@ -140,13 +140,13 @@ function writeAuditLog({
 	return entry;
 }
 
-async function listAuditLogs({ organizationId, userId, action, status, limit = 100 }) {
+async function listAuditLogs({ tenantId, userId, action, status, limit = 100 }) {
 	const cappedLimit = Math.min(1000, Math.max(1, Number(limit) || 100));
 
 	if (isDatabaseConfigured()) {
 		const rows = await prisma.auditLog.findMany({
 			where: {
-				...(organizationId ? { organizationId } : {}),
+				...(tenantId ? { tenantId } : {}),
 				...(userId ? { userId } : {}),
 				...(action ? { action } : {}),
 				...(status ? { status } : {}),
@@ -162,7 +162,7 @@ async function listAuditLogs({ organizationId, userId, action, status, limit = 1
 	}
 
 	const rows = [...auditLogs.values()].filter((entry) => {
-		if (organizationId && entry.organizationId !== organizationId) return false;
+		if (tenantId && entry.tenantId !== tenantId) return false;
 		if (userId && entry.userId !== userId) return false;
 		if (action && entry.action !== action) return false;
 		if (status && entry.status !== status) return false;
@@ -174,7 +174,7 @@ async function listAuditLogs({ organizationId, userId, action, status, limit = 1
 }
 
 function toAuditCsv(entries) {
-	const headers = ['id', 'createdAt', 'organizationId', 'userId', 'action', 'status', 'metadata'];
+	const headers = ['id', 'createdAt', 'tenantId', 'userId', 'action', 'status', 'metadata'];
 	const escape = (value) => {
 		const str = String(value ?? '');
 		if (/[,"\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
@@ -192,7 +192,7 @@ function toAuditCsv(entries) {
 		const row = [
 			entry.id,
 			entry.createdAt,
-			entry.organizationId || '',
+			entry.tenantId || '',
 			entry.userId,
 			entry.action,
 			entry.status,

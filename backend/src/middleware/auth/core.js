@@ -211,7 +211,7 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Session invalid or expired.' });
     }
     if (!await isIpAllowed(req, resolved.user)) {
-      return res.status(403).json({ error: 'Your organization only allows access from approved IP addresses.' });
+      return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
     }
 
     req.user = {

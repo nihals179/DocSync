@@ -1,7 +1,7 @@
 function isWorkspaceVisibleToUser(workspace, userId) {
   const memberIds = Array.isArray(workspace.memberIds) ? workspace.memberIds : null;
 
-  if (workspace.organizationId === workspace.ownerId) {
+  if (workspace.tenantId === workspace.ownerId) {
     return workspace.ownerId === userId;
   }
 
@@ -16,8 +16,8 @@ function isWorkspaceVisibleToUser(workspace, userId) {
 
 function sortWorkspacesForUser(items, userId) {
   return [...items].sort((a, b) => {
-    const aIsPersonal = a.ownerId === userId && a.organizationId === userId;
-    const bIsPersonal = b.ownerId === userId && b.organizationId === userId;
+    const aIsPersonal = a.ownerId === userId && a.tenantId === userId;
+    const bIsPersonal = b.ownerId === userId && b.tenantId === userId;
 
     if (aIsPersonal !== bIsPersonal) {
       return aIsPersonal ? -1 : 1;

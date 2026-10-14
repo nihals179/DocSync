@@ -1,7 +1,7 @@
 const { canUseGrammar } = require('../../store');
 
 function ensureOrganizationContext(req, res) {
-  if (!req.organization?.id) {
+  if (!req.tenant?.id) {
     res.status(500).json({ error: 'Organization context missing.' });
     return false;
   }
@@ -11,7 +11,7 @@ function ensureOrganizationContext(req, res) {
 async function requireGrammarAccess(req, res, next) {
   if (!ensureOrganizationContext(req, res)) return;
 
-  const check = await canUseGrammar(req.organization.id);
+  const check = await canUseGrammar(req.tenant.id);
   if (!check.allowed) {
     return res.status(402).json({
       error: check.reason,

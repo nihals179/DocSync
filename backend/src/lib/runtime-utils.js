@@ -29,7 +29,14 @@ function normalizeSession(session) {
 
 function getRequestIp(req) {
   if (!req) return 'unknown';
-  return req.headers?.['x-forwarded-for']?.toString().split(',')[0].trim() || req.ip || 'unknown';
+
+  const trustProxy = ['1', 'true', 'yes'].includes(String(process.env.TRUST_PROXY || '').toLowerCase());
+  if (trustProxy) {
+    const forwarded = req.headers?.['x-forwarded-for']?.toString().split(',')[0]?.trim();
+    if (forwarded) return forwarded;
+  }
+
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 module.exports = {

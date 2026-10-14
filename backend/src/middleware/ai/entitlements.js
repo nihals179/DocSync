@@ -1,17 +1,17 @@
 const { canConsumeAiRequests, consumeAiRequests } = require('../../store');
 
-function ensureOrganizationContext(req, res) {
-  if (!req.organization?.id) {
-    res.status(500).json({ error: 'Organization context missing.' });
+function ensureTenantContext(req, res) {
+  if (!req.tenant?.id) {
+    res.status(500).json({ error: 'Tenant context missing.' });
     return false;
   }
   return true;
 }
 
 async function requireAiQuota(req, res, next) {
-  if (!ensureOrganizationContext(req, res)) return;
+  if (!ensureTenantContext(req, res)) return;
 
-  const check = await canConsumeAiRequests(req.organization.id, 1);
+  const check = await canConsumeAiRequests(req.tenant.id, 1);
   if (!check.allowed) {
     return res.status(402).json({
       error: check.reason,
@@ -27,9 +27,9 @@ async function requireAiQuota(req, res, next) {
 }
 
 async function consumeAiQuota(req, res, next) {
-  if (!ensureOrganizationContext(req, res)) return;
+  if (!ensureTenantContext(req, res)) return;
 
-  const result = await consumeAiRequests(req.organization.id, 1);
+  const result = await consumeAiRequests(req.tenant.id, 1);
   if (!result.allowed) {
     return res.status(402).json({
       error: result.reason,

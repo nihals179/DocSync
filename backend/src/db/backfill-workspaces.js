@@ -6,29 +6,29 @@ function workspaceNameForUser(user) {
   return base ? `${base}'s Workspace` : 'Personal Workspace';
 }
 
-function organizationNameForUser(user) {
+function tenantNameForUser(user) {
   const base = String(user?.name || '').trim();
-  return base ? `${base}'s Organization` : 'Personal Organization';
+  return base ? `${base}'s Tenant` : 'Personal Tenant';
 }
 
-async function ensureDefaultOrganizationForUser(user) {
+async function ensureDefaultTenantForUser(user) {
   const now = new Date();
-  const organizationId = uuidv4();
+  const tenantId = uuidv4();
 
-  await prisma.organization.create({
+  await prisma.tenant.create({
     data: {
-      id: organizationId,
-      name: organizationNameForUser(user),
+      id: tenantId,
+      name: tenantNameForUser(user),
       ownerUserId: user.id,
       createdAt: now,
       updatedAt: now,
     },
   });
 
-  await prisma.organizationMembership.create({
+  await prisma.tenantMembership.create({
     data: {
       id: uuidv4(),
-      organizationId,
+      tenantId,
       userId: user.id,
       email: String(user.email || '').toLowerCase(),
       billingAdmin: true,
@@ -40,39 +40,39 @@ async function ensureDefaultOrganizationForUser(user) {
 
   await prisma.user.update({
     where: { id: user.id },
-    data: { currentOrganizationId: organizationId },
+    data: { currentTenantId: tenantId },
   });
 
-  return organizationId;
+  return tenantId;
 }
 
-async function collectTargetOrganizationsForUser(user) {
-  const memberships = await prisma.organizationMembership.findMany({
+async function collectTargetTenantsForUser(user) {
+  const memberships = await prisma.tenantMembership.findMany({
     where: {
       userId: user.id,
       status: 'active',
     },
     select: {
-      organizationId: true,
+      tenantId: true,
     },
   });
 
-  const organizationIds = new Set(memberships.map((membership) => membership.organizationId));
+  const tenantIds = new Set(memberships.map((membership) => membership.tenantId));
 
-  if (user.currentOrganizationId) {
-    const currentOrg = await prisma.organization.findUnique({
-      where: { id: user.currentOrganizationId },
+  if (user.currentTenantId) {
+    const currentOrg = await prisma.tenant.findUnique({
+      where: { id: user.currentTenantId },
       select: { id: true },
     });
-    if (currentOrg) organizationIds.add(currentOrg.id);
+    if (currentOrg) tenantIds.add(currentOrg.id);
   }
 
-  if (organizationIds.size === 0) {
-    const fallbackOrgId = await ensureDefaultOrganizationForUser(user);
-    organizationIds.add(fallbackOrgId);
+  if (tenantIds.size === 0) {
+    const fallbackOrgId = await ensureDefaultTenantForUser(user);
+    tenantIds.add(fallbackOrgId);
   }
 
-  return [...organizationIds];
+  return [...tenantIds];
 }
 
 async function ensurePersonalWorkspaceForUser(user) {
@@ -81,7 +81,7 @@ async function ensurePersonalWorkspaceForUser(user) {
   const existing = await prisma.workspace.findFirst({
     where: {
       ownerId: user.id,
-      organizationId: personalScopeId,
+      tenantId: personalScopeId,
     },
     select: { id: true },
   });
@@ -94,7 +94,7 @@ async function ensurePersonalWorkspaceForUser(user) {
       id: uuidv4(),
       name: workspaceNameForUser(user),
       ownerId: user.id,
-      organizationId: personalScopeId,
+      tenantId: personalScopeId,
       memberIds: [user.id],
       createdAt: now,
     },
@@ -111,7 +111,7 @@ async function migrateLegacyPersonalWorkspacesForUser(user) {
         equals: [user.id],
       },
       NOT: {
-        organizationId: user.id,
+        tenantId: user.id,
       },
     },
     orderBy: {
@@ -119,7 +119,7 @@ async function migrateLegacyPersonalWorkspacesForUser(user) {
     },
     select: {
       id: true,
-      organizationId: true,
+      tenantId: true,
     },
   });
 
@@ -129,7 +129,7 @@ async function migrateLegacyPersonalWorkspacesForUser(user) {
   const keeper = personalRows[0];
   await prisma.workspace.update({
     where: { id: keeper.id },
-    data: { organizationId: user.id },
+    data: { tenantId: user.id },
   });
   migrated += 1;
 
@@ -150,25 +150,25 @@ async function backfillWorkspacesForExistingUsers() {
     select: {
       id: true,
       name: true,
-      currentOrganizationId: true,
+      currentTenantId: true,
     },
   });
 
-  let createdOrganizations = 0;
+  let createdTenants = 0;
   let createdWorkspaces = 0;
   let migratedPersonalRows = 0;
 
   for (const user of users) {
-    const beforeMembershipCount = await prisma.organizationMembership.count({
+    const beforeMembershipCount = await prisma.tenantMembership.count({
       where: {
         userId: user.id,
         status: 'active',
       },
     });
 
-    await collectTargetOrganizationsForUser(user);
+    await collectTargetTenantsForUser(user);
     if (beforeMembershipCount === 0) {
-      createdOrganizations += 1;
+      createdTenants += 1;
     }
 
     migratedPersonalRows += await migrateLegacyPersonalWorkspacesForUser(user);
@@ -178,7 +178,7 @@ async function backfillWorkspacesForExistingUsers() {
   }
 
   console.log(
-    `Workspace backfill completed. users=${users.length} organizationsCreated=${createdOrganizations} personalRowsMigrated=${migratedPersonalRows} workspacesCreated=${createdWorkspaces}`,
+    `Workspace backfill completed. users=${users.length} tenantsCreated=${createdTenants} personalRowsMigrated=${migratedPersonalRows} workspacesCreated=${createdWorkspaces}`,
   );
 }
 

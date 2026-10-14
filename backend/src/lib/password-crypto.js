@@ -3,17 +3,44 @@ const crypto = require('crypto');
 const ENCRYPTION_ALGORITHM = 'RSA-OAEP';
 const ENCRYPTION_HASH = 'sha256';
 
-const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-  modulusLength: 2048,
-  publicKeyEncoding: {
-    type: 'spki',
-    format: 'pem',
-  },
-  privateKeyEncoding: {
-    type: 'pkcs8',
-    format: 'pem',
-  },
-});
+function normalizePemFromEnv(value) {
+  return String(value || '').replace(/\\n/g, '\n').trim();
+}
+
+function resolveEncryptionKeyPair() {
+  const privateKeyFromEnv = normalizePemFromEnv(process.env.PASSWORD_ENCRYPTION_PRIVATE_KEY);
+  const publicKeyFromEnv = normalizePemFromEnv(process.env.PASSWORD_ENCRYPTION_PUBLIC_KEY);
+
+  if (privateKeyFromEnv) {
+    const derivedPublicKey = crypto.createPublicKey(privateKeyFromEnv).export({
+      type: 'spki',
+      format: 'pem',
+    });
+    return {
+      privateKey: privateKeyFromEnv,
+      publicKey: publicKeyFromEnv || derivedPublicKey,
+    };
+  }
+
+  if (publicKeyFromEnv) {
+    throw new Error('PASSWORD_ENCRYPTION_PRIVATE_KEY is required when PASSWORD_ENCRYPTION_PUBLIC_KEY is configured.');
+  }
+
+  // Development fallback for local runs when key material is not provided.
+  return crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: {
+      type: 'spki',
+      format: 'pem',
+    },
+    privateKeyEncoding: {
+      type: 'pkcs8',
+      format: 'pem',
+    },
+  });
+}
+
+const { publicKey, privateKey } = resolveEncryptionKeyPair();
 
 function getPasswordEncryptionPublicKey() {
   return {
