@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { authApi, type AuthSuccess } from '../../lib/api';
+import { authApi, type AuthSuccess } from '../services/api';
 
 type AuthTab = 'login' | 'signup';
 
@@ -229,6 +229,16 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
     setTwoFactorCode('');
   }
 
+  function openForgotPassword() {
+    setTab('login');
+    setPendingTwoFactorToken('');
+    setTwoFactorCode('');
+    setLoginErrors({});
+    setForgotPasswordEmail(loginEmail || signupEmail);
+    setForgotPasswordOpen(true);
+    resetMessages();
+  }
+
   const passwordScore =
     (signupPassword.length >= 8 ? 1 : 0) +
     (/[A-Z]/.test(signupPassword) ? 1 : 0) +
@@ -327,7 +337,7 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
                   />
                   Remember me
                 </label>
-                <button type="button" onClick={() => setForgotPasswordOpen(true)} className="text-sm font-semibold text-cyan-700 hover:underline">
+                <button type="button" onClick={openForgotPassword} className="text-sm font-semibold text-cyan-700 hover:underline">
                   Forgot password?
                 </button>
               </div>
@@ -373,6 +383,9 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
               </button>
               <button type="button" onClick={() => setPendingTwoFactorToken('')} className="text-sm font-semibold text-slate-500">
                 Back to password sign in
+              </button>
+              <button type="button" onClick={openForgotPassword} className="text-sm font-semibold text-cyan-700 hover:underline">
+                Forgot password?
               </button>
             </form>
           )}
@@ -496,12 +509,19 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
                   Sign in
                 </button>
               </p>
+              <p className="text-center text-sm text-slate-500">
+                Forgot your password?{' '}
+                <button type="button" onClick={openForgotPassword} className="font-semibold text-cyan-700 hover:underline">
+                  Reset it
+                </button>
+              </p>
             </form>
           )}
         </div>
 
         <p className="mt-6 text-center text-xs text-slate-400">
-          Need help verifying or resetting? <Link to="/verify-email" className="font-semibold text-cyan-700">Open verification tools</Link>
+          Need help verifying or resetting? <Link to="/verify-email" className="font-semibold text-cyan-700">Open verification tools</Link>{' '}
+          <button type="button" onClick={openForgotPassword} className="font-semibold text-cyan-700 hover:underline">Forgot password</button>
         </p>
       </div>
     </div>

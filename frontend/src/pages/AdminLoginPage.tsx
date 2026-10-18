@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { authApi, organizationsApi, type AuthSuccess } from '../../lib/api';
+import { authApi, tenantsApi, type AuthSuccess } from '../services/api';
 
 interface AdminLoginPageProps {
   onAuthSuccess: (session: AuthSuccess) => void;
@@ -30,7 +30,7 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
       let hasAdminAccess = session.user.role === 'admin' || session.user.role === 'owner';
       if (!hasAdminAccess) {
         try {
-          const context = await organizationsApi.current(session.accessToken);
+          const context = await tenantsApi.current(session.accessToken);
           hasAdminAccess = context.membership.status === 'active';
         } catch {
           hasAdminAccess = false;
@@ -61,7 +61,7 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
             </div>
             <div>
               <p className="text-lg font-black tracking-tight text-cyan-700">DocSync Admin</p>
-              <p className="text-xs text-slate-500">Restricted organization portal</p>
+              <p className="text-xs text-slate-500">Restricted tenant portal</p>
             </div>
           </div>
         </div>
@@ -70,7 +70,7 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
       <main className="grid min-h-[calc(100vh-73px)] w-full gap-8 px-4 py-8 sm:px-6 lg:grid-cols-12 lg:px-8">
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-7 lg:p-8">
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-700">Admin Access</p>
-          <h1 className="mt-3 text-3xl font-black tracking-tight text-slate-900">Manage Your Organization From One Console</h1>
+          <h1 className="mt-3 text-3xl font-black tracking-tight text-slate-900">Manage Your Tenant From One Console</h1>
           <p className="mt-3 max-w-2xl text-sm text-slate-600">
             Use the admin portal to manage membership, roles, billing authority, and invitation workflows. This page is isolated from the workspace UI and all actions are audited.
           </p>

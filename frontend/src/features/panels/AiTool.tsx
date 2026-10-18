@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { aiApi } from '../../../lib/api';
+import { aiApi } from '../../services/api';
 
 type Message = { role: 'user' | 'ai'; text: string };
 

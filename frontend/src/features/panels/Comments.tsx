@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { commentsApi } from '../../../lib/api';
+import { commentsApi } from '../../services/api';
 
-type CommentItem = { id: string; text: string; userName: string; createdAt: string };
+type CommentItem = { id: string; text: string; userId: string; userName?: string; createdAt: string };
 
 type CommentsProps = {
   docId: string;
@@ -13,35 +13,44 @@ const Comments: React.FC<CommentsProps> = ({ docId, token, onCommentAdded }) => 
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>('');
 
   useEffect(() => {
     if (!docId) return;
+    setError('');
     commentsApi.list(token, docId)
       .then(({ comments: list }) => setComments(list))
-      .catch(() => {});
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Failed to load comments.';
+        setError(message);
+      });
   }, [token, docId]);
 
   const handleAdd = async () => {
     if (!text.trim() || !docId) return;
     setLoading(true);
+    setError('');
     try {
       const { comment } = await commentsApi.add(token, docId, text.trim());
       setComments((prev) => [...prev, comment]);
       setText('');
       onCommentAdded?.();
-    } catch {
-      // silent
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to add comment.';
+      setError(message);
     } finally {
       setLoading(false);
     }
   };
 
   const handleDelete = async (id: string) => {
+    setError('');
     try {
       await commentsApi.delete(token, docId, id);
       setComments((prev) => prev.filter((c) => c.id !== id));
-    } catch {
-      // silent
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to delete comment.';
+      setError(message);
     }
   };
 
@@ -72,6 +81,9 @@ const Comments: React.FC<CommentsProps> = ({ docId, token, onCommentAdded }) => 
         </div>
 
         <div>
+          {error ? (
+            <p className="mb-2 text-xs text-rose-600">{error}</p>
+          ) : null}
           {comments.length === 0 ? (
             <p className="text-sm text-slate-500">No comments yet.</p>
           ) : (
@@ -82,7 +94,7 @@ const Comments: React.FC<CommentsProps> = ({ docId, token, onCommentAdded }) => 
                     <div className="min-w-0">
                       <p className="wrap-break-word">{c.text}</p>
                       <p className="mt-1 text-[11px] text-slate-400">
-                        {c.userName} · {new Date(c.createdAt).toLocaleString()}
+                        {(c.userName && c.userName.trim()) || c.userId} · {new Date(c.createdAt).toLocaleString()}
                       </p>
                     </div>
                     <button

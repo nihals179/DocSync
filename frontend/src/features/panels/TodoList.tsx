@@ -1,49 +1,62 @@
 import React, { useEffect, useState } from 'react';
-import { todosApi } from '../../../lib/api';
+import { todosApi } from '../../services/api';
 
 type TodoItem = { id: string; text: string; done: boolean };
 
 const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) => {
   const [items, setItems] = useState<TodoItem[]>([]);
   const [input, setInput] = useState('');
+  const [error, setError] = useState<string>('');
 
   useEffect(() => {
     if (!docId) return;
     todosApi.list(token, docId)
-      .then(({ todos }) => setItems(todos))
-      .catch(() => {});
+      .then(({ todos }) => {
+        setItems(todos);
+        setError('');
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Failed to load todos.';
+        setError(message);
+      });
   }, [token, docId]);
 
   const add = async () => {
     const t = input.trim();
     if (!t || !docId) return;
+    setError('');
     try {
       const { todo } = await todosApi.add(token, docId, t);
       setItems((prev) => [...prev, todo]);
       setInput('');
-    } catch {
-      // silent
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to add todo.';
+      setError(message);
     }
   };
 
   const toggle = async (id: string) => {
     const item = items.find((i) => i.id === id);
     if (!item || !docId) return;
+    setError('');
     try {
       const { todo } = await todosApi.update(token, docId, id, { done: !item.done });
       setItems((prev) => prev.map((i) => (i.id === id ? todo : i)));
-    } catch {
-      // silent
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to update todo.';
+      setError(message);
     }
   };
 
   const remove = async (id: string) => {
     if (!docId) return;
+    setError('');
     try {
       await todosApi.delete(token, docId, id);
       setItems((prev) => prev.filter((i) => i.id !== id));
-    } catch {
-      // silent
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to delete todo.';
+      setError(message);
     }
   };
 
@@ -67,6 +80,9 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
           Add
         </button>
       </div>
+      {error ? (
+        <p className="mb-2 shrink-0 text-xs text-rose-600">{error}</p>
+      ) : null}
       <ul className="flex-1 space-y-1.5 overflow-y-auto">
         {items.length === 0 && (
           <p className="text-xs text-slate-500">No tasks yet. Add one above.</p>

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
-import type { CursorFormat, RichEditorHandle } from '../editor';
-import type { PageSize } from '../editor/pageConfig';
+import type { CursorFormat, RichEditorHandle } from '..';
+import type { PageSize } from '../pageConfig';
 import { ToolbarDivider } from './ToolbarDivider';
 import { PageSizeSelector } from './PageSizeSelector';
 import { HistoryControls } from './HistoryControls';

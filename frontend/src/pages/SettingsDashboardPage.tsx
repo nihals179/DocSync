@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { docsApi, organizationsApi, type BillingSnapshot, type OrganizationAuditLog, type OrganizationMembership, type OrganizationSecurityState, type OrganizationSummary } from '../../lib/api';
+import { docsApi, tenantsApi, type BillingSnapshot, type TenantAuditLog, type tenantMembership, type TenantSecurityState, type TenantSummary } from '../services/api';
 
 type SettingsDashboardPageProps = {
   token: string;
@@ -49,11 +49,11 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [canOpenAdminConsole, setCanOpenAdminConsole] = useState(false);
-  const [organization, setOrganization] = useState<OrganizationSummary | null>(null);
-  const [membership, setMembership] = useState<OrganizationMembership | null>(null);
-  const [security, setSecurity] = useState<OrganizationSecurityState | null>(null);
+  const [tenant, setTenant] = useState<TenantSummary | null>(null);
+  const [membership, setMembership] = useState<tenantMembership | null>(null);
+  const [security, setSecurity] = useState<TenantSecurityState | null>(null);
   const [billingSnapshot, setBillingSnapshot] = useState<BillingSnapshot | null>(null);
-  const [recentAudit, setRecentAudit] = useState<OrganizationAuditLog[]>([]);
+  const [recentAudit, setRecentAudit] = useState<TenantAuditLog[]>([]);
   const [documentsCount, setDocumentsCount] = useState(0);
 
   useEffect(() => {
@@ -76,15 +76,15 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
         setLoading(true);
         setError('');
         const [context, securityState, entitlements, audit, docs] = await Promise.all([
-          organizationsApi.current(token),
-          organizationsApi.getSecurity(token),
-          organizationsApi.entitlements(token),
-          organizationsApi.getOrganizationAuditLogs(token, { limit: 6 }),
+          tenantsApi.current(token),
+          tenantsApi.getSecurity(token),
+          tenantsApi.entitlements(token),
+          tenantsApi.getTenantAuditLogs(token, { limit: 6 }),
           docsApi.list(token),
         ]);
         if (cancelled) return;
         const status = context.membership.status;
-        setOrganization(context.organization);
+        setTenant(context.tenant);
         setMembership(context.membership);
         setSecurity(securityState.security);
         setBillingSnapshot({ ...entitlements.entitlements, invoices: [] });
@@ -138,7 +138,7 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
   const aiAccessDays = billingSnapshot?.limits.aiAccessDays;
 
   const currentPlanId = String(billingSnapshot?.plan?.id || 'free').toLowerCase();
-  const organizationRequired = currentPlanId === 'enterprise' || currentPlanId === 'onprem';
+  const tenantRequired = currentPlanId === 'enterprise' || currentPlanId === 'onprem';
   const membershipTypeLabel = useMemo(() => {
     if (currentPlanId === 'onprem') return 'Onprem';
     if (currentPlanId === 'enterprise') return 'Enterprise';
@@ -180,9 +180,9 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
             <div className="mb-4 bg-cyan-50 px-4 py-3">
               <p className="text-xs font-bold uppercase tracking-wider text-cyan-700">Current Context</p>
               <p className="mt-1 text-sm font-bold text-slate-900">
-                {organizationRequired ? (organization?.name || 'Organization') : `${userName}'s Account`}
+                {tenantRequired ? (tenant?.name || 'Tenant') : `${userName}'s Account`}
               </p>
-              {organizationRequired ? (
+              {tenantRequired ? (
                 <p className="text-xs text-slate-600">Status: {membership?.status || 'unknown'}</p>
               ) : (
                 <p className="text-xs text-slate-600">Personal workspace mode for {billingSnapshot?.plan?.name || 'Starter'}.</p>
@@ -221,9 +221,9 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
                 <article className="bg-white px-6 py-5">
                   <h3 className="text-base font-black text-slate-900">Profile Summary</h3>
                   <p className="mt-2 text-sm text-slate-600">Display Name: {userName}</p>
-                  {organizationRequired ? (
+                  {tenantRequired ? (
                     <>
-                      <p className="mt-1 text-sm text-slate-600">Organization: {organization?.name || 'Unavailable'}</p>
+                      <p className="mt-1 text-sm text-slate-600">Tenant: {tenant?.name || 'Unavailable'}</p>
                       <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
                     </>
                   ) : (
@@ -398,8 +398,8 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
                 </article>
 
                 <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Organization Context</h3>
-                  <p className="mt-2 text-sm text-slate-600">Organization: {organization?.name || 'Unavailable'}</p>
+                  <h3 className="text-base font-black text-slate-900">Tenant Context</h3>
+                  <p className="mt-2 text-sm text-slate-600">Tenant: {tenant?.name || 'Unavailable'}</p>
                   <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
                 </article>
               </section>

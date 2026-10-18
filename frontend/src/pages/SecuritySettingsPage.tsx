@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { authApi, type AuthSessionSummary, type AuthUser } from '../../lib/api';
+import { authApi, type AuthSessionSummary, type AuthUser } from '../services/api';
 
 type AuditLog = {
   id: string;

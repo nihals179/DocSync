@@ -1,5 +1,5 @@
 import React from 'react';
-import { isPageSize, type PageSize } from '../editor/pageConfig';
+import { isPageSize, type PageSize } from '../pageConfig';
 
 type PageSizeSelectorProps = {
   pageSize: PageSize;

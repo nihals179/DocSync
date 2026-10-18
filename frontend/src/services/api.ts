@@ -1,5 +1,7 @@
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:4000';
 
+export const NETWORK_ACTIVITY_EVENT = 'docsync:network-activity';
+
 export type AuthUser = {
   id: string;
   name: string;
@@ -7,10 +9,10 @@ export type AuthUser = {
   emailVerified: boolean;
   twoFactorEnabled: boolean;
   role: string;
-  currentOrganizationId?: string | null;
+  currentTenantId?: string | null;
 };
 
-export type OrganizationSummary = {
+export type TenantSummary = {
   id: string;
   name: string;
   ownerUserId: string;
@@ -18,9 +20,9 @@ export type OrganizationSummary = {
   updatedAt: string;
 };
 
-export type OrganizationMembership = {
+export type tenantMembership = {
   id: string;
-  organizationId: string;
+  tenantId: string;
   userId: string;
   billingAdmin: boolean;
   status: 'active' | 'removed';
@@ -28,7 +30,7 @@ export type OrganizationMembership = {
   updatedAt: string;
 };
 
-export type OrganizationMember = {
+export type TenantMember = {
   id: string;
   userId: string;
   email: string;
@@ -39,7 +41,7 @@ export type OrganizationMember = {
   updatedAt: string;
 };
 
-export type OrganizationInvite = {
+export type TenantInvite = {
   id: string;
   email: string;
   billingAdmin: boolean;
@@ -78,7 +80,7 @@ export type TemplateSummary = {
 
 export type BillingInvoice = {
   id: string;
-  organizationId: string;
+  tenantId: string;
   provider: string;
   status: 'draft' | 'open' | 'paid' | 'failed' | 'void';
   amountCents: number;
@@ -126,6 +128,44 @@ export type BillingSnapshot = {
   invoices: BillingInvoice[];
 };
 
+export type EditorBootstrapResponse = {
+  doc: {
+    id: string;
+    title: string;
+    content: string;
+    userId: string;
+    tenantId: string;
+    createdAt: string;
+    updatedAt: string;
+    parentId?: string | null;
+    workspaceId?: string | null;
+    sortOrder?: number;
+    preview: string;
+  };
+  versions: Array<{ id: string; preview: string; savedAt: string }>;
+  docs: Array<{
+    id: string;
+    title: string;
+    content: string;
+    userId: string;
+    tenantId: string;
+    createdAt: string;
+    updatedAt: string;
+    parentId?: string | null;
+    workspaceId?: string | null;
+    sortOrder?: number;
+    preview: string;
+  }>;
+  workspaces: Array<{
+    id: string;
+    name: string;
+    ownerId: string;
+    memberIds: string[];
+    createdAt: string;
+    updatedAt: string;
+  }>;
+};
+
 export type SsoProvider = {
   id: string;
   type: 'oidc' | 'saml' | 'ldap';
@@ -139,7 +179,7 @@ export type SsoProvider = {
   updatedAt: string;
 };
 
-export type OrganizationSecurityState = {
+export type TenantSecurityState = {
   requireMfa: boolean;
   sessionDurationHours: number;
   ipAllowlistEnabled: boolean;
@@ -170,7 +210,7 @@ export type EnterpriseEnvironmentPayload = {
 
 export type EnterpriseEnvironmentResponse = {
   message: string;
-  organization: {
+  tenant: {
     id: string;
     name: string;
   };
@@ -186,14 +226,14 @@ export type EnterpriseEnvironmentResponse = {
     graceEndsAt: string | null;
     updatedAt: string;
   };
-  security: OrganizationSecurityState;
+  security: TenantSecurityState;
   entitlements: Omit<BillingSnapshot, 'invoices'> | null;
 };
 
-export type OrganizationAuditLog = {
+export type TenantAuditLog = {
   id: string;
   userId: string;
-  organizationId: string | null;
+  tenantId: string | null;
   action: string;
   status: string;
   metadata?: Record<string, unknown>;
@@ -257,6 +297,38 @@ type FetchOptions = RequestInit & {
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
 let unauthorizedHandler: (() => void) | null = null;
 let passwordPublicKeyPromise: Promise<string> | null = null;
+let inFlightApiRequests = 0;
+
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
+
+function buildRequestDedupeKey(path: string, options: FetchOptions) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const token = options.token || '';
+  const authScope = options.authScope || 'workspace';
+  const includeCsrf = options.includeCsrf ? '1' : '0';
+  const body = typeof options.body === 'string' ? options.body : '';
+  return `${method}|${authScope}|csrf:${includeCsrf}|token:${token}|${path}|${body}`;
+}
+
+function emitNetworkActivity() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(NETWORK_ACTIVITY_EVENT, {
+    detail: {
+      activeRequests: inFlightApiRequests,
+      isLoading: inFlightApiRequests > 0,
+    },
+  }));
+}
+
+function beginApiRequest() {
+  inFlightApiRequests += 1;
+  emitNetworkActivity();
+}
+
+function endApiRequest() {
+  inFlightApiRequests = Math.max(0, inFlightApiRequests - 1);
+  emitNetworkActivity();
+}
 
 export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler;
@@ -296,6 +368,18 @@ function getCookie(name: string) {
 }
 
 async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
+  const dedupeKey = buildRequestDedupeKey(path, options);
+  const method = String(options.method || 'GET').toUpperCase();
+  const shouldDedupeGet = method === 'GET';
+
+  if (shouldDedupeGet) {
+    const inFlight = inFlightGetRequests.get(dedupeKey);
+    if (inFlight) {
+      return inFlight as Promise<T>;
+    }
+  }
+
+  const run = async (): Promise<T> => {
   const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
@@ -307,17 +391,37 @@ async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): 
     ...(extraHeaders as Record<string, string>),
   };
 
-  const res = await fetch(`${BASE}${path}`, {
-    ...rest,
-    headers,
-    credentials: 'include',
-  });
-  const data: unknown = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    if (res.status === 401) unauthorizedHandler?.();
-    throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  beginApiRequest();
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      ...rest,
+      headers,
+      credentials: 'include',
+    });
+    const data: unknown = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 401) unauthorizedHandler?.();
+      throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    return data as T;
+  } finally {
+    endApiRequest();
   }
-  return data as T;
+  };
+
+  const requestPromise = run();
+
+  if (shouldDedupeGet) {
+    inFlightGetRequests.set(dedupeKey, requestPromise as Promise<unknown>);
+  }
+
+  try {
+    return await requestPromise;
+  } finally {
+    if (shouldDedupeGet) {
+      inFlightGetRequests.delete(dedupeKey);
+    }
+  }
 }
 
 async function apiFetchText(path: string, options: FetchOptions = {}): Promise<string> {
@@ -331,25 +435,30 @@ async function apiFetchText(path: string, options: FetchOptions = {}): Promise<s
     ...(extraHeaders as Record<string, string>),
   };
 
-  const res = await fetch(`${BASE}${path}`, {
-    ...rest,
-    headers,
-    credentials: 'include',
-  });
+  beginApiRequest();
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      ...rest,
+      headers,
+      credentials: 'include',
+    });
 
-  if (res.status === 401) unauthorizedHandler?.();
+    if (res.status === 401) unauthorizedHandler?.();
 
-  const text = await res.text();
-  if (!res.ok) {
-    try {
-      const parsed = JSON.parse(text) as { error?: string };
-      throw new Error(parsed.error ?? `HTTP ${res.status}`);
-    } catch {
-      throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    if (!res.ok) {
+      try {
+        const parsed = JSON.parse(text) as { error?: string };
+        throw new Error(parsed.error ?? `HTTP ${res.status}`);
+      } catch {
+        throw new Error(`HTTP ${res.status}`);
+      }
     }
-  }
 
-  return text;
+    return text;
+  } finally {
+    endApiRequest();
+  }
 }
 
 function toBase64(bytes: Uint8Array) {
@@ -556,14 +665,19 @@ export const docsApi = {
     ),
 };
 
+export const editorApi = {
+  bootstrap: (token: string, docId: string) =>
+    apiFetch<EditorBootstrapResponse>(`/api/editor/${docId}/bootstrap`, { token }),
+};
+
 export const commentsApi = {
   list: (token: string, docId: string) =>
-    apiFetch<{ comments: Array<{ id: string; text: string; userName: string; createdAt: string }> }>(
+    apiFetch<{ comments: Array<{ id: string; text: string; userId: string; userName?: string; createdAt: string }> }>(
       `/api/docs/${docId}/comments`,
       { token },
     ),
   add: (token: string, docId: string, text: string) =>
-    apiFetch<{ comment: { id: string; text: string; userName: string; createdAt: string } }>(
+    apiFetch<{ comment: { id: string; text: string; userId: string; userName?: string; createdAt: string } }>(
       `/api/docs/${docId}/comments`,
       { method: 'POST', token, body: JSON.stringify({ text }) },
     ),
@@ -656,6 +770,11 @@ export const workspaceApi = {
       token,
       body: JSON.stringify({ name }),
     }),
+  delete: (token: string, workspaceId: string) =>
+    apiFetch<{ message: string }>(`/api/workspaces/${workspaceId}`, {
+      method: 'DELETE',
+      token,
+    }),
 };
 
 export const templatesApi = {
@@ -663,37 +782,37 @@ export const templatesApi = {
     apiFetch<{ templates: TemplateSummary[] }>('/api/templates', { token }),
 };
 
-export const organizationsApi = {
+export const tenantsApi = {
   mine: (token: string) =>
-    apiFetch<{ organizations: OrganizationSummary[]; currentOrganizationId: string | null }>('/api/organizations/mine', {
+    apiFetch<{ tenants: TenantSummary[]; currentTenantId: string | null }>('/api/tenants/mine', {
       token,
     }),
-  switchContext: (token: string, organizationId: string) =>
-    apiFetch<{ message: string; organizationId: string }>('/api/organizations/switch', {
+  switchContext: (token: string, tenantId: string) =>
+    apiFetch<{ message: string; tenantId: string }>('/api/tenants/switch', {
       method: 'POST',
       token,
-      body: JSON.stringify({ organizationId }),
+      body: JSON.stringify({ tenantId }),
     }),
   current: (token: string) =>
-    apiFetch<{ organization: OrganizationSummary; membership: OrganizationMembership }>('/api/organizations/current', {
+    apiFetch<{ tenant: TenantSummary; membership: tenantMembership }>('/api/tenants/current', {
       token,
     }),
   listMembers: (token: string) =>
-    apiFetch<{ members: OrganizationMember[] }>('/api/organizations/current/members', {
+    apiFetch<{ members: TenantMember[] }>('/api/tenants/current/members', {
       token,
     }),
   listInvites: (token: string) =>
-    apiFetch<{ invites: OrganizationInvite[] }>('/api/organizations/current/invites', {
+    apiFetch<{ invites: TenantInvite[] }>('/api/tenants/current/invites', {
       token,
     }),
   inviteMember: (token: string, payload: { email: string; billingAdmin?: boolean }) =>
-    apiFetch<{ invite: OrganizationInvite }>('/api/organizations/current/invites', {
+    apiFetch<{ invite: TenantInvite }>('/api/tenants/current/invites', {
       method: 'POST',
       token,
       body: JSON.stringify(payload),
     }),
   acceptInvite: (token: string, tokenValue: string) =>
-    apiFetch<{ message: string; organizationId: string }>('/api/organizations/invites/accept', {
+    apiFetch<{ message: string; tenantId: string }>('/api/tenants/invites/accept', {
       method: 'POST',
       token,
       body: JSON.stringify({ token: tokenValue }),
@@ -703,26 +822,26 @@ export const organizationsApi = {
     membershipId: string,
     patch: { billingAdmin?: boolean },
   ) =>
-    apiFetch<{ member: OrganizationMember }>(`/api/organizations/current/members/${membershipId}`, {
+    apiFetch<{ member: TenantMember }>(`/api/tenants/current/members/${membershipId}`, {
       method: 'PATCH',
       token,
       body: JSON.stringify(patch),
     }),
   removeMember: (token: string, membershipId: string) =>
-    apiFetch<{ message: string }>(`/api/organizations/current/members/${membershipId}`, {
+    apiFetch<{ message: string }>(`/api/tenants/current/members/${membershipId}`, {
       method: 'DELETE',
       token,
     }),
   entitlements: (token: string) =>
-    apiFetch<{ entitlements: Omit<BillingSnapshot, 'invoices'> }>('/api/organizations/current/entitlements', {
+    apiFetch<{ entitlements: Omit<BillingSnapshot, 'invoices'> }>('/api/tenants/current/entitlements', {
       token,
     }),
   getSecurity: (token: string) =>
-    apiFetch<{ security: OrganizationSecurityState }>('/api/organizations/current/security', {
+    apiFetch<{ security: TenantSecurityState }>('/api/tenants/current/security', {
       token,
     }),
   createEnterpriseEnvironment: (token: string, payload: EnterpriseEnvironmentPayload) =>
-    apiFetch<EnterpriseEnvironmentResponse>('/api/organizations/current/enterprise/environment', {
+    apiFetch<EnterpriseEnvironmentResponse>('/api/tenants/current/enterprise/environment', {
       method: 'POST',
       token,
       body: JSON.stringify(payload),
@@ -736,13 +855,13 @@ export const organizationsApi = {
       ipAllowlist?: string[];
     },
   ) =>
-    apiFetch<{ message: string; security: OrganizationSecurityState }>('/api/organizations/current/security/policies', {
+    apiFetch<{ message: string; security: TenantSecurityState }>('/api/tenants/current/security/policies', {
       method: 'PUT',
       token,
       body: JSON.stringify(payload),
     }),
   updateSecurityDomains: (token: string, domains: string[]) =>
-    apiFetch<{ domains: string[]; updatedAt: string }>('/api/organizations/current/security/domains', {
+    apiFetch<{ domains: string[]; updatedAt: string }>('/api/tenants/current/security/domains', {
       method: 'PUT',
       token,
       body: JSON.stringify({ domains }),
@@ -760,7 +879,7 @@ export const organizationsApi = {
       enabled?: boolean;
     },
   ) =>
-    apiFetch<{ provider: SsoProvider }>('/api/organizations/current/security/sso/providers', {
+    apiFetch<{ provider: SsoProvider }>('/api/tenants/current/security/sso/providers', {
       method: 'POST',
       token,
       body: JSON.stringify(payload),
@@ -779,28 +898,28 @@ export const organizationsApi = {
       enabled: boolean;
     }>,
   ) =>
-    apiFetch<{ provider: SsoProvider }>(`/api/organizations/current/security/sso/providers/${providerId}`, {
+    apiFetch<{ provider: SsoProvider }>(`/api/tenants/current/security/sso/providers/${providerId}`, {
       method: 'PATCH',
       token,
       body: JSON.stringify(payload),
     }),
   removeSsoProvider: (token: string, providerId: string) =>
-    apiFetch<{ message: string }>(`/api/organizations/current/security/sso/providers/${providerId}`, {
+    apiFetch<{ message: string }>(`/api/tenants/current/security/sso/providers/${providerId}`, {
       method: 'DELETE',
       token,
     }),
   simulateSsoLogin: (token: string, email: string) =>
     apiFetch<{
-      organization: { id: string; name: string };
+      tenant: { id: string; name: string };
       provider: SsoProvider;
       user: { id: string; email: string; name: string } | null;
       membershipStatus: string | null;
-    }>('/api/organizations/sso/simulate-login', {
+    }>('/api/tenants/sso/simulate-login', {
       method: 'POST',
       token,
       body: JSON.stringify({ email }),
     }),
-  getOrganizationAuditLogs: (
+  getTenantAuditLogs: (
     token: string,
     query: { userId?: string; action?: string; status?: string; limit?: number } = {},
   ) => {
@@ -810,9 +929,9 @@ export const organizationsApi = {
     if (query.status) search.set('status', query.status);
     if (query.limit != null) search.set('limit', String(query.limit));
     const suffix = search.toString() ? `?${search.toString()}` : '';
-    return apiFetch<{ logs: OrganizationAuditLog[] }>(`/api/organizations/current/audit-logs${suffix}`, { token });
+    return apiFetch<{ logs: TenantAuditLog[] }>(`/api/tenants/current/audit-logs${suffix}`, { token });
   },
-  exportOrganizationAuditCsv: (
+  exportTenantAuditCsv: (
     token: string,
     query: { userId?: string; action?: string; status?: string; limit?: number } = {},
   ) => {
@@ -822,7 +941,7 @@ export const organizationsApi = {
     if (query.status) search.set('status', query.status);
     if (query.limit != null) search.set('limit', String(query.limit));
     const suffix = search.toString() ? `?${search.toString()}` : '';
-    return apiFetchText(`/api/organizations/current/audit-logs/export.csv${suffix}`, { token });
+    return apiFetchText(`/api/tenants/current/audit-logs/export.csv${suffix}`, { token });
   },
 };
 

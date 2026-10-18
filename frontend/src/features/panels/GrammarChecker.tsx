@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { grammarApi } from '../../../lib/api';
+import { grammarApi } from '../../services/api';
 
 type Issue = {
   id: number;

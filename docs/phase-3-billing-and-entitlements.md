@@ -10,7 +10,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      Frontend                           │
-│  BillingPortalPage  ──►  billingApi (api.ts)            │
+│  BuyPlanPage  ──►  billingApi (api.ts)                  │
 └────────────────────────────┬────────────────────────────┘
                              │ HTTPS
 ┌────────────────────────────▼────────────────────────────┐
@@ -315,7 +315,7 @@ Placed after AI generation to record usage. Calls `consumeAiRequests(orgId, 1)`.
 
 ## 7. Billing Portal UI
 
-File: `frontend/src/components/pages/BillingPortalPage.tsx`
+File: `frontend/src/components/pages/BuyPlanPage.tsx`
 
 ### Sections
 
@@ -368,5 +368,5 @@ Map Stripe's `checkout.session.completed`, `customer.subscription.updated`, etc.
 | `backend/src/middleware/entitlements.js`              | Route-level enforcement guards                        |
 | `backend/src/routes/billing.routes.js`                | Authenticated proxy to standalone billing service     |
 | `backend/src/routes/billing-webhooks.routes.js`       | Webhook proxy (provider → billing service)            |
-| `frontend/src/components/pages/BillingPortalPage.tsx` | Billing UI: plans, invoices, seats, usage             |
+| `frontend/src/components/pages/BuyPlanPage.tsx` | Billing UI: plan selection and checkout initiation      |
 | `frontend/src/lib/api.ts`                             | `billingApi` — typed client for all billing endpoints |

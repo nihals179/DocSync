@@ -3,28 +3,39 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   billingApi,
   docsApi,
-  organizationsApi,
+  tenantsApi,
   versionsApi,
+  workspaceApi,
   type BillingInvoice,
   type BillingPlan,
   type BillingSnapshot,
-  type OrganizationAuditLog,
-  type OrganizationInvite,
-  type OrganizationMember,
-  type OrganizationMembership,
-  type OrganizationSecurityState,
-  type OrganizationSummary,
+  type TenantAuditLog,
+  type TenantInvite,
+  type TenantMember,
+  type tenantMembership,
+  type TenantSecurityState,
+  type TenantSummary,
   type SsoProvider,
-} from '../../lib/api';
+} from '../services/api';
 
 type MemberDrafts = Record<string, { billingAdmin: boolean }>;
 
-type AdminView = 'dashboard' | 'members' | 'invites' | 'documents' | 'versions' | 'usage' | 'licenses' | 'billing' | 'audit' | 'enterpriseSecurity' | 'fileRepository';
+type AdminView = 'dashboard' | 'members' | 'invites' | 'documents' | 'workspaces' | 'versions' | 'usage' | 'licenses' | 'billing' | 'audit' | 'enterpriseSecurity' | 'fileRepository';
 
 type AdminDocument = {
   id: string;
   title: string;
   preview: string;
+  updatedAt: string;
+  workspaceId?: string | null;
+};
+
+type AdminWorkspace = {
+  id: string;
+  name: string;
+  ownerId: string;
+  memberIds: string[];
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -57,7 +68,7 @@ const EMPTY_PROVIDER: ProviderDraft = {
   enabled: true,
 };
 
-interface OrganizationAdminPageProps {
+interface TenantAdminPageProps {
   token: string;
   userName: string;
   onAdminLogout: () => void;
@@ -101,14 +112,15 @@ function contains(source: string | number | null | undefined, query: string) {
   return String(source ?? '').toLowerCase().includes(query.trim().toLowerCase());
 }
 
-export default function OrganizationAdminPage({ token, userName, onAdminLogout }: OrganizationAdminPageProps) {
-  const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
-  const [currentOrganizationId, setCurrentOrganizationId] = useState<string>('');
-  const [membership, setMembership] = useState<OrganizationMembership | null>(null);
-  const [members, setMembers] = useState<OrganizationMember[]>([]);
+export default function TenantAdminPage({ token, userName, onAdminLogout }: TenantAdminPageProps) {
+  const [tenants, setTenants] = useState<TenantSummary[]>([]);
+  const [currentTenantId, setCurrentTenantId] = useState<string>('');
+  const [membership, setMembership] = useState<tenantMembership | null>(null);
+  const [members, setMembers] = useState<TenantMember[]>([]);
   const [memberDrafts, setMemberDrafts] = useState<MemberDrafts>({});
-  const [invites, setInvites] = useState<OrganizationInvite[]>([]);
+  const [invites, setInvites] = useState<TenantInvite[]>([]);
   const [documents, setDocuments] = useState<AdminDocument[]>([]);
+  const [workspaces, setWorkspaces] = useState<AdminWorkspace[]>([]);
   const [versionActivity, setVersionActivity] = useState<VersionActivity[]>([]);
   const [activeView, setActiveView] = useState<AdminView>('dashboard');
   const [loading, setLoading] = useState(true);
@@ -133,9 +145,13 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
   });
   const [inviteFilters, setInviteFilters] = useState({ email: '', billing: '', expires: '', status: '' });
   const [documentFilters, setDocumentFilters] = useState({ title: '', preview: '', updated: '' });
+  const [workspaceFilters, setWorkspaceFilters] = useState({ name: '', owner: '', members: '', updated: '' });
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
+  const [workspaceActionLoading, setWorkspaceActionLoading] = useState(false);
+  const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [versionFilters, setVersionFilters] = useState({ document: '', versions: '', lastSaved: '' });
 
-  const [security, setSecurity] = useState<OrganizationSecurityState | null>(null);
+  const [security, setSecurity] = useState<TenantSecurityState | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
   const [requireMfa, setRequireMfa] = useState(false);
   const [sessionDurationHours, setSessionDurationHours] = useState(8);
@@ -156,7 +172,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
   const [billingMonths, setBillingMonths] = useState(12);
 
   const [auditLoading, setAuditLoading] = useState(false);
-  const [auditLogs, setAuditLogs] = useState<OrganizationAuditLog[]>([]);
+  const [auditLogs, setAuditLogs] = useState<TenantAuditLog[]>([]);
   const [auditActionFilter, setAuditActionFilter] = useState('');
   const [auditStatusFilter, setAuditStatusFilter] = useState('');
   const [auditLimit, setAuditLimit] = useState(200);
@@ -202,6 +218,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         items: [
           { key: 'members' as const, label: 'Members', icon: 'groups' },
           { key: 'invites' as const, label: 'Pending Invites', icon: 'mail' },
+          { key: 'workspaces' as const, label: 'Workspaces', icon: 'workspaces' },
           { key: 'licenses' as const, label: 'Licenses', icon: 'workspace_premium' },
           { key: 'billing' as const, label: 'Billing', icon: 'receipt_long' },
         ],
@@ -220,10 +237,11 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
   const activeViewMeta = useMemo(() => {
     const map: Record<AdminView, { title: string; subtitle: string }> = {
-      dashboard: { title: 'Dashboard', subtitle: 'Active organization overview and key stats' },
+      dashboard: { title: 'Dashboard', subtitle: 'Active tenant overview and key stats' },
       members: { title: 'Members', subtitle: `${members.length} active member${members.length !== 1 ? 's' : ''}` },
       invites: { title: 'Pending Invites', subtitle: `${invites.filter((i) => i.status === 'pending').length} awaiting acceptance` },
       documents: { title: 'Documents', subtitle: `${documents.length} total document${documents.length !== 1 ? 's' : ''}` },
+      workspaces: { title: 'Workspaces', subtitle: `${workspaces.length} workspace${workspaces.length !== 1 ? 's' : ''} across this tenant` },
       versions: { title: 'Version History', subtitle: `Count from ${adminInsights.versionSampleCount} sampled docs` },
       usage: { title: 'Usage & Limits', subtitle: 'AI, storage, and seat utilization overview' },
       licenses: { title: 'Licenses', subtitle: 'Seat licenses, assignment, and availability' },
@@ -233,11 +251,11 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
       fileRepository: { title: 'File Repository', subtitle: 'Repository source and storage synchronization settings' },
     };
     return map[activeView];
-  }, [activeView, adminInsights.versionSampleCount, documents.length, invites, members.length]);
+  }, [activeView, adminInsights.versionSampleCount, documents.length, invites, members.length, workspaces.length]);
 
-  const activeOrganization = useMemo(
-    () => organizations.find((org) => org.id === currentOrganizationId) ?? null,
-    [currentOrganizationId, organizations],
+  const activeTenant = useMemo(
+    () => tenants.find((org) => org.id === currentTenantId) ?? null,
+    [currentTenantId, tenants],
   );
 
   const filteredMembers = useMemo(
@@ -293,6 +311,21 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     [versionActivity, versionFilters.document, versionFilters.lastSaved, versionFilters.versions],
   );
 
+  const filteredWorkspaces = useMemo(
+    () =>
+      workspaces.filter((workspace) => {
+        const linkedDocs = documents.filter((doc) => (doc.workspaceId ?? null) === workspace.id).length;
+        const membersCount = workspace.memberIds.length;
+        return (
+          contains(workspace.name, workspaceFilters.name) &&
+          contains(workspace.ownerId, workspaceFilters.owner) &&
+          contains(membersCount, workspaceFilters.members) &&
+          (contains(formatDate(workspace.updatedAt), workspaceFilters.updated) || contains(linkedDocs, workspaceFilters.updated))
+        );
+      }),
+    [documents, workspaceFilters.members, workspaceFilters.name, workspaceFilters.owner, workspaceFilters.updated, workspaces],
+  );
+
   const selectedBillingPlan = useMemo(
     () => billingPlans.find((plan) => plan.id === billingPlanId) ?? null,
     [billingPlanId, billingPlans],
@@ -320,26 +353,29 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
     try {
       const [
-        { organizations: orgs, currentOrganizationId: selectedOrgId },
+        { tenants: orgs, currentTenantId: selectedOrgId },
         currentOrg,
         membersRes,
         invitesRes,
         docsRes,
+        workspacesRes,
         entitlementsRes,
       ] = await Promise.all([
-        organizationsApi.mine(token),
-        organizationsApi.current(token),
-        organizationsApi.listMembers(token),
-        organizationsApi.listInvites(token),
+        tenantsApi.mine(token),
+        tenantsApi.current(token),
+        tenantsApi.listMembers(token),
+        tenantsApi.listInvites(token),
         docsApi.list(token),
-        organizationsApi.entitlements(token),
+        workspaceApi.list(token),
+        tenantsApi.entitlements(token),
       ]);
 
-      setOrganizations(orgs);
-      setCurrentOrganizationId(selectedOrgId || currentOrg.organization.id);
+      setTenants(orgs);
+      setCurrentTenantId(selectedOrgId || currentOrg.tenant.id);
       setMembership(currentOrg.membership);
       setMembers(membersRes.members);
       setInvites(invitesRes.invites);
+      setWorkspaces(workspacesRes.workspaces);
       setMemberDrafts(
         membersRes.members.reduce<MemberDrafts>((acc, member) => {
           acc[member.id] = { billingAdmin: member.billingAdmin };
@@ -355,6 +391,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
             title: doc.title || 'Untitled',
             preview: doc.preview || '',
             updatedAt: doc.updatedAt,
+            workspaceId: doc.workspaceId ?? null,
           }))
           .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
       );
@@ -401,7 +438,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         purchasedSeats: entitlements.limits.seatsPurchased,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load organization administration data.');
+      setError(err instanceof Error ? err.message : 'Failed to load tenant administration data.');
     } finally {
       setLoading(false);
       setStatsLoading(false);
@@ -416,7 +453,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setSecurityLoading(true);
     setError('');
     try {
-      const { security: next } = await organizationsApi.getSecurity(token);
+      const { security: next } = await tenantsApi.getSecurity(token);
       setSecurity(next);
       setRequireMfa(next.requireMfa);
       setSessionDurationHours(next.sessionDurationHours);
@@ -465,7 +502,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setAuditLoading(true);
     setBillingError('');
     try {
-      const { logs } = await organizationsApi.getOrganizationAuditLogs(token, {
+      const { logs } = await tenantsApi.getTenantAuditLogs(token, {
         action: auditActionFilter || undefined,
         status: auditStatusFilter || undefined,
         limit: auditLimit,
@@ -487,7 +524,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      const csv = await organizationsApi.exportOrganizationAuditCsv(token, {
+      const csv = await tenantsApi.exportTenantAuditCsv(token, {
         action: auditActionFilter || undefined,
         status: auditStatusFilter || undefined,
         limit: auditLimit,
@@ -496,7 +533,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'organization-audit-logs.csv';
+      link.download = 'tenant-audit-logs.csv';
       link.click();
       window.URL.revokeObjectURL(url);
       setMessage('Audit CSV exported.');
@@ -505,16 +542,16 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     }
   }
 
-  async function handleSwitchOrganization(nextOrganizationId: string) {
+  async function handleSwitchTenant(nextTenantId: string) {
     setMessage('');
     setError('');
     try {
-      await organizationsApi.switchContext(token, nextOrganizationId);
-      setCurrentOrganizationId(nextOrganizationId);
+      await tenantsApi.switchContext(token, nextTenantId);
+      setCurrentTenantId(nextTenantId);
       await load();
-      setMessage('Organization context updated.');
+      setMessage('Tenant context updated.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to switch organization context.');
+      setError(err instanceof Error ? err.message : 'Failed to switch tenant context.');
     }
   }
 
@@ -525,7 +562,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      const { member } = await organizationsApi.updateMember(token, memberId, {
+      const { member } = await tenantsApi.updateMember(token, memberId, {
         billingAdmin: draft.billingAdmin,
       });
       setMembers((prev) => prev.map((item) => (item.id === member.id ? member : item)));
@@ -539,7 +576,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      await organizationsApi.removeMember(token, memberId);
+      await tenantsApi.removeMember(token, memberId);
       setMembers((prev) => prev.filter((member) => member.id !== memberId));
       setMemberDrafts((prev) => {
         const next = { ...prev };
@@ -562,7 +599,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      const { invite } = await organizationsApi.inviteMember(token, {
+      const { invite } = await tenantsApi.inviteMember(token, {
         email,
       });
       setInvites((prev) => [invite, ...prev]);
@@ -582,7 +619,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean);
-      const { security: next } = await organizationsApi.updateSecurityPolicies(token, {
+      const { security: next } = await tenantsApi.updateSecurityPolicies(token, {
         requireMfa,
         sessionDurationHours,
         ipAllowlistEnabled,
@@ -603,7 +640,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
         .split('\n')
         .map((line) => line.trim().replace(/^@+/, '').toLowerCase())
         .filter(Boolean);
-      await organizationsApi.updateSecurityDomains(token, domains);
+      await tenantsApi.updateSecurityDomains(token, domains);
       await loadSecurity();
       setMessage('Domain mappings updated.');
     } catch (err) {
@@ -615,7 +652,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      await organizationsApi.createSsoProvider(token, providerDraft);
+      await tenantsApi.createSsoProvider(token, providerDraft);
       setProviderDraft(EMPTY_PROVIDER);
       await loadSecurity();
       setMessage('SSO provider created.');
@@ -628,7 +665,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      await organizationsApi.updateSsoProvider(token, provider.id, { enabled: !provider.enabled });
+      await tenantsApi.updateSsoProvider(token, provider.id, { enabled: !provider.enabled });
       await loadSecurity();
       setMessage('SSO provider updated.');
     } catch (err) {
@@ -640,7 +677,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setMessage('');
     setError('');
     try {
-      await organizationsApi.removeSsoProvider(token, providerId);
+      await tenantsApi.removeSsoProvider(token, providerId);
       await loadSecurity();
       setMessage('SSO provider removed.');
     } catch (err) {
@@ -653,12 +690,53 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
     setError('');
     setSimulateResult('');
     try {
-      const result = await organizationsApi.simulateSsoLogin(token, simulateEmail.trim().toLowerCase());
+      const result = await tenantsApi.simulateSsoLogin(token, simulateEmail.trim().toLowerCase());
       setSimulateResult(
-        `Org: ${result.organization.name} | Provider: ${result.provider.name} (${result.provider.type}) | Membership: ${result.membershipStatus || 'none'}`,
+        `Tenant: ${result.tenant.name} | Provider: ${result.provider.name} (${result.provider.type}) | Membership: ${result.membershipStatus || 'none'}`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to run domain routing simulation.');
+    }
+  }
+
+  async function handleCreateWorkspace() {
+    const name = workspaceNameDraft.trim();
+    if (!name) {
+      setError('Workspace name is required.');
+      return;
+    }
+
+    setMessage('');
+    setError('');
+    setWorkspaceActionLoading(true);
+    try {
+      const { workspace } = await workspaceApi.create(token, name);
+      setWorkspaces((prev) => [workspace, ...prev]);
+      setWorkspaceNameDraft('');
+      setMessage('Workspace created.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create workspace.');
+    } finally {
+      setWorkspaceActionLoading(false);
+    }
+  }
+
+  async function handleDeleteWorkspace(workspaceId: string, workspaceName: string) {
+    const confirmed = window.confirm(`Delete workspace \"${workspaceName}\"? Documents will be unlinked from this workspace.`);
+    if (!confirmed) return;
+
+    setMessage('');
+    setError('');
+    setDeletingWorkspaceId(workspaceId);
+    try {
+      await workspaceApi.delete(token, workspaceId);
+      setWorkspaces((prev) => prev.filter((workspace) => workspace.id !== workspaceId));
+      setDocuments((prev) => prev.map((doc) => (doc.workspaceId === workspaceId ? { ...doc, workspaceId: null } : doc)));
+      setMessage('Workspace deleted.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete workspace.');
+    } finally {
+      setDeletingWorkspaceId(null);
     }
   }
 
@@ -672,7 +750,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
             </div>
             <div>
               <p className="text-lg font-black tracking-tight text-cyan-700">DocSync Admin</p>
-              <p className="text-xs text-slate-500">Organization control center</p>
+              <p className="text-xs text-slate-500">Tenant control center</p>
             </div>
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
@@ -715,7 +793,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                 </div>
                 {statsLoading && <span className="text-xs font-semibold text-slate-400">Loading...</span>}
               </div>
-              <p className="mt-1 text-xs text-slate-500">Choose a panel to view organization data.</p>
+              <p className="mt-1 text-xs text-slate-500">Choose a panel to view tenant data.</p>
 
               <nav className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1" aria-label="Admin sections">
                 {menuSections.map((section) => (
@@ -779,14 +857,14 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                 {activeView === 'dashboard' && (
                   <div className="space-y-4 p-6">
                     <section className="rounded-none border border-slate-200 bg-white p-5">
-                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Active Organization</p>
+                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Active Tenant</p>
                       <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                         <select
-                          value={currentOrganizationId}
-                          onChange={(e) => void handleSwitchOrganization(e.target.value)}
+                          value={currentTenantId}
+                          onChange={(e) => void handleSwitchTenant(e.target.value)}
                           className="w-full rounded-none border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500"
                         >
-                          {organizations.map((org) => (
+                          {tenants.map((org) => (
                             <option key={org.id} value={org.id}>{org.name}</option>
                           ))}
                         </select>
@@ -798,7 +876,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
                     <section className="grid grid-cols-2 gap-3">
                       <div className="rounded-none border border-slate-200 bg-white px-4 py-4 text-center">
-                        <p className="truncate text-base font-black text-slate-700">{activeOrganization?.name ?? 'Organization'}</p>
+                        <p className="truncate text-base font-black text-slate-700">{activeTenant?.name ?? 'Tenant'}</p>
                         <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Active Org</p>
                         <p className="mt-2 text-xs text-slate-500">{members.length} member{members.length !== 1 ? 's' : ''}</p>
                       </div>
@@ -811,8 +889,8 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-amber-700/80">Pending</p>
                       </div>
                       <div className="rounded-none border border-slate-200 bg-white px-4 py-4 text-center">
-                        <p className="text-2xl font-black text-slate-700">{organizations.length}</p>
-                        <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Orgs</p>
+                        <p className="text-2xl font-black text-slate-700">{tenants.length}</p>
+                        <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Tenants</p>
                       </div>
                     </section>
                   </div>
@@ -862,7 +940,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                       <tbody className="divide-y divide-slate-100">
                         {filteredMembers.map((member) => {
                           const draft = memberDrafts[member.id] ?? { billingAdmin: member.billingAdmin };
-                          const isOwner = member.userId === activeOrganization?.ownerUserId;
+                          const isOwner = member.userId === activeTenant?.ownerUserId;
                           const canEdit = canManageMembers && !(isOwner && membership?.userId !== member.userId);
                           return (
                             <tr key={member.id} className="transition-colors hover:bg-cyan-50/40">
@@ -1045,6 +1123,104 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                   )
                 )}
 
+                {activeView === 'workspaces' && (
+                  workspaces.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-slate-400">
+                      <span className="material-icons" style={{ fontSize: '1.8rem' }}>workspaces</span>
+                      <p className="text-sm">No workspaces found</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <div className="grid gap-2 border-b border-slate-200 bg-cyan-50/50 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                        <input
+                          value={workspaceNameDraft}
+                          onChange={(e) => setWorkspaceNameDraft(e.target.value)}
+                          placeholder="Workspace name"
+                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateWorkspace()}
+                          disabled={workspaceActionLoading}
+                          className="rounded-none border border-cyan-200 bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {workspaceActionLoading ? 'Creating...' : 'Create workspace'}
+                        </button>
+                      </div>
+                      <div className="grid gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-3 sm:grid-cols-4">
+                        <input
+                          value={workspaceFilters.name}
+                          onChange={(e) => setWorkspaceFilters((prev) => ({ ...prev, name: e.target.value }))}
+                          placeholder="Search workspace name"
+                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+                        />
+                        <input
+                          value={workspaceFilters.owner}
+                          onChange={(e) => setWorkspaceFilters((prev) => ({ ...prev, owner: e.target.value }))}
+                          placeholder="Search owner id"
+                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+                        />
+                        <input
+                          value={workspaceFilters.members}
+                          onChange={(e) => setWorkspaceFilters((prev) => ({ ...prev, members: e.target.value }))}
+                          placeholder="Search member count"
+                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+                        />
+                        <input
+                          value={workspaceFilters.updated}
+                          onChange={(e) => setWorkspaceFilters((prev) => ({ ...prev, updated: e.target.value }))}
+                          placeholder="Search updated/docs"
+                          className="w-full rounded-none border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+                        />
+                      </div>
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-left">
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Workspace</th>
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Owner</th>
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Members</th>
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Documents</th>
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Updated</th>
+                            <th className="px-4 py-3 text-xs font-bold uppercase tracking-widest text-slate-500">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredWorkspaces.map((workspace) => {
+                            const linkedDocs = documents.filter((doc) => (doc.workspaceId ?? null) === workspace.id).length;
+                            return (
+                              <tr key={workspace.id} className="align-top hover:bg-slate-50">
+                                <td className="px-4 py-3 font-medium text-slate-800">
+                                  <p>{workspace.name}</p>
+                                  <p className="mt-0.5 font-mono text-[11px] text-slate-500">{workspace.id}</p>
+                                </td>
+                                <td className="px-4 py-3 font-mono text-xs text-slate-600">{workspace.ownerId}</td>
+                                <td className="px-4 py-3 text-xs text-slate-600">{workspace.memberIds.length}</td>
+                                <td className="px-4 py-3 text-xs text-slate-600">{linkedDocs}</td>
+                                <td className="px-4 py-3 text-xs text-slate-600">{formatDate(workspace.updatedAt)}</td>
+                                <td className="px-4 py-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteWorkspace(workspace.id, workspace.name)}
+                                    disabled={deletingWorkspaceId === workspace.id}
+                                    className="rounded-none border border-red-200 bg-white px-3 py-1 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    {deletingWorkspaceId === workspace.id ? 'Deleting...' : 'Delete'}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {filteredWorkspaces.length === 0 && (
+                            <tr>
+                              <td className="px-4 py-8 text-center text-sm text-slate-500" colSpan={6}>No workspaces match these filters.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                )}
+
                 {activeView === 'versions' && (
                   versionActivity.length === 0 ? (
                     <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-slate-400">
@@ -1136,7 +1312,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                     <div className="rounded-none border border-slate-200 bg-slate-50 p-4">
                       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Purchased Seats</p>
                       <p className="mt-1 text-xl font-black text-slate-800">{adminInsights.purchasedSeats || 0}</p>
-                      <p className="mt-1 text-xs text-slate-500">Total seat licenses purchased for this organization.</p>
+                      <p className="mt-1 text-xs text-slate-500">Total seat licenses purchased for this tenant.</p>
                     </div>
 
                     <div className="rounded-none border border-slate-200 bg-slate-50 p-4">
@@ -1268,7 +1444,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                         <input
                           value={auditActionFilter}
                           onChange={(event) => setAuditActionFilter(event.target.value)}
-                          placeholder="Action filter (e.g. organization.member.update)"
+                          placeholder="Action filter (e.g. tenant.member.update)"
                           className="w-full rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
                         />
                         <input
@@ -1328,7 +1504,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                       <div className="mt-4 space-y-4">
                         <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                           <input type="checkbox" checked={requireMfa} onChange={(event) => setRequireMfa(event.target.checked)} />
-                          Require MFA for all organization users
+                          Require MFA for all tenant users
                         </label>
 
                         <div>
@@ -1366,7 +1542,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
 
                     <section className="rounded-none border border-slate-200 bg-white p-5">
                       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Domain Mapping</p>
-                      <p className="mt-2 text-sm text-slate-600">Users registering with mapped domains can be attached to this organization.</p>
+                      <p className="mt-2 text-sm text-slate-600">Users registering with mapped domains can be attached to this tenant.</p>
                       <textarea
                         rows={4}
                         value={domainText}
@@ -1404,7 +1580,7 @@ export default function OrganizationAdminPage({ token, userName, onAdminLogout }
                       </button>
 
                       <div className="mt-4 space-y-3">
-                        {security?.ssoProviders.map((provider) => (
+                        {security?.ssoProviders.map((provider: SsoProvider) => (
                           <article key={provider.id} className="rounded-none border border-slate-200 p-4">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                               <div>

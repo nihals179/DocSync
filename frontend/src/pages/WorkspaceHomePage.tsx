@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-import ThemeListbox from '../common/ThemeListbox';
-import { docsApi, templatesApi, versionsApi, workspaceApi } from '../../lib/api';
-import { buildDocumentTree } from '../../lib/documentTree';
-import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../../lib/workspaceSelection';
+import ThemeListbox from '../components/common/ThemeListbox';
+import { billingApi, docsApi, templatesApi, versionsApi, workspaceApi } from '../services/api';
+import { buildDocumentTree } from '../utils/documentTree';
+import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../utils/workspaceSelection';
 
 type DocSummary = {
   id: string;
@@ -89,6 +90,7 @@ export default function WorkspaceHomePage({
   onLogout,
 }: WorkspaceHomePageProps) {
   const PAGE_SIZE = 5;
+  const navigate = useNavigate();
   const [docs, setDocs] = useState<DocSummary[]>([]);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -99,6 +101,7 @@ export default function WorkspaceHomePage({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => getInitialWorkspaceSelectionId());
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [showUpgradeMenuItem, setShowUpgradeMenuItem] = useState(false);
   const [navSearchQuery, setNavSearchQuery] = useState('');
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ docId: string; x: number; y: number } | null>(null);
@@ -107,6 +110,11 @@ export default function WorkspaceHomePage({
   const [workspaceModal, setWorkspaceModal] = useState<WorkspaceModalState | null>(null);
   const [docsPage, setDocsPage] = useState(1);
   const [versionsPage, setVersionsPage] = useState(1);
+  const [selectedRecentDocId, setSelectedRecentDocId] = useState<string | null>(null);
+  const [selectedDocVersions, setSelectedDocVersions] = useState<VersionSummary[]>([]);
+  const [selectedDocVersionsLoading, setSelectedDocVersionsLoading] = useState(false);
+  const [selectedDocVersionsError, setSelectedDocVersionsError] = useState('');
+  const [versionRowsVisible, setVersionRowsVisible] = useState(true);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const selectedWorkspaceIdRef = useRef<string>(selectedWorkspaceId);
 
@@ -131,11 +139,15 @@ export default function WorkspaceHomePage({
       setError('');
 
       try {
-        const [{ workspaces: availableWorkspaces }, { docs: list }, { templates: availableTemplates }] = await Promise.all([
+        const [workspacesResponse, docsResponse, templatesResponse] = await Promise.all([
           workspaceApi.list(token),
           docsApi.list(token),
           templatesApi.list(token),
         ]);
+
+        const availableWorkspaces = workspacesResponse.workspaces;
+        const list = docsResponse.docs;
+        const availableTemplates = templatesResponse.templates;
         if (ignore) return;
         setWorkspaces(availableWorkspaces);
         setDocs(list);
@@ -181,6 +193,28 @@ export default function WorkspaceHomePage({
     };
   }, [token]);
 
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadBillingPlanState() {
+      try {
+        const { snapshot } = await billingApi.current(token);
+        if (ignore) return;
+        const planId = String(snapshot?.billing?.planId || 'free').toLowerCase();
+        setShowUpgradeMenuItem(planId === 'free');
+      } catch {
+        if (!ignore) {
+          setShowUpgradeMenuItem(false);
+        }
+      }
+    }
+
+    void loadBillingPlanState();
+    return () => {
+      ignore = true;
+    };
+  }, [token]);
+
   const filteredDocs = useMemo(() => {
     let result = docs;
 
@@ -198,8 +232,18 @@ export default function WorkspaceHomePage({
     return result;
   }, [docs, searchQuery, selectedWorkspaceId]);
 
+  const selectedRecentDoc = useMemo(
+    () => (selectedRecentDocId ? docs.find((doc) => doc.id === selectedRecentDocId) ?? null : null),
+    [docs, selectedRecentDocId],
+  );
+
+  const versionBoardItems = useMemo(
+    () => (selectedRecentDocId ? selectedDocVersions : versions),
+    [selectedRecentDocId, selectedDocVersions, versions],
+  );
+
   const filteredVersions = useMemo(() => {
-    let result = versions;
+    let result = versionBoardItems;
     
     // Filter by search query
     const q = searchQuery.trim().toLowerCase();
@@ -208,7 +252,7 @@ export default function WorkspaceHomePage({
     }
     
     return result;
-  }, [versions, searchQuery]);
+  }, [versionBoardItems, searchQuery]);
 
   const hasDocs = useMemo(() => filteredDocs.length > 0, [filteredDocs]);
 
@@ -227,7 +271,57 @@ export default function WorkspaceHomePage({
 
   useEffect(() => {
     setVersionsPage(1);
-  }, [searchQuery, selectedWorkspaceId]);
+  }, [searchQuery, selectedWorkspaceId, selectedRecentDocId]);
+
+  useEffect(() => {
+    if (!selectedRecentDocId) {
+      setSelectedDocVersions([]);
+      setSelectedDocVersionsError('');
+      setSelectedDocVersionsLoading(false);
+      return;
+    }
+    const activeDocId: string = selectedRecentDocId;
+
+    let ignore = false;
+
+    async function loadSelectedDocVersions() {
+      try {
+        setSelectedDocVersionsLoading(true);
+        setSelectedDocVersionsError('');
+        const { versions: items } = await versionsApi.list(token, activeDocId);
+        if (ignore) return;
+        const docTitle = selectedRecentDoc?.title || 'Untitled';
+        setSelectedDocVersions(items.map((item) => ({ ...item, docId: activeDocId, docTitle })));
+      } catch (e) {
+        if (ignore) return;
+        setSelectedDocVersions([]);
+        setSelectedDocVersionsError(e instanceof Error ? e.message : 'Failed to load version history for this document');
+      } finally {
+        if (!ignore) setSelectedDocVersionsLoading(false);
+      }
+    }
+
+    void loadSelectedDocVersions();
+    return () => {
+      ignore = true;
+    };
+  }, [token, selectedRecentDocId, selectedRecentDoc?.title]);
+
+  useEffect(() => {
+    setVersionRowsVisible(false);
+    const timer = window.setTimeout(() => setVersionRowsVisible(true), 35);
+    return () => window.clearTimeout(timer);
+  }, [selectedRecentDocId, versionsPage, searchQuery]);
+
+  useEffect(() => {
+    if (!selectedRecentDocId) return;
+    if (!docs.some((doc) => doc.id === selectedRecentDocId)) {
+      setSelectedRecentDocId(null);
+      setSelectedDocVersions([]);
+      setSelectedDocVersionsError('');
+      setSelectedDocVersionsLoading(false);
+    }
+  }, [docs, selectedRecentDocId]);
 
   useEffect(() => {
     if (docsPage > docsPageCount) setDocsPage(docsPageCount);
@@ -765,6 +859,11 @@ export default function WorkspaceHomePage({
                     <button type="button" onClick={() => { setProfileMenuOpen(false); onOpenSettingsDashboard?.(); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>settings_suggest</span>Settings Dashboard
                     </button>
+                    {showUpgradeMenuItem ? (
+                      <button type="button" onClick={() => { setProfileMenuOpen(false); navigate('/billing/upgrade'); }} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-cyan-700 hover:bg-cyan-50">
+                        <span className="material-icons" style={{ fontSize: '1rem' }}>workspace_premium</span>Upgrade
+                      </button>
+                    ) : null}
                     <button type="button" onClick={() => setProfileMenuOpen(false)} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
                       <span className="material-icons" style={{ fontSize: '1rem' }}>help</span>Help &amp; Support
                     </button>
@@ -869,6 +968,11 @@ export default function WorkspaceHomePage({
                   <h2 className="text-lg font-black tracking-tight text-slate-800">Launch A Template</h2>
                   <p className="mt-1 text-xs text-slate-500">Choose a pre-designed template to get started quickly</p>
                 </div>
+                {templates.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                    No templates available right now.
+                  </div>
+                ) : null}
                 <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: 'thin' }}>
                   {templates.map((template) => (
                     <article key={template.id} className="group relative w-56 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white transition-all hover:-translate-y-1 hover:shadow-md">
@@ -921,7 +1025,11 @@ export default function WorkspaceHomePage({
                     <div className="min-h-0 flex-1 overflow-y-auto pr-1">
                       <ul className="space-y-2">
                         {pagedDocs.map((doc) => (
-                          <li key={doc.id} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
+                          <li
+                            key={doc.id}
+                            onClick={() => setSelectedRecentDocId(doc.id)}
+                            className={`cursor-pointer rounded-xl border bg-white p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:shadow-sm ${selectedRecentDocId === doc.id ? 'border-cyan-400 ring-1 ring-cyan-200' : 'border-slate-200 hover:border-cyan-200'}`}
+                          >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
@@ -932,7 +1040,7 @@ export default function WorkspaceHomePage({
                                 {doc.preview && <p className="mt-1.5 line-clamp-1 text-xs text-slate-400">{doc.preview}</p>}
                               </div>
                               <div className="flex shrink-0 items-center gap-1.5">
-                                <button type="button" onClick={() => onOpenDocument(doc.id)} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-cyan-700">
+                                <button type="button" onClick={(event) => { event.stopPropagation(); onOpenDocument(doc.id); }} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-cyan-700">
                                   Open
                                 </button>
                               </div>
@@ -971,21 +1079,49 @@ export default function WorkspaceHomePage({
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <h2 className="text-lg font-black tracking-tight text-slate-800">Version History</h2>
-                      <p className="mt-0.5 text-xs text-slate-500">Recently saved snapshots</p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {selectedRecentDoc
+                          ? `Showing history for ${selectedRecentDoc.title || 'Untitled'}`
+                          : 'Recently saved snapshots'}
+                      </p>
                     </div>
-                    {loading && <span className="text-xs text-slate-400">Loading…</span>}
+                    <div className="flex items-center gap-2">
+                      {selectedRecentDocId ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRecentDocId(null)}
+                          className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          Show all
+                        </button>
+                      ) : null}
+                      {(loading || selectedDocVersionsLoading) && <span className="text-xs text-slate-400">Loading…</span>}
+                    </div>
                   </div>
-                  {!loading && versions.length === 0 ? (
+                  {!loading && !selectedDocVersionsLoading && selectedDocVersionsError ? (
+                    <div className={`rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 transition-all duration-300 ease-out ${versionRowsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}>
+                      {selectedDocVersionsError}
+                    </div>
+                  ) : null}
+                  {!loading && !selectedDocVersionsLoading && filteredVersions.length === 0 ? (
                     <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
                       <span className="material-icons mx-auto mb-2 block text-4xl text-slate-300">history</span>
-                      <p className="text-sm font-semibold text-slate-600">No versions yet</p>
-                      <p className="mt-1 text-xs text-slate-500">Save versions in the editor</p>
+                      <p className="text-sm font-semibold text-slate-600">
+                        {selectedRecentDoc ? 'No versions for this document yet' : 'No versions yet'}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {selectedRecentDoc ? 'Select another document or save a version in the editor' : 'Save versions in the editor'}
+                      </p>
                     </div>
                   ) : (
-                    <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                    <div className={`min-h-0 flex-1 overflow-y-auto pr-1 transition-opacity duration-300 ease-out ${versionRowsVisible ? 'opacity-100' : 'opacity-0'}`}>
                       <ul className="space-y-2">
-                        {pagedVersions.map((version) => (
-                          <li key={`${version.docId}-${version.id}`} className="rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-cyan-200 hover:shadow-sm">
+                        {pagedVersions.map((version, index) => (
+                          <li
+                            key={`${version.docId}-${version.id}`}
+                            className={`rounded-xl border border-slate-200 bg-white p-4 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-cyan-200 hover:shadow-sm ${versionRowsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}
+                            style={{ transitionDelay: versionRowsVisible ? `${Math.min(index * 45, 220)}ms` : '0ms' }}
+                          >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
@@ -1004,7 +1140,7 @@ export default function WorkspaceHomePage({
                       </ul>
                     </div>
                   )}
-                  {filteredVersions.length > PAGE_SIZE && (
+                  {!selectedDocVersionsLoading && filteredVersions.length > PAGE_SIZE && (
                     <div className="mt-4 flex shrink-0 items-center justify-between border-t border-slate-200 pt-3">
                       <button
                         type="button"
