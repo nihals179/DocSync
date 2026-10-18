@@ -47,7 +47,9 @@ async function getUserTenants(userId) {
 }
 
 function resolveRequestedTenantId(req) {
-  const fromHeader = req.get('x-tenant-id');
+  const fromHeader = typeof req.get === 'function'
+    ? req.get('x-tenant-id')
+    : req?.headers?.['x-tenant-id'];
   if (fromHeader && String(fromHeader).trim()) return String(fromHeader).trim();
   if (req.query?.tenantId && String(req.query.tenantId).trim()) return String(req.query.tenantId).trim();
   if (req.body?.tenantId && String(req.body.tenantId).trim()) return String(req.body.tenantId).trim();

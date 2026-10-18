@@ -206,7 +206,7 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
   const existing = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!existing) return res.status(404).json({ error: 'Document not found.' });
 
-  const workspaceResolution = await resi(
+  const workspaceResolution = await resolveWorkspaceForTenant(
     req.body.workspaceId,
     req.tenant.id,
     req.user.id,

@@ -29,7 +29,7 @@ function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	return state;
 }
 
-function normalizetenantBillingState(input, tenantId) {
+function normalizeTenantBillingState(input, tenantId) {
 	const state = {
 		tenantId,
 		planId: input?.planId,
@@ -101,16 +101,16 @@ async function writeUserBillingStateToDb(state) {
 	}
 }
 
-async function readtenantBillingStateFromDb(tenantId) {
+async function readTenantBillingStateFromDb(tenantId) {
 	if (!isDatabaseConfigured()) return null;
 	const row = await prisma.tenantBilling.findUnique({
 		where: { tenantId },
 	});
 	if (!row) return null;
-	return normalizetenantBillingState(row, tenantId);
+	return normalizeTenantBillingState(row, tenantId);
 }
 
-async function writetenantBillingStateToDb(tenantId, state) {
+async function writeTenantBillingStateToDb(tenantId, state) {
 	if (!isDatabaseConfigured() || !tenantId || !state) return;
 	const data = {
 		planId: state.planId,
@@ -161,7 +161,7 @@ function mapDbTenantToRecord(row) {
 async function resolveTenantById(tenantId) {
 	if (!tenantId) return null;
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.Tenant.findUnique({ where: { id: tenantId } });
+	const row = await prisma.tenant.findUnique({ where: { id: tenantId } });
 	if (!row) return null;
 	const tenant = mapDbTenantToRecord(row);
 	return tenant;
@@ -178,7 +178,7 @@ function normalizeUsageState(input, tenantId, monthKey) {
 
 async function readTenantUsageFromDb(tenantId, monthKey) {
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.TenantUsage.findUnique({
+	const row = await prisma.tenantsUsage.findUnique({
 		where: {
 			tenantId_monthKey: {
 				tenantId,
@@ -197,14 +197,14 @@ async function writeTenantUsageToDb(tenantId, monthKey, usage) {
 		documentUpdates: Number(usage.documentUpdates || 0),
 	};
 
-	const updated = await prisma.TenantUsage.updateMany({
+	const updated = await prisma.tenantsUsage.updateMany({
 		where: { tenantId, monthKey },
 		data,
 	});
 	if (updated.count > 0) return;
 
 	try {
-		await prisma.TenantUsage.create({
+		await prisma.tenantsUsage.create({
 			data: {
 				tenantId,
 				monthKey,
@@ -213,7 +213,7 @@ async function writeTenantUsageToDb(tenantId, monthKey, usage) {
 		});
 	} catch {
 		// Another request may create the row concurrently.
-		await prisma.TenantUsage.updateMany({
+		await prisma.tenantsUsage.updateMany({
 			where: { tenantId, monthKey },
 			data,
 		});
@@ -257,9 +257,9 @@ async function getProfileTable() {
 		canManageGlobalSettings: Boolean(row.canManageGlobalSettings),
 		canManageMembers: Boolean(row.canManageMembers),
 		canManageMemberBillingAdmin: Boolean(row.canManageMemberBillingAdmin),
-		canManagetenantBilling: Boolean(row.canManagetenantBilling),
+		canManageTenantBilling: Boolean(row.canManageTenantBilling),
 		canManageWorkspacesDocuments: Boolean(row.canManageWorkspacesDocuments),
-		canReadtenantResources: Boolean(row.canReadtenantResources),
+		canReadTenantResources: Boolean(row.canReadTenantResources),
 		canUseAiGrammarByPlan: Boolean(row.canUseAiGrammarByPlan),
 		canManageBillingSettings: Boolean(row.canManageBillingSettings),
 		canViewInvoicesSubscription: Boolean(row.canViewInvoicesSubscription),
@@ -330,7 +330,7 @@ async function updateTenantSecurityState(tenantId, updater) {
 		updatedAt: nowIso(),
 	};
 	ensureTenantSecurityState(tenant);
-	await prisma.Tenant.update({
+	await prisma.tenant.update({
 		where: { id: tenantId },
 		data: { security: tenant.security },
 	});
@@ -344,7 +344,7 @@ async function findTenantByDomain(emailOrDomain) {
 	if (!normalized) return null;
 
 	if (!isDatabaseConfigured()) return null;
-	const rows = await prisma.Tenant.findMany();
+	const rows = await prisma.tenant.findMany();
 	for (const row of rows) {
 		const tenant = mapDbTenantToRecord(row);
 		const security = ensureTenantSecurityState(tenant);
@@ -353,17 +353,17 @@ async function findTenantByDomain(emailOrDomain) {
 	return null;
 }
 
-async function ensuretenantBillingState(tenant) {
+async function ensureTenantBillingState(tenant) {
 	if (!tenant?.id) return null;
 	let billing = null;
 	if (isDatabaseConfigured()) {
-		billing = await readtenantBillingStateFromDb(tenant.id);
+		billing = await readTenantBillingStateFromDb(tenant.id);
 	}
 
 	if (!billing) {
-		billing = normalizetenantBillingState(null, tenant.id);
+		billing = normalizeTenantBillingState(null, tenant.id);
 		if (isDatabaseConfigured()) {
-			await writetenantBillingStateToDb(tenant.id, billing);
+			await writeTenantBillingStateToDb(tenant.id, billing);
 		}
 	}
 	return billing;
@@ -372,19 +372,19 @@ async function ensuretenantBillingState(tenant) {
 async function getTenantBillingState(tenantId) {
 	const tenant = await resolveTenantById(tenantId);
 	if (!tenant) return null;
-	return ensuretenantBillingState(tenant);
+	return ensureTenantBillingState(tenant);
 }
 
 async function upsertTenantBillingState(tenantId, updates = {}) {
 	const tenant = await resolveTenantById(tenantId);
 	if (!tenant) return null;
-	const current = await ensuretenantBillingState(tenant);
-	const next = normalizetenantBillingState({
+	const current = await ensureTenantBillingState(tenant);
+	const next = normalizeTenantBillingState({
 		...current,
 		...updates,
 		updatedAt: nowIso(),
 	}, tenantId);
-	await writetenantBillingStateToDb(tenantId, next);
+	await writeTenantBillingStateToDb(tenantId, next);
 	return next;
 }
 
@@ -407,7 +407,7 @@ async function ensureUserBillingState(user) {
 async function refreshBillingStatus(tenantId) {
 	const tenant = await resolveTenantById(tenantId);
 	if (!tenant) return null;
-	const billing = await ensuretenantBillingState(tenant);
+	const billing = await ensureTenantBillingState(tenant);
 	const nowMs = Date.now();
 	let changed = false;
 
@@ -441,7 +441,7 @@ async function refreshBillingStatus(tenantId) {
 	}
 
 	if (changed && isDatabaseConfigured()) {
-		await writetenantBillingStateToDb(tenant.id, billing);
+		await writeTenantBillingStateToDb(tenant.id, billing);
 	}
 	return billing;
 }
@@ -455,13 +455,13 @@ async function getTenantUsage(tenantId) {
 	const monthKey = monthKeyFromDate(new Date());
 	let usage = null;
 	if (isDatabaseConfigured()) {
-		usage = await readtenantUsageFromDb(tenantId, monthKey);
+		usage = await readTenantUsageFromDb(tenantId, monthKey);
 	}
 
 	if (!usage) {
 		usage = normalizeUsageState(null, tenantId, monthKey);
 		if (isDatabaseConfigured()) {
-			await writetenantUsageToDb(tenantId, monthKey, usage);
+			await writeTenantUsageToDb(tenantId, monthKey, usage);
 		}
 	}
 	return usage;
@@ -477,7 +477,7 @@ function isWithinPlanAccessDays(tenant, accessDays) {
 	return Date.now() <= expiresAtMs;
 }
 
-async function counttenantDocuments(tenantId) {
+async function countTenantDocuments(tenantId) {
 	return prisma.document.count({ where: { tenantId } });
 }
 
@@ -487,9 +487,9 @@ async function canCreateDocuments(tenantId, additionalDocuments = 1) {
 	const plan = getPlan(billing.planId);
 	const limit = plan.limits.documents;
 	if (limit === null || limit === undefined) {
-		return { allowed: true, current: await counttenantDocuments(tenantId), limit: null };
+		return { allowed: true, current: await countTenantDocuments(tenantId), limit: null };
 	}
-	const current = await counttenantDocuments(tenantId);
+	const current = await countTenantDocuments(tenantId);
 	const nextTotal = current + Math.max(0, additionalDocuments);
 	if (nextTotal > limit) {
 		return {
@@ -527,7 +527,7 @@ async function consumeDocumentUpdates(tenantId, count = 1) {
 	const usage = await getTenantUsage(tenantId);
 	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
 	if (isDatabaseConfigured()) {
-		await writetenantUsageToDb(tenantId, usage.monthKey, usage);
+		await writeTenantUsageToDb(tenantId, usage.monthKey, usage);
 	}
 	return { allowed: true, usage };
 }
@@ -643,7 +643,7 @@ async function consumeAiRequests(tenantId, count = 1) {
 	const usage = await getTenantUsage(tenantId);
 	usage.aiRequests += Math.max(0, count);
 	if (isDatabaseConfigured()) {
-		await writetenantUsageToDb(tenantId, usage.monthKey, usage);
+		await writeTenantUsageToDb(tenantId, usage.monthKey, usage);
 	}
 	return { allowed: true, usage };
 }
@@ -770,7 +770,7 @@ function upsertInvoice(invoice) {
 	});
 }
 
-function listInvoicesBytenant(tenantId) {
+function listInvoicesByTenant(tenantId) {
 	return prisma.invoice.findMany({
 		where: { tenantId },
 		orderBy: { issuedAt: 'desc' },
@@ -891,14 +891,14 @@ function mapWorkspaceRowToRecord(row) {
 	};
 }
 
-async function ensureDefaulttenantForUser(user) {
+async function ensureDefaultTenantForUser(user) {
 	if (!user?.id || !isDatabaseConfigured()) return null;
 
 	const tenantId = uuidv4();
 	const now = new Date();
 	const tenantName = String(user.name || '').trim() ? `${String(user.name).trim()}'s Tenant` : 'Personal Tenant';
 
-	await prisma.Tenant.create({
+	await prisma.tenant.create({
 		data: {
 			id: tenantId,
 			name: tenantName,
@@ -928,13 +928,13 @@ async function ensureDefaulttenantForUser(user) {
 		createdAt: now.toISOString(),
 		updatedAt: now.toISOString(),
 	};
-	ensuretenantSecurityState(tenant);
-	await prisma.Tenant.update({
+	ensureTenantSecurityState(tenant);
+	await prisma.tenant.update({
 		where: { id: tenantId },
 		data: { security: tenant.security },
 	});
 
-	await ensuretenantBillingState(tenant);
+	await ensureTenantBillingState(tenant);
 
 	await prisma.user.update({
 		where: { id: user.id },
@@ -982,7 +982,7 @@ async function syncCurrentTenantFromMembership(user) {
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
-	const row = await prisma.Tenant.findUnique({ where: { id: selectedMembership.tenantId } });
+	const row = await prisma.tenant.findUnique({ where: { id: selectedMembership.tenantId } });
 	let tenant = null;
 	if (row) {
 		tenant = {
@@ -1004,7 +1004,7 @@ async function syncCurrentTenantFromMembership(user) {
 		return null;
 	}
 
-	await ensuretenantBillingState(tenant);
+	await ensureTenantBillingState(tenant);
 	ensureTenantSecurityState(tenant);
 	user.currentTenantId = tenant.id;
 	await prisma.user.updateMany({
@@ -1085,12 +1085,12 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		const tenant = await prisma.Tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
+		const tenant = await prisma.tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
 		if (!tenant) return null;
 
-		await ensuretenantBillingState(tenant);
+		await ensureTenantBillingState(tenant);
 		const security = ensureTenantSecurityState(tenant);
-		await prisma.Tenant.updateMany({
+		await prisma.tenant.updateMany({
 			where: { id: tenant.id },
 			data: { security },
 		});
@@ -1114,7 +1114,7 @@ async function ensureTenantBootstrapForUser(user) {
 		return tenant;
 	}
 
-	return ensureDefaulttenantForUser(user);
+	return ensureDefaultTenantForUser(user);
 }
 
 module.exports = {
@@ -1141,7 +1141,7 @@ module.exports = {
 	canUseGrammar,
 	getVersionHistoryRetentionDays,
 	upsertInvoice,
-	listInvoicesBytenant,
+	listInvoicesByTenant,
 	enqueueWebhookJob,
 	listWebhookJobs,
 	markWebhookJobProcessing,

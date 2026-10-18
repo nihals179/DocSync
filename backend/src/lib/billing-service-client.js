@@ -5,7 +5,7 @@ const {
   getAllPlans,
   getTenantEntitlements,
   upsertTenantBillingState,
-  listInvoicesBytenant,
+  listInvoicesByTenant,
   upsertInvoice,
   enqueueWebhookJob,
   listWebhookJobs,
@@ -168,7 +168,7 @@ async function requestBillingServiceInMock(pathname, { method = 'GET', body = nu
   const orgInvoicesMatch = pathname.match(/^\/api\/billing\/tenants\/([^/]+)\/invoices$/);
   if (method === 'GET' && orgInvoicesMatch) {
     const tenantId = orgInvoicesMatch[1];
-    const invoices = await listInvoicesBytenant(tenantId);
+    const invoices = await listInvoicesByTenant(tenantId);
     return toResponse(200, { invoices });
   }
 
