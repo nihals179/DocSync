@@ -15,7 +15,7 @@ async function ensureDefaultTenantForUser(user) {
   const now = new Date();
   const tenantId = uuidv4();
 
-  await prisma.tenant.create({
+  await prisma.Tenant.create({
     data: {
       id: tenantId,
       name: tenantNameForUser(user),
@@ -60,7 +60,7 @@ async function collectTargetTenantsForUser(user) {
   const tenantIds = new Set(memberships.map((membership) => membership.tenantId));
 
   if (user.currentTenantId) {
-    const currentOrg = await prisma.tenant.findUnique({
+    const currentOrg = await prisma.Tenant.findUnique({
       where: { id: user.currentTenantId },
       select: { id: true },
     });

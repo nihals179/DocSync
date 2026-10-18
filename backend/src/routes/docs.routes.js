@@ -6,7 +6,7 @@ const {
   canCreateDocuments,
   canUpdateDocuments,
   consumeDocumentUpdates,
-  gettenantEntitlements,
+  getTenantEntitlements,
 } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
@@ -115,7 +115,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
     });
   }
 
-  const entitlements = await gettenantEntitlements(req.tenant.id);
+  const entitlements = await getTenantEntitlements(req.tenant.id);
   if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
 
   const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
@@ -224,7 +224,7 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
   }
 
   if (req.body.content !== undefined) {
-    const entitlements = await gettenantEntitlements(req.tenant.id);
+    const entitlements = await getTenantEntitlements(req.tenant.id);
     if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
 
     const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);

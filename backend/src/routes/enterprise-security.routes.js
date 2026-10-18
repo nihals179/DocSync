@@ -14,13 +14,13 @@ const {
 const {
 	canAssignCollaborators,
 	canAssignSeats,
-  findtenantByDomain,
-  gettenantBillingState,
-  gettenantEntitlements,
-  gettenantSecurityState,
+  findTenantByDomain,
+  getTenantBillingState,
+  getTenantEntitlements,
+  getTenantSecurityState,
   getPlan,
-  upserttenantBillingState,
-  updatetenantSecurityState,
+  upsertTenantBillingState,
+  updateTenantSecurityState,
 } = require('../store');
 const { listAuditLogs, toAuditCsv, writeAuditLog } = require('../lib/audit');
 
@@ -29,7 +29,7 @@ const router = express.Router();
 router.use(requireAuth, resolveTenantContext);
 
 router.get('/current/security', requirePermission('tenant.read'), async (req, res) => {
-  const security = await gettenantSecurityState(req.tenant.id);
+  const security = await getTenantSecurityState(req.tenant.id);
   res.json({
     security: {
       requireMfa: security.requireMfa,
@@ -48,14 +48,14 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
   if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
 
   const enterprisePlan = getPlan('enterprise');
-  const existingBilling = await gettenantBillingState(tenant.id) || {};
+  const existingBilling = await getTenantBillingState(tenant.id) || {};
   const requestedSeats = Number(req.body?.purchasedSeats);
   const purchasedSeats = Number.isFinite(requestedSeats) && requestedSeats > 0
     ? Math.floor(requestedSeats)
     : Math.max(Number(existingBilling.purchasedSeats || 0), enterprisePlan.limits.seats);
 
   const now = nowIso();
-  const billing = await upserttenantBillingState(tenant.id, {
+  const billing = await upsertTenantBillingState(tenant.id, {
     planId: 'enterprise',
     status: 'active',
     purchasedSeats,
@@ -84,7 +84,7 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
     : null;
   let createdProvider = null;
 
-  const security = await updatetenantSecurityState(req.tenant.id, (current) => {
+  const security = await updateTenantSecurityState(req.tenant.id, (current) => {
     const nextProviders = [...current.ssoProviders];
     if (requestedProvider && String(requestedProvider.name || '').trim()) {
       createdProvider = ensureProviderShape({
@@ -115,7 +115,7 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
     };
   });
 
-  const entitlements = await gettenantEntitlements(req.tenant.id);
+  const entitlements = await getTenantEntitlements(req.tenant.id);
 
   writeAuditLog({
     userId: req.user.id,
@@ -158,7 +158,7 @@ router.put('/current/security/policies', requirePermission('tenant.member.manage
     ipAllowlist,
   } = req.body ?? {};
 
-  const security = await updatetenantSecurityState(req.tenant.id, (current) => ({
+  const security = await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     requireMfa: typeof requireMfa === 'boolean' ? requireMfa : current.requireMfa,
     sessionDurationHours: sessionDurationHours == null
@@ -196,7 +196,7 @@ router.put('/current/security/domains', requirePermission('tenant.member.manage'
     ? req.body.domains.map((value) => String(value || '').toLowerCase().trim().replace(/^@+/, '')).filter(Boolean)
     : [];
 
-  const security = await updatetenantSecurityState(req.tenant.id, (current) => ({
+  const security = await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     domainMappings: [...new Set(domains)],
   }));
@@ -223,7 +223,7 @@ router.post('/current/security/sso/providers', requirePermission('tenant.member.
     return res.status(400).json({ error: 'Provider name is required.' });
   }
 
-  const security = await updatetenantSecurityState(req.tenant.id, (current) => ({
+  const security = await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     ssoProviders: [...current.ssoProviders, provider],
   }));
@@ -239,7 +239,7 @@ router.post('/current/security/sso/providers', requirePermission('tenant.member.
 });
 
 router.patch('/current/security/sso/providers/:providerId', requirePermission('tenant.member.manage'), async (req, res) => {
-  const security = await gettenantSecurityState(req.tenant.id);
+  const security = await getTenantSecurityState(req.tenant.id);
   const existing = security.ssoProviders.find((item) => item.id === req.params.providerId);
   if (!existing) return res.status(404).json({ error: 'SSO provider not found.' });
 
@@ -250,7 +250,7 @@ router.patch('/current/security/sso/providers/:providerId', requirePermission('t
     updatedAt: new Date().toISOString(),
   });
 
-  const next = await updatetenantSecurityState(req.tenant.id, (current) => ({
+  const next = await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     ssoProviders: current.ssoProviders.map((provider) => (
       provider.id === existing.id ? updated : provider
@@ -268,11 +268,11 @@ router.patch('/current/security/sso/providers/:providerId', requirePermission('t
 });
 
 router.delete('/current/security/sso/providers/:providerId', requirePermission('tenant.member.manage'), async (req, res) => {
-  const security = await gettenantSecurityState(req.tenant.id);
+  const security = await getTenantSecurityState(req.tenant.id);
   const existing = security.ssoProviders.find((item) => item.id === req.params.providerId);
   if (!existing) return res.status(404).json({ error: 'SSO provider not found.' });
 
-  await updatetenantSecurityState(req.tenant.id, (current) => ({
+  await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     ssoProviders: current.ssoProviders.filter((provider) => provider.id !== existing.id),
   }));
@@ -291,12 +291,12 @@ router.post('/sso/simulate-login', requirePermission('tenant.read'), async (req,
   const email = String(req.body?.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email is required.' });
 
-  const tenant = await findtenantByDomain(email);
+  const tenant = await findTenantByDomain(email);
   if (!tenant) {
     return res.status(404).json({ error: 'No tenant domain mapping found for this email.' });
   }
 
-  const security = await gettenantSecurityState(tenant.id);
+  const security = await getTenantSecurityState(tenant.id);
   const provider = security.ssoProviders.find((item) => item.enabled);
   if (!provider) {
     return res.status(400).json({ error: 'No active SSO provider configured for tenant.' });
@@ -325,7 +325,7 @@ router.post('/sso/simulate-login', requirePermission('tenant.read'), async (req,
 });
 
 router.post('/current/security/ldap/import-users', requirePermission('tenant.member.manage'), async (req, res) => {
-  const security = await gettenantSecurityState(req.tenant.id);
+  const security = await getTenantSecurityState(req.tenant.id);
   const enabledLdapProviders = security.ssoProviders.filter((provider) => provider.type === 'ldap' && provider.enabled !== false);
   if (!enabledLdapProviders.length) {
     return res.status(400).json({ error: 'No enabled LDAP provider configured for this tenant.' });
@@ -440,7 +440,7 @@ router.post('/current/security/ldap/import-users', requirePermission('tenant.mem
       });
     }
 
-    const tenantBilling = await gettenantBillingState(req.tenant.id);
+    const tenantBilling = await getTenantBillingState(req.tenant.id);
     if (tenantBilling?.planId === 'enterprise') {
       user = await prisma.user.update({
         where: { id: user.id },

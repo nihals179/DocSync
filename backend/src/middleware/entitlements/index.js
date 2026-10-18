@@ -1,5 +1,5 @@
 const {
-  gettenantEntitlements,
+  getTenantEntitlements,
   isBillingWriteBlocked,
   refreshBillingStatus,
 } = require('../../store');
@@ -24,7 +24,7 @@ async function attachEntitlements(req, res, next) {
     });
   }
 
-  const entitlements = await gettenantEntitlements(req.tenant.id);
+  const entitlements = await getTenantEntitlements(req.tenant.id);
   if (!entitlements) {
     return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
   }

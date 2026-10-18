@@ -34,7 +34,7 @@ async function getUserTenants(userId) {
   const tenantIds = [...new Set(memberships.map((membership) => membership.tenantId))];
   if (!tenantIds.length) return [];
 
-  const rows = await prisma.tenant.findMany({
+  const rows = await prisma.Tenant.findMany({
     where: { id: { in: tenantIds } },
     orderBy: { createdAt: 'asc' },
   });
@@ -77,7 +77,7 @@ async function resolveTenantContext(req, res, next) {
     return res.status(403).json({ error: 'Tenant membership required.' });
   }
 
-  const dbTenant = await prisma.tenant.findUnique({ where: { id: resolvedMembership.tenantId } });
+  const dbTenant = await prisma.Tenant.findUnique({ where: { id: resolvedMembership.tenantId } });
   const tenant = dbTenant ? {
     ...dbTenant,
     createdAt: dbTenant.createdAt instanceof Date ? dbTenant.createdAt.toISOString() : dbTenant.createdAt,

@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../../db/client');
 const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
-  gettenantSecurityState,
+  getTenantSecurityState,
 } = require('../../store');
 const {
   generateOpaqueToken,
@@ -39,7 +39,7 @@ function getUserAgent(req) {
 async function isTenantIpAllowedForUser(req, user) {
   const tenantId = user?.currentTenantId;
   if (!tenantId) return true;
-  const security = await gettenantSecurityState(tenantId);
+  const security = await getTenantSecurityState(tenantId);
   if (!security?.ipAllowlistEnabled || !Array.isArray(security.ipAllowlist) || security.ipAllowlist.length === 0) {
     return true;
   }
@@ -51,7 +51,7 @@ async function getTenantSessionDurationMs(user, remember) {
   if (!tenantId) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }
-  const security = await gettenantSecurityState(tenantId);
+  const security = await getTenantSecurityState(tenantId);
   if (!security) {
     return remember ? REMEMBER_SESSION_MS : STANDARD_SESSION_MS;
   }

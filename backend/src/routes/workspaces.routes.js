@@ -25,7 +25,7 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('workspace.
     where: {
       OR: [
         { tenantId: req.tenant.id },
-        { userId: req.user.id },
+        { ownerId: req.user.id },
       ],
     },
     orderBy: { updatedAt: 'desc' },

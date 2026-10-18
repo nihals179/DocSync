@@ -3,8 +3,8 @@ const defaultBaseUrl = 'http://localhost:4010';
 const {
   TRIAL_DAYS_BY_PLAN,
   getAllPlans,
-  gettenantEntitlements,
-  upserttenantBillingState,
+  getTenantEntitlements,
+  upsertTenantBillingState,
   listInvoicesBytenant,
   upsertInvoice,
   enqueueWebhookJob,
@@ -86,7 +86,7 @@ async function processMockWebhookEvent(event) {
       ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString()
       : null;
 
-    await upserttenantBillingState(tenantId, {
+    await upsertTenantBillingState(tenantId, {
       planId,
       status: trialEndsAt ? 'trialing' : 'active',
       purchasedSeats,
@@ -100,7 +100,7 @@ async function processMockWebhookEvent(event) {
     const now = Date.now();
     const graceEndsAt = new Date(now + graceDays * 24 * 60 * 60 * 1000).toISOString();
 
-    await upserttenantBillingState(tenantId, {
+    await upsertTenantBillingState(tenantId, {
       status: graceDays === 0 ? 'suspended' : 'grace',
       graceEndsAt,
     });
@@ -116,7 +116,7 @@ async function processMockWebhookEvent(event) {
       metadata: { sourceEventType: eventType },
     });
   } else if (eventType === 'invoice.paid') {
-    await upserttenantBillingState(tenantId, {
+    await upsertTenantBillingState(tenantId, {
       status: 'active',
       graceEndsAt: null,
     });
@@ -160,7 +160,7 @@ async function requestBillingServiceInMock(pathname, { method = 'GET', body = nu
   const orgCurrentMatch = pathname.match(/^\/api\/billing\/tenants\/([^/]+)\/current$/);
   if (method === 'GET' && orgCurrentMatch) {
     const tenantId = orgCurrentMatch[1];
-    const snapshot = await gettenantEntitlements(tenantId);
+    const snapshot = await getTenantEntitlements(tenantId);
     if (!snapshot) return toResponse(404, { error: 'Tenant not found.' });
     return toResponse(200, { snapshot });
   }
@@ -179,11 +179,11 @@ async function requestBillingServiceInMock(pathname, { method = 'GET', body = nu
       return toResponse(400, { error: 'purchasedSeats must be a positive integer.' });
     }
     const tenantId = orgSeatsMatch[1];
-    const billing = await upserttenantBillingState(tenantId, {
+    const billing = await upsertTenantBillingState(tenantId, {
       purchasedSeats: Math.floor(purchasedSeatsRaw),
     });
     if (!billing) return toResponse(404, { error: 'Tenant not found.' });
-    const snapshot = await gettenantEntitlements(tenantId);
+    const snapshot = await getTenantEntitlements(tenantId);
     return toResponse(200, {
       message: 'Seats updated.',
       purchasedSeats: billing.purchasedSeats,
@@ -196,7 +196,7 @@ async function requestBillingServiceInMock(pathname, { method = 'GET', body = nu
     const tenantId = orgCheckoutMatch[1];
     const planId = String(body?.planId || 'pro');
     const purchasedSeats = normalizePositiveInt(body?.purchasedSeats, 1);
-    const billing = await upserttenantBillingState(tenantId, {
+    const billing = await upsertTenantBillingState(tenantId, {
       planId,
       status: 'active',
       purchasedSeats,
@@ -222,7 +222,7 @@ async function requestBillingServiceInMock(pathname, { method = 'GET', body = nu
   if (method === 'POST' && orgSubChangeMatch) {
     const tenantId = orgSubChangeMatch[1];
     const planId = String(body?.planId || 'free');
-    const billing = await upserttenantBillingState(tenantId, {
+    const billing = await upsertTenantBillingState(tenantId, {
       planId,
       status: 'active',
     });

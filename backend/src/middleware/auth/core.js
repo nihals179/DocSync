@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { prisma } = require('../../db/client');
 const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
-const { syncCurrenttenantFromMembership, gettenantSecurityState } = require('../../store');
+const { syncCurrentTenantFromMembership, getTenantSecurityState } = require('../../store');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
@@ -170,7 +170,7 @@ async function resolveUserFromSession(sessionId) {
   if (!user) return null;
   // Avoid extra membership sync reads on every request when tenant context is already known.
   if (!user.currentTenantId) {
-    await syncCurrenttenantFromMembership(user);
+    await syncCurrentTenantFromMembership(user);
   }
   return { session, user };
 }
@@ -179,7 +179,7 @@ async function isIpAllowed(req, user) {
   if (!user?.currentTenantId) return true;
   let security = getCachedTenantSecurityState(user.currentTenantId);
   if (!security) {
-    security = await gettenantSecurityState(user.currentTenantId);
+    security = await getTenantSecurityState(user.currentTenantId);
     setCachedTenantSecurityState(user.currentTenantId, security || null);
   }
   if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;

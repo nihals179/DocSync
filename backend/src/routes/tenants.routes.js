@@ -6,8 +6,8 @@ const {
   canAssignCollaborators,
   canAssignSeats,
   ensureWorkspaceForUserProvisioned,
-  gettenantBillingState,
-  gettenantEntitlements,
+  getTenantBillingState,
+  getTenantEntitlements,
   getProfileTable,
 } = require('../store');
 const { requireAuth, generateOpaqueToken } = require('../middleware/auth/core');
@@ -115,7 +115,7 @@ router.get('/current/members', requireAuth, resolveTenantContext, requirePermiss
 });
 
 router.get('/current/invites', requireAuth, resolveTenantContext, requirePermission('tenant.invite.read'), async (req, res) => {
-  const invites = (await prisma.tenantInvite.findMany({
+  const invites = (await prisma.TenantInvite.findMany({
     where: {
       tenantId: req.tenant.id,
       status: 'pending',
@@ -157,7 +157,7 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
     return res.status(409).json({ error: 'User is already a member of this tenant.' });
   }
 
-  const duplicateInvite = await prisma.tenantInvite.findFirst({
+  const duplicateInvite = await prisma.TenantInvite.findFirst({
     where: {
       tenantId: req.tenant.id,
       email,
@@ -168,7 +168,7 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
     return res.status(409).json({ error: 'Pending invite already exists for this email.' });
   }
 
-  const invite = await prisma.tenantInvite.create({
+  const invite = await prisma.TenantInvite.create({
     data: {
       id: uuidv4(),
       token: generateOpaqueToken(),
@@ -206,14 +206,14 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'Invite token is required.' });
 
-  const invite = await prisma.tenantInvite.findUnique({
+  const invite = await prisma.TenantInvite.findUnique({
     where: { token },
   });
   if (!invite || invite.status !== 'pending') {
     return res.status(404).json({ error: 'Invite not found or already consumed.' });
   }
   if (new Date(invite.expiresAt).getTime() <= Date.now()) {
-    await prisma.tenantInvite.update({
+    await prisma.TenantInvite.update({
       where: { id: invite.id },
       data: {
         status: 'expired',
@@ -276,7 +276,7 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     });
   }
 
-  await prisma.tenantInvite.update({
+  await prisma.TenantInvite.update({
     where: { id: invite.id },
     data: {
       status: 'accepted',
@@ -405,7 +405,7 @@ router.delete('/current/members/:membershipId', requireAuth, resolveTenantContex
 });
 
 router.get('/current/entitlements', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
-  const entitlements = await gettenantEntitlements(req.tenant.id);
+  const entitlements = await getTenantEntitlements(req.tenant.id);
   if (!entitlements) return res.status(404).json({ error: 'Entitlements unavailable.' });
   res.json({ entitlements });
 });

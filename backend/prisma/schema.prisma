@@ -172,7 +172,7 @@ model AuthSession {
 
 model Invoice {
   id             String   @id
-  tenantId       String
+  TenantId       String?
   provider       String
   invoiceNumber  String?
   amountCents    Int
@@ -276,7 +276,7 @@ model AppConfig {
 model AuditLog {
   id             String   @id
   userId         String?
-  tenantId        String
+  tenantId        String?
   action         String
   status         String
   ipAddress      String?
@@ -292,7 +292,7 @@ model AuditLog {
 model Document {
   id             String   @id
   userId         String
-  tenantId       String
+  tenantId       String?
   workspaceId    String?
   title          String
   content        String
@@ -332,7 +332,7 @@ model Version {
 model Todo {
   id             String   @id
   workspaceId    String?
-  tenantId       String
+  tenantId       String?
   userId         String
   title          String
   completed      Boolean  @default(false)

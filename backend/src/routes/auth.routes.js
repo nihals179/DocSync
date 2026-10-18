@@ -7,8 +7,8 @@ const {
   ensureTenantBootstrapForUser,
   ensureUserBillingState,
   ensureWorkspaceForUserProvisioned,
-  gettenantSecurityState,
-  syncCurrenttenantFromMembership,
+  getTenantSecurityState,
+  syncCurrentTenantFromMembership,
 } = require('../store');
 const { writeAuditLog } = require('../lib/audit');
 const {
@@ -199,15 +199,26 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   // Legacy users may exist without org membership; bootstrap tenant context on login.
   await ensureTenantBootstrapForUser(user);
-  await syncCurrenttenantFromMembership(user);
+  await syncCurrentTenantFromMembership(user);
+  function getCurrentTenantId(user) {
+    return user.currentTenantId;
+  }
+  
+  function buildCurrentTenantUpdateData(tenantId) {
+    if (prisma.Tenant) {
+      return { currentTenantId: tenantId || null };
+    }
+    return { currentTenantId: tenantId || null };
+  }
+  const resolvedTenantId = getCurrentTenantId(user);
 
-  if (user.currentTenantId) {
+  if (resolvedTenantId) {
     try {
       await ensureWorkspaceForUserProvisioned(user);
     } catch (error) {
       audit(req, 'login', 'failure', user.id, {
         reason: 'workspace-provision-failed',
-        tenantId: user.currentTenantId,
+        tenantId: resolvedTenantId,
         error: String(error?.message || error),
       });
       return res.status(500).json({ error: 'Failed to provision your workspace. Please try again.' });
@@ -217,19 +228,19 @@ router.post('/login', loginRateLimit, async (req, res) => {
   if (!await isTenantIpAllowedForUser(req, user)) {
     audit(req, 'login-ip-policy', 'failure', user.id, {
       reason: 'ip-not-allowlisted',
-      tenantId: user.currentTenantId,
+      tenantId: resolvedTenantId,
     });
     return res.status(403).json({ error: 'Your tenant only allows login from approved IP addresses.' });
   }
 
-  const security = await gettenantSecurityState(user.currentTenantId);
+  const security = await getTenantSecurityState(resolvedTenantId);
   const hasActiveSsoProvider = Boolean(
     security?.ssoProviders?.some((provider) => provider && provider.enabled !== false),
   );
   if (security?.requireMfa && !hasActiveSsoProvider && !user.twoFactorEnabled) {
     audit(req, 'login-mfa-policy', 'failure', user.id, {
       reason: 'mfa-required-by-tenant',
-      tenantId: user.currentTenantId,
+      tenantId: resolvedTenantId,
     });
     return res.status(403).json({ error: 'Your tenant requires MFA. Enable two-factor authentication first.' });
   }
@@ -251,7 +262,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
       data: {
         failedLoginAttempts: 0,
         lockoutUntil: null,
-        currentTenantId: user.currentTenantId || null,
+        ...buildCurrentTenantUpdateData(resolvedTenantId),
         lastLoginAt: new Date(user.lastLoginAt),
       },
     });
