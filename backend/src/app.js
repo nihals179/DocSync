@@ -19,6 +19,8 @@ const tenantsRoutes = require('./routes/tenants.routes');
 const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
 const billingRoutes = require('./routes/billing.routes');
 const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
+const openApiSpec = require('./openapi');
+const swaggerUi = require('swagger-ui-express');
 
 const app = express();
 
@@ -46,6 +48,22 @@ app.use(cors({
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+app.get(['/openapi.json', '/api/openapi.json', '/swagger.json'], (_req, res) => {
+	res.json(openApiSpec);
+});
+
+app.use('/swagger-ui', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+	documentTitle: 'DocSync API Swagger',
+	swaggerOptions: {
+		displayRequestDuration: true,
+		persistAuthorization: true,
+	},
+}));
+
+app.get('/swagger', (_req, res) => {
+	res.redirect('/swagger-ui');
+});
 
 // Health check
 app.use('/', healthRoutes);

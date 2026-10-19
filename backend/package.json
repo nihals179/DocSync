@@ -43,6 +43,7 @@
     "prisma": "^6.16.2",
     "qrcode": "^1.5.4",
     "redis": "^5.12.1",
+    "swagger-ui-express": "^5.0.1",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
