@@ -316,6 +316,7 @@ const openapi = {
   servers: [
     { url: 'http://localhost:4000', description: 'Local development server' },
   ],
+  security: bearerSecurity,
   components: {
     securitySchemes: {
       bearerAuth: {
@@ -334,7 +335,7 @@ const openapi = {
       get: op({
         summary: 'Health check',
         tags: ['Health'],
-        security: [],
+        security: bearerSecurity,
         responseExample: 'DocSync backend running!',
         responseStatus: 200,
         responseDescription: 'Service is healthy',
@@ -346,7 +347,7 @@ const openapi = {
       post: op({
         summary: 'Register a new account',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         requestExample: {
           name: 'Ava Smith',
           email: 'ava@example.com',
@@ -384,7 +385,7 @@ const openapi = {
       post: op({
         summary: 'Log in with credentials or reuse existing session',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         description: 'Two modes are supported: (1) session reuse using refresh/csrf cookies plus `x-csrf-token`; (2) credential login using `email` (or `username`) with password/passwordEncrypted. If `email` or `username` is provided during session reuse, it must match the existing session user identity.',
         parameters: [{
           name: 'x-csrf-token',
@@ -434,7 +435,7 @@ const openapi = {
       post: op({
         summary: 'Verify email address',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { token: 'verify_token_123' },
         requestSchema: verifyTokenSchema,
         responseExample: { message: 'Email verified successfully.' },
@@ -446,7 +447,7 @@ const openapi = {
       post: op({
         summary: 'Resend verification email',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { email: 'ava@example.com' },
         requestSchema: { type: 'object', properties: { email: { type: 'string', format: 'email' } }, required: ['email'] },
         responseExample: { message: 'Verification email queued.' },
@@ -458,7 +459,7 @@ const openapi = {
       post: op({
         summary: 'Start password reset',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { email: 'ava@example.com' },
         requestSchema: { type: 'object', properties: { email: { type: 'string', format: 'email' } }, required: ['email'] },
         responseExample: { message: 'If the email exists, a reset link was sent.' },
@@ -470,7 +471,7 @@ const openapi = {
       post: op({
         summary: 'Reset password with token',
         tags: ['Auth'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { token: 'reset_token_123', password: 'NewP@ssw0rd123' },
         requestSchema: resetPasswordSchema,
         responseExample: { message: 'Password updated, sign in again.' },
@@ -482,7 +483,7 @@ const openapi = {
       post: op({
         summary: 'Rotate the refresh session',
         tags: ['Sessions'],
-        security: [],
+        security: bearerSecurity,
         parameters: [csrfHeader],
         description: sessionCookieNote,
         requestExample: {},
@@ -509,7 +510,7 @@ const openapi = {
       post: op({
         summary: 'Rotate the refresh session',
         tags: ['Sessions'],
-        security: [],
+        security: bearerSecurity,
         parameters: [csrfHeader],
         description: `${sessionCookieNote} This is the backward-compatible alias under /api/auth.`,
         requestExample: {},
@@ -605,7 +606,7 @@ const openapi = {
       post: op({
         summary: 'Complete two-factor login',
         tags: ['Security'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { tempToken: 'pending_2fa_token', code: '123456' },
         requestSchema: twoFactorCodeSchema,
         responseExample: {
@@ -623,7 +624,7 @@ const openapi = {
       get: op({
         summary: 'Get password encryption public key',
         tags: ['Security'],
-        security: [],
+        security: bearerSecurity,
         responseExample: {
           algorithm: 'RSA-OAEP',
           hash: 'sha256',
@@ -756,7 +757,7 @@ const openapi = {
       post: op({
         summary: 'Accept a tenant invite',
         tags: ['Tenants'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { token: 'invite_token_123' },
         requestSchema: { type: 'object', properties: { token: { type: 'string' } }, required: ['token'] },
         responseExample: { message: 'Tenant invite accepted.', tenantId: 'ten_123' },
@@ -1012,7 +1013,7 @@ const openapi = {
       post: op({
         summary: 'Receive billing provider webhook',
         tags: ['Billing'],
-        security: [],
+        security: bearerSecurity,
         requestExample: { id: 'evt_123', type: 'invoice.paid', data: { tenantId: 'ten_123', amountCents: 2000 } },
         requestSchema: {
           type: 'object',

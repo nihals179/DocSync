@@ -12,6 +12,8 @@ const {
 } = require('../store');
 const { writeAuditLog } = require('../lib/audit');
 const {
+  getAuthScope,
+  resolveCookieNames,
   signTwoFactorToken,
 } = require('../middleware/auth/core');
 const {
@@ -27,8 +29,10 @@ const {
   issueOneTimeToken,
   consumeOneTimeToken,
   createSession,
+  findSessionByRefreshToken,
   writeSessionCookies,
   buildAuthResponse,
+  validateCsrf,
   revokeAllUserSessions,
   findUserByIdentifier,
 } = require('../middleware/auth');
@@ -54,6 +58,43 @@ const {
   getUserAgent,
   prisma,
 });
+
+async function resolveExistingSessionForLogin(req, authScope, expectedIdentifier = null) {
+  const cookieNames = resolveCookieNames(authScope);
+  const refreshToken = req.cookies?.[cookieNames.refreshCookie];
+  if (!refreshToken) return null;
+
+  const session = await findSessionByRefreshToken(refreshToken);
+  if (!session) return null;
+  if (!validateCsrf(req, session)) return null;
+
+  const user = await prisma.user.findUnique({ where: { id: session.userId } });
+  if (!user) return null;
+
+  const normalizedUser = {
+    ...user,
+    createdAt: user.createdAt instanceof Date ? user.createdAt.toISOString() : user.createdAt,
+    updatedAt: user.updatedAt instanceof Date ? user.updatedAt.toISOString() : user.updatedAt,
+    lockoutUntil: user.lockoutUntil instanceof Date ? user.lockoutUntil.toISOString() : user.lockoutUntil || null,
+    lastLoginAt: user.lastLoginAt instanceof Date ? user.lastLoginAt.toISOString() : user.lastLoginAt || null,
+  };
+
+  const normalizedExpectedIdentifier = String(expectedIdentifier || '').toLowerCase().trim();
+  if (normalizedExpectedIdentifier) {
+    const sessionEmail = String(normalizedUser.email || '').toLowerCase().trim();
+    if (sessionEmail !== normalizedExpectedIdentifier) return null;
+  }
+
+  if (!await isTenantIpAllowedForUser(req, normalizedUser)) {
+    return null;
+  }
+
+  return {
+    refreshToken,
+    user: normalizedUser,
+    session,
+  };
+}
 
 
 router.post('/register', registerRateLimit, async (req, res) => {
@@ -136,8 +177,15 @@ router.post('/register', registerRateLimit, async (req, res) => {
 });
 
 router.post('/login', loginRateLimit, async (req, res) => {
-  const authConfig = await getAuthConfig();
-  const authScope = String(req?.get?.('x-auth-scope') || '').toLowerCase() === 'admin' ? 'admin' : 'workspace';
+  const authScope = getAuthScope(req);
+  const requestedIdentifier = String(req.body?.email || req.body?.username || '').toLowerCase().trim();
+  const existing = await resolveExistingSessionForLogin(req, authScope, requestedIdentifier || null);
+  if (existing) {
+    writeSessionCookies(res, existing.refreshToken, existing.session.csrfToken, existing.session.expiresAt, authScope);
+    audit(req, 'login', 'success', existing.user.id, { sessionId: existing.session.id, reusedSession: true });
+    return res.json(buildAuthResponse(existing.user, existing.session));
+  }
+
   const { email, username, remember = false } = req.body ?? {};
   let decryptedPassword;
   try {
@@ -162,6 +210,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     audit(req, 'login-lockout', 'failure', user.id, { lockoutUntil: user.lockoutUntil });
     return res.status(423).json({ error: 'Account temporarily locked after repeated failed attempts.' });
   }
+const authConfig = await getAuthConfig();
 
   const valid = await bcrypt.compare(String(decryptedPassword), user.passwordHash);
   if (!valid) {
@@ -172,7 +221,8 @@ router.post('/login', loginRateLimit, async (req, res) => {
     if (nextLockoutUntil) {
       audit(req, 'account-lockout', 'failure', user.id, { failedLoginAttempts: nextFailedAttempts });
     }
-    if (process.env.DATABASE_URL) {
+
+    if (user.failedLoginAttempts > 0 || user.lockoutUntil) {
       await prisma.user.updateMany({
         where: { id: user.id },
         data: {
@@ -181,6 +231,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
         },
       });
     }
+
     audit(req, 'login', 'failure', user.id, { failedLoginAttempts: nextFailedAttempts });
     return res.status(nextLockoutUntil ? 423 : 401).json({
       error: nextLockoutUntil
@@ -199,7 +250,8 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   // Legacy users may exist without org membership; bootstrap tenant context on login.
   await ensureTenantBootstrapForUser(user);
-  await syncCurrentTenantFromMembership(user);
+  // Keep the current tenant in sync with the user's active memberships. This is important for users who may have been added to a new tenant or removed from an existing one.
+  // await syncCurrentTenantFromMembership(user);
   function getCurrentTenantId(user) {
     return user.currentTenantId;
   }
@@ -225,14 +277,6 @@ router.post('/login', loginRateLimit, async (req, res) => {
     }
   }
 
-  if (!await isTenantIpAllowedForUser(req, user)) {
-    audit(req, 'login-ip-policy', 'failure', user.id, {
-      reason: 'ip-not-allowlisted',
-      tenantId: resolvedTenantId,
-    });
-    return res.status(403).json({ error: 'Your tenant only allows login from approved IP addresses.' });
-  }
-
   const security = await getTenantSecurityState(resolvedTenantId);
   const hasActiveSsoProvider = Boolean(
     security?.ssoProviders?.some((provider) => provider && provider.enabled !== false),
@@ -243,6 +287,18 @@ router.post('/login', loginRateLimit, async (req, res) => {
       tenantId: resolvedTenantId,
     });
     return res.status(403).json({ error: 'Your tenant requires MFA. Enable two-factor authentication first.' });
+  }
+
+  if(security?.ipAllowlistEnabled && Array.isArray(security.ipAllowlist) && security.ipAllowlist.length > 0) {
+    const requestIp = getRequestIp(req);
+    if (!security.ipAllowlist.includes(requestIp)) {
+      audit(req, 'login-ip-policy', 'failure', user.id, {
+        reason: 'ip-not-allowlisted',
+        tenantId: resolvedTenantId,
+        requestIp,
+      });
+      return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
+    }
   }
 
   if (user.twoFactorEnabled) {
@@ -256,7 +312,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
   }
 
   user.lastLoginAt = nowIso();
-  if (process.env.DATABASE_URL) {
+  if (user.failedLoginAttempts > 0 || user.lockoutUntil) {
     await prisma.user.updateMany({
       where: { id: user.id },
       data: {

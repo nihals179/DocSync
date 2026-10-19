@@ -139,9 +139,25 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     resetMessages();
-    if (!validateLogin()) return;
+    if (!loginEmail.trim()) {
+      setLoginErrors({ email: 'Email is required.' });
+      return;
+    }
+    if (!validateEmail(loginEmail)) {
+      setLoginErrors({ email: 'Enter a valid email.' });
+      return;
+    }
     setLoginLoading(true);
     try {
+      try {
+        const resumed = await authApi.resumeLogin(loginEmail.trim().toLowerCase());
+        await onAuthSuccess(resumed);
+        return;
+      } catch {
+        // No reusable session/identity match. Continue with credential login.
+      }
+
+      if (!validateLogin()) return;
       const result = await authApi.login(loginEmail, loginPassword, rememberMe);
       if ('requiresTwoFactor' in result) {
         setPendingTwoFactorToken(result.tempToken);

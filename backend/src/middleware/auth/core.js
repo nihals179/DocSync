@@ -139,8 +139,20 @@ function verifyTwoFactorToken(token) {
 
 function mapDbUserToAuthUser(dbUser) {
   if (!dbUser) return null;
+  const currentTenant = dbUser.currentTenant
+    ? {
+      ...dbUser.currentTenant,
+      createdAt: dbUser.currentTenant.createdAt instanceof Date
+        ? dbUser.currentTenant.createdAt.toISOString()
+        : dbUser.currentTenant.createdAt,
+      updatedAt: dbUser.currentTenant.updatedAt instanceof Date
+        ? dbUser.currentTenant.updatedAt.toISOString()
+        : dbUser.currentTenant.updatedAt,
+    }
+    : null;
   return {
     ...dbUser,
+    currentTenant,
     createdAt: dbUser.createdAt instanceof Date ? dbUser.createdAt.toISOString() : dbUser.createdAt,
     updatedAt: dbUser.updatedAt instanceof Date ? dbUser.updatedAt.toISOString() : dbUser.updatedAt,
     lockoutUntil: dbUser.lockoutUntil instanceof Date ? dbUser.lockoutUntil.toISOString() : dbUser.lockoutUntil || null,
@@ -150,7 +162,22 @@ function mapDbUserToAuthUser(dbUser) {
 
 async function resolveUserFromSession(sessionId) {
   if (!isDatabaseConfigured()) return null;
-  const session = normalizeSession(await prisma.authSession.findUnique({ where: { id: sessionId } }));
+  const sessionRow = await prisma.authSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      user: {
+        include: {
+          currentTenant: true,
+          tenantMembership: {
+            include: {
+              tenant: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  const session = normalizeSession(sessionRow);
   if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
     return null;
   }
@@ -165,23 +192,13 @@ async function resolveUserFromSession(sessionId) {
     });
     return null;
   }
-  const dbUser = await prisma.user.findUnique({ where: { id: session.userId } });
-  const user = mapDbUserToAuthUser(dbUser);
+  const user = mapDbUserToAuthUser(sessionRow?.user || null);
   if (!user) return null;
-  // Avoid extra membership sync reads on every request when tenant context is already known.
-  if (!user.currentTenantId) {
-    await syncCurrentTenantFromMembership(user);
-  }
   return { session, user };
 }
 
 async function isIpAllowed(req, user) {
-  if (!user?.currentTenantId) return true;
-  let security = getCachedTenantSecurityState(user.currentTenantId);
-  if (!security) {
-    security = await getTenantSecurityState(user.currentTenantId);
-    setCachedTenantSecurityState(user.currentTenantId, security || null);
-  }
+  let security = user.currentTenant?.security || null;
   if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;
   const requestIp = getRequestIp(req);
   return security.ipAllowlist.includes(requestIp);
@@ -205,7 +222,6 @@ async function requireAuth(req, res, next) {
     if (payload.type !== 'access' || typeof payload.sub !== 'string' || typeof payload.sid !== 'string') {
       return res.status(401).json({ error: 'Token invalid or expired.' });
     }
-
     const resolved = await resolveUserFromSession(payload.sid);
     if (!resolved || resolved.user.id !== payload.sub) {
       return res.status(401).json({ error: 'Session invalid or expired.' });
@@ -221,24 +237,14 @@ async function requireAuth(req, res, next) {
       emailVerified: resolved.user.emailVerified,
       twoFactorEnabled: resolved.user.twoFactorEnabled,
       currentTenantId: resolved.user.currentTenantId || null,
+      tenantMembership: resolved.user.tenantMembership || null,
     };
     req.authSession = resolved.session;
     req.accessToken = token;
-
-    // Slide the inactivity window: any authenticated request counts as activity.
-    const previousLastUsedAtMs = new Date(resolved.session.lastUsedAt).getTime();
-    if (!Number.isFinite(previousLastUsedAtMs) || previousLastUsedAtMs + SESSION_ACTIVITY_WRITE_THROTTLE_MS <= Date.now()) {
-      resolved.session.lastUsedAt = new Date().toISOString();
-      await prisma.authSession.updateMany({
-        where: { id: resolved.session.id },
-        data: { lastUsedAt: new Date(resolved.session.lastUsedAt) },
-      });
-    }
-
     next();
   } catch {
     return res.status(500).json({ error: 'Authentication service unavailable.' });
-}
+  }
 }
 
 module.exports = {

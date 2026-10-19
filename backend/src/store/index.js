@@ -966,6 +966,9 @@ async function syncCurrentTenantFromMembership(user) {
 		orderBy: {
 			createdAt: 'asc',
 		},
+		include: {
+			tenant: true,
+		},
 	});
 
 	if (!activeMemberships.length) {
@@ -982,9 +985,9 @@ async function syncCurrentTenantFromMembership(user) {
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
-	const row = await prisma.tenant.findUnique({ where: { id: selectedMembership.tenantId } });
 	let tenant = null;
-	if (row) {
+	if (selectedMembership.tenant) {
+		const row = selectedMembership.tenant;
 		tenant = {
 			id: row.id,
 			name: row.name,
@@ -1076,6 +1079,9 @@ async function ensureTenantBootstrapForUser(user) {
 		orderBy: {
 			createdAt: 'asc',
 		},
+		include: {
+			tenant: true,
+		},
 	});
 
 	if (activeMemberships.length) {
@@ -1085,7 +1091,7 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		const tenant = await prisma.tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
+		const tenant = activeMemberships[0].tenant;
 		if (!tenant) return null;
 
 		await ensureTenantBillingState(tenant);

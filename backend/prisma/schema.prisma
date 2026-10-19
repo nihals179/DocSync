@@ -58,7 +58,12 @@ model User {
   twoFactorEnabled      Boolean  @default(false)
   twoFactorSecret       String?
   twoFactorTempSecret   String?
-  currentTenantId       String?  
+  currentTenantId       String?
+  currentTenant         Tenant?            @relation("UserCurrentTenant", fields: [currentTenantId], references: [id])
+  tenantMembership     tenantMembership?  @relation("UserMemberships")
+  userBilling           UserBilling?
+  userUsage             UserUsage[]
+  authSessions          AuthSession[]
 
   @@map("users")
 }
@@ -68,6 +73,10 @@ model Tenant {
   name        String
   ownerUserId String
   security    Json?
+  memberships tenantMembership[]
+  currentUsers User[] @relation("UserCurrentTenant")
+  billing      tenantBilling?
+  usage        TenantsUsage[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -86,21 +95,25 @@ model tenantBilling {
   currentPeriodEndAt DateTime?
   graceEndsAt        DateTime?
   updatedAt          DateTime @updatedAt
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
 
   @@map("tenant_billing")
 }
 
 model tenantMembership {
-  id             String   @id
-  tenantId String 
-  userId         String
-  email          String?
-  billingAdmin   Boolean  @default(false)
-  status         String
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id           String   @id
+  tenantId     String
+  userId       String
+  email        String?
+  billingAdmin Boolean  @default(false)
+  status       String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  user         User     @relation("UserMemberships", fields: [userId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([tenantId, userId])
+  @@unique([userId])
   @@unique([tenantId, email])
   @@index([email])
   @@map("tenant_memberships")
@@ -166,6 +179,7 @@ model AuthSession {
   remember         Boolean  @default(false)
   userAgent        String
   ipAddress        String
+  user             User     @relation(fields: [userId], references: [id])
 
   @@map("auth_sessions")
 }
@@ -200,6 +214,7 @@ model UserBilling {
   currentPeriodEndAt DateTime?
   graceEndsAt        DateTime?
   updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id])
 
   @@map("user_billing")
 }
@@ -210,6 +225,7 @@ model TenantsUsage {
   aiRequests      Int      @default(0)
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
 
   @@id([tenantId, monthKey])
   @@map("tenant_usage")
@@ -221,6 +237,7 @@ model UserUsage {
   aiRequests      Int      @default(0)
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id])
 
   @@id([userId, monthKey])
   @@map("user_usage")

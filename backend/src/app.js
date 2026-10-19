@@ -31,6 +31,7 @@ const allowedOrigins = new Set([
 	'http://127.0.0.1:5174',
 	'http://localhost:4173',
 	'http://127.0.0.1:4173',
+	'http://localhost:4000',
 ]);
 
 if (process.env.FRONTEND_URL) {

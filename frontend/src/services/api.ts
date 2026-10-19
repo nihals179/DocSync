@@ -295,6 +295,7 @@ type FetchOptions = RequestInit & {
 };
 
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
+const TENANT_CONTEXT_STORAGE_KEY = 'docsync.tenantContextId';
 let unauthorizedHandler: (() => void) | null = null;
 let passwordPublicKeyPromise: Promise<string> | null = null;
 let inFlightApiRequests = 0;
@@ -360,6 +361,29 @@ export function clearPersistedCsrfToken() {
   persistCsrfToken('');
 }
 
+export function getPersistedTenantContextId() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.sessionStorage.getItem(TENANT_CONTEXT_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function persistTenantContextId(tenantId: string | null | undefined) {
+  if (typeof window === 'undefined') return;
+  try {
+    const normalized = String(tenantId || '').trim();
+    if (normalized) {
+      window.sessionStorage.setItem(TENANT_CONTEXT_STORAGE_KEY, normalized);
+    } else {
+      window.sessionStorage.removeItem(TENANT_CONTEXT_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
 function getCookie(name: string) {
   const match = document.cookie
     .split('; ')
@@ -383,12 +407,19 @@ async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): 
   const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
+  const extraHeaderRecord = (extraHeaders as Record<string, string>) || {};
+  const explicitTenantHeader =
+    extraHeaderRecord['x-tenant-id']
+    || extraHeaderRecord['X-Tenant-Id']
+    || extraHeaderRecord['X-TENANT-ID'];
+  const tenantContextId = explicitTenantHeader ? '' : getPersistedTenantContextId();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    ...(tenantContextId ? { 'x-tenant-id': tenantContextId } : {}),
     ...(authScope === 'admin' ? { 'x-auth-scope': 'admin' } : {}),
-    ...(extraHeaders as Record<string, string>),
+    ...extraHeaderRecord,
   };
 
   beginApiRequest();
@@ -428,11 +459,18 @@ async function apiFetchText(path: string, options: FetchOptions = {}): Promise<s
   const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
+  const extraHeaderRecord = (extraHeaders as Record<string, string>) || {};
+  const explicitTenantHeader =
+    extraHeaderRecord['x-tenant-id']
+    || extraHeaderRecord['X-Tenant-Id']
+    || extraHeaderRecord['X-TENANT-ID'];
+  const tenantContextId = explicitTenantHeader ? '' : getPersistedTenantContextId();
   const headers: Record<string, string> = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    ...(tenantContextId ? { 'x-tenant-id': tenantContextId } : {}),
     ...(authScope === 'admin' ? { 'x-auth-scope': 'admin' } : {}),
-    ...(extraHeaders as Record<string, string>),
+    ...extraHeaderRecord,
   };
 
   beginApiRequest();
@@ -528,6 +566,16 @@ async function withPasswordEncryptionRetry<T>(operation: () => Promise<T>) {
 }
 
 export const authApi = {
+  resumeLogin: (identifier: string, authScope: 'workspace' | 'admin' = 'workspace') =>
+    apiFetch<AuthSuccess>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: identifier, remember: false }),
+      includeCsrf: true,
+      authScope,
+    }).then((auth) => {
+      persistTenantContextId(auth.user?.currentTenantId ?? null);
+      return auth;
+    }),
   register: async (name: string, email: string, password: string) =>
     withPasswordEncryptionRetry(async () => apiFetch<RegisterResponse>('/api/auth/register', {
       method: 'POST',
@@ -556,18 +604,29 @@ export const authApi = {
         remember,
       }),
       authScope,
-    })),
+    })).then((result) => {
+      if (!('requiresTwoFactor' in result)) {
+        persistTenantContextId(result.user?.currentTenantId ?? null);
+      }
+      return result;
+    }),
   loginWithTwoFactor: (tempToken: string, code: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/login/2fa', {
       method: 'POST',
       body: JSON.stringify({ tempToken, code }),
       authScope,
+    }).then((auth) => {
+      persistTenantContextId(auth.user?.currentTenantId ?? null);
+      return auth;
     }),
   refresh: (authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/refresh', {
       method: 'POST',
       includeCsrf: true,
       authScope,
+    }).then((auth) => {
+      persistTenantContextId(auth.user?.currentTenantId ?? null);
+      return auth;
     }),
   logout: (token: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<{ message: string }>('/api/auth/logout', {
@@ -786,16 +845,25 @@ export const tenantsApi = {
   mine: (token: string) =>
     apiFetch<{ tenants: TenantSummary[]; currentTenantId: string | null }>('/api/tenants/mine', {
       token,
+    }).then((response) => {
+      persistTenantContextId(response.currentTenantId);
+      return response;
     }),
   switchContext: (token: string, tenantId: string) =>
     apiFetch<{ message: string; tenantId: string }>('/api/tenants/switch', {
       method: 'POST',
       token,
       body: JSON.stringify({ tenantId }),
+    }).then((response) => {
+      persistTenantContextId(response.tenantId);
+      return response;
     }),
   current: (token: string) =>
     apiFetch<{ tenant: TenantSummary; membership: tenantMembership }>('/api/tenants/current', {
       token,
+    }).then((response) => {
+      persistTenantContextId(response.tenant?.id || null);
+      return response;
     }),
   listMembers: (token: string) =>
     apiFetch<{ members: TenantMember[] }>('/api/tenants/current/members', {
@@ -816,6 +884,9 @@ export const tenantsApi = {
       method: 'POST',
       token,
       body: JSON.stringify({ token: tokenValue }),
+    }).then((response) => {
+      persistTenantContextId(response.tenantId);
+      return response;
     }),
   updateMember: (
     token: string,

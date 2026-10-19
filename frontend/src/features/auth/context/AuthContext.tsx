@@ -8,6 +8,7 @@ import type { Session } from '../../../types/document.types';
 
 const SESSION_STORAGE_KEY = 'docsync.session';
 const ADMIN_SESSION_KEY = 'docsync.adminSession';
+const UI_AUTH_STATE_KEY = 'docsync.uiAuthState';
 
 interface AuthContextValue {
   session: Session | null;
@@ -50,6 +51,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const [adminSession, setAdminSession] = useState<Session | null>(() => readPersistedAdminSession());
+
+  const readUiAuthState = useCallback((): boolean | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.sessionStorage.getItem(UI_AUTH_STATE_KEY);
+      if (raw === 'true') return true;
+      if (raw === 'false') return false;
+      if (raw) window.sessionStorage.removeItem(UI_AUTH_STATE_KEY);
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const writeUiAuthState = useCallback((state: boolean | null) => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (state === null) {
+        window.sessionStorage.removeItem(UI_AUTH_STATE_KEY);
+      } else {
+        window.sessionStorage.setItem(UI_AUTH_STATE_KEY, state ? 'true' : 'false');
+      }
+    } catch {
+      // Ignore storage failures in restricted environments.
+    }
+  }, []);
 
   const applyAdminSession = useCallback((auth: Session | null) => {
     setAdminSession(auth);
@@ -96,10 +123,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     if (auth?.csrfToken) {
       persistCsrfToken(auth.csrfToken);
+      writeUiAuthState(true);
     } else {
       clearPersistedCsrfToken();
+      writeUiAuthState(false);
     }
-  }, []);
+  }, [writeUiAuthState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,6 +140,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       pathname.startsWith('/auth') ||
       pathname.startsWith('/verify-email') ||
       pathname.startsWith('/reset-password');
+    const uiAuthState = readUiAuthState();
+    if (uiAuthState !== true) {
+      setSession(null);
+      setAuthReady(true);
+      startupRefreshPromiseRef.current = null;
+      return () => {
+        cancelled = true;
+      };
+    }
     const restoredSession = readPersistedSession();
     const isRestoredSessionUsable =
       Boolean(restoredSession) &&
@@ -159,7 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [applySession, navigate, readPersistedSession]);
+  }, [applySession, navigate, readPersistedSession, readUiAuthState]);
 
   const refreshSession = useCallback(async () => {
     const auth = await authApi.refresh();
@@ -210,15 +248,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleLogout = useCallback(async () => {
+    writeUiAuthState(false);
+    startupRefreshPromiseRef.current = null;
     try {
       if (session) await authApi.logout(session.accessToken);
     } catch {
       // Logout still clears local auth state.
     } finally {
-      applySession(null);
+      setSession(null);
       navigate('/auth', { replace: true });
     }
-  }, [applySession, navigate, session]);
+  }, [navigate, session, writeUiAuthState]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {

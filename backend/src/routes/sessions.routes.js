@@ -82,11 +82,11 @@ router.post('/refresh', authRateLimit, async (req, res) => {
 });
 
 router.post('/logout', requireAuth, async (req, res) => {
-  const authScope = getAuthScope(req);
-  await revokeSession(req.authSession.id);
-  clearAuthCookies(res, authScope);
-  audit(req, 'logout', 'success', req.user.id, { sessionId: req.authSession.id });
-  res.json({ message: 'Logged out successfully.' });
+  audit(req, 'logout', 'success', req.user.id, {
+    sessionId: req.authSession.id,
+    sessionRetained: true,
+  });
+  res.json({ message: 'Logout acknowledged. Session is retained.' });
 });
 
 router.get('/me', requireAuth, (req, res) => {

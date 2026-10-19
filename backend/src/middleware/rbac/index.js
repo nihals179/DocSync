@@ -28,18 +28,17 @@ async function getUserTenants(userId) {
   const memberships = await prisma.tenantMembership.findMany({
     where: { userId, status: 'active' },
     orderBy: { createdAt: 'asc' },
-    select: { tenantId: true },
+    include: { tenant: true },
   });
 
-  const tenantIds = [...new Set(memberships.map((membership) => membership.tenantId))];
-  if (!tenantIds.length) return [];
+  const tenantMap = new Map();
+  for (const membership of memberships) {
+    if (membership.tenant && !tenantMap.has(membership.tenant.id)) {
+      tenantMap.set(membership.tenant.id, membership.tenant);
+    }
+  }
 
-  const rows = await prisma.Tenant.findMany({
-    where: { id: { in: tenantIds } },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  return rows.map((dbTenant) => ({
+  return Array.from(tenantMap.values()).map((dbTenant) => ({
     ...dbTenant,
     createdAt: dbTenant.createdAt instanceof Date ? dbTenant.createdAt.toISOString() : dbTenant.createdAt,
     updatedAt: dbTenant.updatedAt instanceof Date ? dbTenant.updatedAt.toISOString() : dbTenant.updatedAt,
@@ -57,33 +56,33 @@ function resolveRequestedTenantId(req) {
 }
 
 async function resolveTenantContext(req, res, next) {
-  const requestedTenantId = resolveRequestedTenantId(req) || req.user.currentTenantId || null;
-  const activeMemberships = (await prisma.tenantMembership.findMany({
-    where: { userId: req.user.id, status: 'active' },
-    orderBy: { createdAt: 'asc' },
-  })).map((membership) => ({
-    ...membership,
-    createdAt: membership.createdAt instanceof Date ? membership.createdAt.toISOString() : membership.createdAt,
-    updatedAt: membership.updatedAt instanceof Date ? membership.updatedAt.toISOString() : membership.updatedAt,
-  }));
-
-  if (activeMemberships.length === 0) {
-    return res.status(403).json({ error: 'No active membership.' });
+  const requestedTenantId =  req.user.currentTenantId || resolveRequestedTenantId(req);
+  const membershipWhere = requestedTenantId
+    ? { userId: req.user.id, status: 'active', tenantId: requestedTenantId }
+    : { userId: req.user.id, status: 'active' };
+  const dbMembership = req.user.tenantMembership[0]
+    ? req.user.tenantMembership[0]
+    : await prisma.tenantMembership.findFirst({
+      where: membershipWhere,
+      orderBy: { createdAt: 'asc' },
+      include: { tenant: true },
+    });
+  if (!dbMembership) {
+    return res.status(403).json({
+      error: requestedTenantId ? 'Tenant membership required.' : 'No active membership.',
+    });
   }
 
-  const resolvedMembership = requestedTenantId
-    ? activeMemberships.find((membership) => membership.tenantId === requestedTenantId) || null
-    : activeMemberships[0];
+  const resolvedMembership = {
+    ...dbMembership,
+    createdAt: dbMembership.createdAt instanceof Date ? dbMembership.createdAt.toISOString() : dbMembership.createdAt,
+    updatedAt: dbMembership.updatedAt instanceof Date ? dbMembership.updatedAt.toISOString() : dbMembership.updatedAt,
+  };
 
-  if (!resolvedMembership) {
-    return res.status(403).json({ error: 'Tenant membership required.' });
-  }
-
-  const dbTenant = await prisma.Tenant.findUnique({ where: { id: resolvedMembership.tenantId } });
-  const tenant = dbTenant ? {
-    ...dbTenant,
-    createdAt: dbTenant.createdAt instanceof Date ? dbTenant.createdAt.toISOString() : dbTenant.createdAt,
-    updatedAt: dbTenant.updatedAt instanceof Date ? dbTenant.updatedAt.toISOString() : dbTenant.updatedAt,
+  const tenant = dbMembership.tenant ? {
+    ...dbMembership.tenant,
+    createdAt: dbMembership.tenant.createdAt instanceof Date ? dbMembership.tenant.createdAt.toISOString() : dbMembership.tenant.createdAt,
+    updatedAt: dbMembership.tenant.updatedAt instanceof Date ? dbMembership.tenant.updatedAt.toISOString() : dbMembership.tenant.updatedAt,
   } : null;
   if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
 
