@@ -59,34 +59,34 @@ router.post('/refresh', authRateLimit, async (req, res) => {
     return res.status(403).json({ error: 'Invalid CSRF token.' });
   }
 
-  const resolved = await resolveUserFromSession(session.id);
+  const resolved = session.user;
   if (!resolved) {
     clearAuthCookies(res, authScope);
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
 
-  if (!await isTenantIpAllowedForUser(req, resolved.user)) {
+  if (!await isTenantIpAllowedForUser(req, resolved)) {
     clearAuthCookies(res, authScope);
-    audit(req, 'session-refresh-ip-policy', 'failure', resolved.user.id, {
+    audit(req, 'session-refresh-ip-policy', 'failure', resolved.id, {
       reason: 'ip-not-allowlisted',
-      tenantId: resolved.user.currentTenantId,
-      sessionId: resolved.session.id,
+      tenantId: resolved.currentTenantId,
+      sessionId: session.id,
     });
     return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
   }
 
-  const rotated = await rotateSession(resolved.session, req);
+  const rotated = await rotateSession(session, resolved,req);
   writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt, authScope);
-  audit(req, 'session-refresh', 'success', resolved.user.id, { sessionId: rotated.session.id });
-  res.json(buildAuthResponse(resolved.user, rotated.session));
+  audit(req, 'session-refresh', 'success', resolved.id, { sessionId: rotated.session.id });
+  res.json(buildAuthResponse(resolved, rotated.session));
 });
 
 router.post('/logout', requireAuth, async (req, res) => {
-  audit(req, 'logout', 'success', req.user.id, {
-    sessionId: req.authSession.id,
-    sessionRetained: true,
-  });
-  res.json({ message: 'Logout acknowledged. Session is retained.' });
+  const authScope = getAuthScope(req);
+  await revokeSession(req.authSession.id);
+  clearAuthCookies(res, authScope);
+  audit(req, 'logout', 'success', req.user.id, { sessionId: req.authSession.id });
+  res.json({ message: 'Logged out successfully.' });
 });
 
 router.get('/me', requireAuth, (req, res) => {

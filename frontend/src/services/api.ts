@@ -619,10 +619,11 @@ export const authApi = {
       persistTenantContextId(auth.user?.currentTenantId ?? null);
       return auth;
     }),
-  refresh: (authScope: 'workspace' | 'admin' = 'workspace') =>
+  refresh: (token?: string, authScope: 'workspace' | 'admin' = 'workspace') =>
     apiFetch<AuthSuccess>('/api/auth/refresh', {
       method: 'POST',
       includeCsrf: true,
+      token,
       authScope,
     }).then((auth) => {
       persistTenantContextId(auth.user?.currentTenantId ?? null);
@@ -750,6 +751,38 @@ export const versionsApi = {
       `/api/docs/${docId}/versions`,
       { token },
     ),
+  listAll: (
+    token: string,
+    filters?: {
+      workspaceId?: string;
+      docId?: string;
+      userId?: string;
+      q?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.workspaceId) params.set('workspaceId', filters.workspaceId);
+    if (filters?.docId) params.set('docId', filters.docId);
+    if (filters?.userId) params.set('userId', filters.userId);
+    if (filters?.q) params.set('q', filters.q);
+    if (typeof filters?.limit === 'number') params.set('limit', String(filters.limit));
+
+    const query = params.toString();
+    const url = query ? `/api/versions/all?${query}` : '/api/versions/all';
+
+    return apiFetch<{
+      versions: Array<{
+        id: string;
+        docId: string;
+        workspaceId: string | null;
+        userId: string;
+        docTitle: string;
+        preview: string;
+        savedAt: string;
+      }>;
+    }>(url, { token });
+  },
   save: (token: string, docId: string, content: string, preview?: string) =>
     apiFetch<{ version: { id: string; preview: string; savedAt: string } }>(
       `/api/docs/${docId}/versions`,

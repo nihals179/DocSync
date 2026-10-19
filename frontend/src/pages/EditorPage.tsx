@@ -252,9 +252,9 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
       if (!docId) return;
       try {
         await versionsApi.restore(token, docId, versionId);
-        const [{ doc }, { versions }, { docs }] = await Promise.all([
+        const [{ doc }, { versions: allVersions }, { docs }] = await Promise.all([
           docsApi.get(token, docId),
-          versionsApi.list(token, docId),
+          versionsApi.listAll(token, { docId, limit: 500 }),
           docsApi.list(token),
         ]);
 
@@ -266,7 +266,11 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
         setTitle(restoredTitle);
         setSavedDocuments(docs);
-        setSavedVersions(versions);
+        setSavedVersions(
+          allVersions
+            .map((version) => ({ id: version.id, preview: version.preview, savedAt: version.savedAt }))
+            .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()),
+        );
         setCurrentRuns(restoredRuns);
         editorRef.current?.setRuns(restoredRuns);
 

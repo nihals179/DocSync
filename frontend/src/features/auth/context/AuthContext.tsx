@@ -160,11 +160,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const refreshWithRetry = async () => {
       try {
-        return await authApi.refresh();
+        return await authApi.refresh(restoredSession?.accessToken);
       } catch (error) {
         const message = error instanceof Error ? error.message.toLowerCase() : '';
         if (message.includes('csrf')) {
-          return authApi.refresh();
+          return authApi.refresh(restoredSession?.accessToken);
         }
         throw error;
       }
@@ -199,8 +199,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [applySession, navigate, readPersistedSession, readUiAuthState]);
 
-  const refreshSession = useCallback(async () => {
-    const auth = await authApi.refresh();
+  const refreshSession = useCallback(async (token?: string) => {
+    const auth = await authApi.refresh(token);
     applySession(auth);
     return auth;
   }, [applySession]);
@@ -209,7 +209,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!session) return;
     const refreshAt = new Date(session.accessTokenExpiresAt).getTime() - Date.now() - 60_000;
     const timeout = window.setTimeout(() => {
-      void refreshSession().catch(() => {
+      void refreshSession(session.accessToken).catch(() => {
         applySession(null);
         const isAdminPath =
           typeof window !== 'undefined' && window.location.pathname.startsWith('/admin');

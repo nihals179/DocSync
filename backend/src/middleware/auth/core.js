@@ -161,16 +161,28 @@ function mapDbUserToAuthUser(dbUser) {
 }
 
 async function resolveUserFromSession(sessionId) {
+  const started = Date.now();
   if (!isDatabaseConfigured()) return null;
   const sessionRow = await prisma.authSession.findUnique({
     where: { id: sessionId },
-    include: {
+    select: {
+      id: true,
+      userId: true,
+      lastUsedAt: true,
+      expiresAt: true,
+      revokedAt: true,
+      remember: true,
       user: {
-        include: {
-          currentTenant: true,
-          tenantMembership: {
-            include: {
-              tenant: true,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          emailVerified: true,
+          twoFactorEnabled: true,
+          currentTenantId: true,
+          currentTenant: {
+            select: {
+              security: true,
             },
           },
         },
@@ -181,19 +193,11 @@ async function resolveUserFromSession(sessionId) {
   if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
     return null;
   }
-  // Inactivity check: if the user has been idle for 30 minutes, treat the session as expired.
-  if (new Date(session.lastUsedAt).getTime() + INACTIVITY_TTL_MS <= Date.now()) {
-    session.revokedAt = new Date().toISOString();
-    await prisma.authSession.updateMany({
-      where: { id: session.id },
-      data: {
-        revokedAt: new Date(session.revokedAt),
-      },
-    });
-    return null;
-  }
   const user = mapDbUserToAuthUser(sessionRow?.user || null);
   if (!user) return null;
+  const elapsed = Date.now() - started;
+  console.warn(`resolveUserFromSession took ${elapsed} ms `);
+
   return { session, user };
 }
 
@@ -226,6 +230,7 @@ async function requireAuth(req, res, next) {
     if (!resolved || resolved.user.id !== payload.sub) {
       return res.status(401).json({ error: 'Session invalid or expired.' });
     }
+
     if (!await isIpAllowed(req, resolved.user)) {
       return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
     }
@@ -237,10 +242,11 @@ async function requireAuth(req, res, next) {
       emailVerified: resolved.user.emailVerified,
       twoFactorEnabled: resolved.user.twoFactorEnabled,
       currentTenantId: resolved.user.currentTenantId || null,
-      tenantMembership: resolved.user.tenantMembership || null,
+      tenantMembership: Array.isArray(resolved.user.tenantMembership) ? resolved.user.tenantMembership : [],
     };
     req.authSession = resolved.session;
     req.accessToken = token;
+
     next();
   } catch {
     return res.status(500).json({ error: 'Authentication service unavailable.' });

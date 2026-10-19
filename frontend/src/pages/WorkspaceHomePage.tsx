@@ -161,21 +161,18 @@ export default function WorkspaceHomePage({
           setSelectedWorkspaceId(fallbackWorkspaceId);
         }
 
-        const recentDocs = list.slice(0, 4);
-        const versionsByDoc = await Promise.all(
-          recentDocs.map(async (doc) => {
-            try {
-              const { versions: items } = await versionsApi.list(token, doc.id);
-              return items.map((item) => ({ ...item, docId: doc.id, docTitle: doc.title }));
-            } catch {
-              return [] as VersionSummary[];
-            }
-          }),
-        );
-
+        const { versions: allVersions } = await versionsApi.listAll(token, { limit: 200 });
         if (ignore) return;
-        const flat = versionsByDoc
-          .flat()
+        const recentDocIds = new Set(list.slice(0, 4).map((doc) => doc.id));
+        const flat = allVersions
+          .filter((item) => recentDocIds.has(item.docId))
+          .map((item) => ({
+            id: item.id,
+            preview: item.preview,
+            savedAt: item.savedAt,
+            docId: item.docId,
+            docTitle: item.docTitle || list.find((doc) => doc.id === item.docId)?.title || 'Untitled',
+          }))
           .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime())
           .slice(0, 8);
         setVersions(flat);
@@ -288,10 +285,18 @@ export default function WorkspaceHomePage({
       try {
         setSelectedDocVersionsLoading(true);
         setSelectedDocVersionsError('');
-        const { versions: items } = await versionsApi.list(token, activeDocId);
+        const { versions: items } = await versionsApi.listAll(token, { docId: activeDocId, limit: 500 });
         if (ignore) return;
         const docTitle = selectedRecentDoc?.title || 'Untitled';
-        setSelectedDocVersions(items.map((item) => ({ ...item, docId: activeDocId, docTitle })));
+        setSelectedDocVersions(
+          items.map((item) => ({
+            id: item.id,
+            preview: item.preview,
+            savedAt: item.savedAt,
+            docId: item.docId,
+            docTitle: item.docTitle || docTitle,
+          })),
+        );
       } catch (e) {
         if (ignore) return;
         setSelectedDocVersions([]);

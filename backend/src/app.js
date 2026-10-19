@@ -113,6 +113,9 @@ app.use('/api/docs/:docId/comments', commentsRoutes);
 app.use('/api/docs/:docId/versions', versionsRoutes);
 app.use('/api/docs/:docId/todos', todosRoutes);
 
+// Tenant-scoped version listing
+app.use('/api/versions', versionsRoutes);
+
 // AI & Grammar
 app.use('/api/ai', aiRoutes);
 app.use('/api/grammar', grammarRoutes);

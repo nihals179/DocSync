@@ -170,6 +170,9 @@ model tenantsInvite {
 model AuthSession {
   id               String   @id
   userId           String
+  userName         String?
+  userEmail        String?
+  tenantId         String?
   refreshTokenHash String
   csrfToken        String
   createdAt        DateTime @default(now())

@@ -316,7 +316,7 @@ async function createSession(user, req, remember) {
   return { refreshToken, csrfToken, session };
 }
 
-async function rotateSession(session, req) {
+async function rotateSession(session,user, req) {
   if (!isDatabaseConfigured()) {
     return null;
   }
@@ -325,10 +325,6 @@ async function rotateSession(session, req) {
   session.refreshTokenHash = hashToken(refreshToken);
   session.csrfToken = csrfToken;
   session.lastUsedAt = nowIso();
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { currentTenantId: true },
-  });
   session.expiresAt = new Date(Date.now() + await getTenantSessionDurationMs(user, session.remember)).toISOString();
   session.userAgent = getUserAgent(req);
   session.ipAddress = getRequestIp(req);
@@ -389,6 +385,23 @@ async function findSessionByRefreshToken(refreshToken) {
         refreshTokenHash,
         revokedAt: null,
         expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            emailVerified: true,
+            twoFactorEnabled: true,
+            currentTenantId: true,
+            currentTenant: {
+              select: {
+                security: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { lastUsedAt: 'desc' },
     }),

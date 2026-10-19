@@ -193,17 +193,21 @@ function DocumentViewerPage({ token, docId, userName }: { token: string; docId: 
       setVersionError('');
 
       try {
-        const [{ docs }, { doc }, { workspaces: available }, { versions }] = await Promise.all([
+        const [{ docs }, { doc }, { workspaces: available }, { versions: allVersions }] = await Promise.all([
           docsApi.list(token),
           docsApi.get(token, docId),
           workspaceApi.list(token),
-          versionsApi.list(token, docId),
+          versionsApi.listAll(token, { docId, limit: 500 }),
         ]);
         if (ignore) return;
         setSavedDocuments(docs);
         setCurrentDoc(doc);
         setWorkspaces(available);
-        setDocVersions(versions);
+        setDocVersions(
+          allVersions
+            .map((version) => ({ id: version.id, preview: version.preview, savedAt: version.savedAt }))
+            .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()),
+        );
         setVersionMessage('');
         const fallbackWorkspaceId = available[0]?.id ?? '';
         if (!available.some((workspace) => workspace.id === selectedWorkspaceId)) {
@@ -231,14 +235,18 @@ function DocumentViewerPage({ token, docId, userName }: { token: string; docId: 
     setIsVersionsLoading(true);
     try {
       await versionsApi.restore(token, docId, versionId);
-      const [{ doc }, { docs }, { versions }] = await Promise.all([
+      const [{ doc }, { docs }, { versions: allVersions }] = await Promise.all([
         docsApi.get(token, docId),
         docsApi.list(token),
-        versionsApi.list(token, docId),
+        versionsApi.listAll(token, { docId, limit: 500 }),
       ]);
       setCurrentDoc(doc);
       setSavedDocuments(docs);
-      setDocVersions(versions);
+      setDocVersions(
+        allVersions
+          .map((version) => ({ id: version.id, preview: version.preview, savedAt: version.savedAt }))
+          .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()),
+      );
       setVersionMessage('Version switched successfully.');
       setIsVersionPanelOpen(false);
     } catch (e) {

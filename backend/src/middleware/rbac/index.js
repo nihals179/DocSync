@@ -56,17 +56,27 @@ function resolveRequestedTenantId(req) {
 }
 
 async function resolveTenantContext(req, res, next) {
-  const requestedTenantId =  req.user.currentTenantId || resolveRequestedTenantId(req);
+  const requestedTenantId =  req.user.currentTenantId ? req.user.currentTenantId : resolveRequestedTenantId(req) ;
   const membershipWhere = requestedTenantId
     ? { userId: req.user.id, status: 'active', tenantId: requestedTenantId }
     : { userId: req.user.id, status: 'active' };
-  const dbMembership = req.user.tenantMembership[0]
+  const preloadedMembership = Array.isArray(req.user.tenantMembership)
     ? req.user.tenantMembership[0]
+    : null;
+  const canReusePreloadedMembership = Boolean(
+    preloadedMembership
+      && preloadedMembership.tenant
+      && (!requestedTenantId || preloadedMembership.tenantId === requestedTenantId),
+  );
+
+  const dbMembership = canReusePreloadedMembership
+    ? preloadedMembership
     : await prisma.tenantMembership.findFirst({
       where: membershipWhere,
       orderBy: { createdAt: 'asc' },
       include: { tenant: true },
     });
+
   if (!dbMembership) {
     return res.status(403).json({
       error: requestedTenantId ? 'Tenant membership required.' : 'No active membership.',
@@ -84,16 +94,8 @@ async function resolveTenantContext(req, res, next) {
     createdAt: dbMembership.tenant.createdAt instanceof Date ? dbMembership.tenant.createdAt.toISOString() : dbMembership.tenant.createdAt,
     updatedAt: dbMembership.tenant.updatedAt instanceof Date ? dbMembership.tenant.updatedAt.toISOString() : dbMembership.tenant.updatedAt,
   } : null;
+  
   if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
-
-  if (req.user.currentTenantId !== tenant.id) {
-    await prisma.user.updateMany({
-      where: { id: req.user.id },
-      data: { currentTenantId: tenant.id },
-    });
-    req.user.currentTenantId = tenant.id;
-  }
-
   req.tenant = tenant;
   req.membership = resolvedMembership;
   next();

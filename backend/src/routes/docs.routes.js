@@ -155,6 +155,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
  * List all documents belonging to the current user.
  */
 router.get('/', requireAuth, resolveTenantContext, requirePermission('document.read'), async (req, res) => {
+
   const rows = await prisma.document.findMany({
     where: { tenantId: req.tenant.id },
     orderBy: { updatedAt: 'desc' },
@@ -171,6 +172,7 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('document.r
     sortOrder: 0,
     preview: String(doc.content || '').replace(/<[^>]+>/g, '').slice(0, 100),
   }));
+
   writeAuditLog({
     userId: req.user.id,
     tenantId: req.tenant.id,

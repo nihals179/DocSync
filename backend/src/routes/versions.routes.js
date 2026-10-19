@@ -9,6 +9,11 @@ const { filterVersionsByRetention } = require('../middleware/versions');
 
 const router = express.Router({ mergeParams: true });
 
+function normalizeQueryString(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
 async function getDocForTenant(docId, tenantId, res) {
   const doc = await prisma.document.findUnique({ where: { id: docId } });
   if (!doc) {
@@ -21,6 +26,78 @@ async function getDocForTenant(docId, tenantId, res) {
   }
   return doc;
 }
+
+/**
+ * GET /api/versions/all
+ * Query: workspaceId?, docId?, userId?, q?, limit?
+ */
+router.get('/all', requireAuth, resolveTenantContext, requirePermission('document.version.read'), async (req, res) => {
+  const workspaceId = normalizeQueryString(req.query.workspaceId);
+  const docId = normalizeQueryString(req.query.docId);
+  const userId = normalizeQueryString(req.query.userId);
+  const q = normalizeQueryString(req.query.q).toLowerCase();
+
+  const parsedLimit = Number.parseInt(String(req.query.limit ?? ''), 10);
+  const hasLimit = Number.isInteger(parsedLimit);
+  if (hasLimit && (parsedLimit < 1 || parsedLimit > 500)) {
+    return res.status(400).json({ error: 'limit must be between 1 and 500.' });
+  }
+  const limit = hasLimit ? parsedLimit : 200;
+
+  const docWhere = { tenantId: req.tenant.id };
+  if (workspaceId) docWhere.workspaceId = workspaceId;
+  if (docId) docWhere.id = docId;
+  if (userId) docWhere.userId = userId;
+
+  const docs = await prisma.document.findMany({
+    where: docWhere,
+    select: {
+      id: true,
+      title: true,
+      workspaceId: true,
+      userId: true,
+    },
+  });
+
+  if (!docs.length) {
+    return res.json({ versions: [] });
+  }
+
+  const docIds = docs.map((doc) => doc.id);
+  const docById = new Map(docs.map((doc) => [doc.id, doc]));
+
+  const rows = await prisma.version.findMany({
+    where: { docId: { in: docIds } },
+    orderBy: { savedAt: 'desc' },
+  });
+
+  const retentionDays = await getVersionHistoryRetentionDays(req.tenant.id);
+  const retained = filterVersionsByRetention(rows, retentionDays);
+
+  let versions = retained
+    .map((item) => {
+      const doc = docById.get(item.docId);
+      if (!doc) return null;
+      const preview = item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90);
+      const savedAt = item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt;
+      return {
+        id: item.id,
+        docId: item.docId,
+        workspaceId: doc.workspaceId,
+        userId: item.userId || doc.userId,
+        docTitle: doc.title,
+        preview,
+        savedAt,
+      };
+    })
+    .filter(Boolean);
+
+  if (q) {
+    versions = versions.filter((item) => (`${item.docTitle} ${item.preview}`).toLowerCase().includes(q));
+  }
+
+  return res.json({ versions: versions.slice(0, limit) });
+});
 
 /**
  * GET /api/docs/:docId/versions

@@ -396,26 +396,22 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
           .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
       );
       const versionSampleDocs = docs.slice(0, 25);
-      const versionRows = await Promise.all(
-        versionSampleDocs.map(async (doc) => {
-          try {
-            const { versions } = await versionsApi.list(token, doc.id);
-            return {
-              docId: doc.id,
-              docTitle: doc.title || 'Untitled',
-              count: versions.length,
-              lastSavedAt: versions[0]?.savedAt ?? null,
-            };
-          } catch {
-            return {
-              docId: doc.id,
-              docTitle: doc.title || 'Untitled',
-              count: 0,
-              lastSavedAt: null,
-            };
-          }
-        }),
-      );
+      const sampleDocIds = new Set(versionSampleDocs.map((doc) => doc.id));
+      const { versions: allVersions } = await versionsApi.listAll(token, { limit: 500 });
+      const versionRows = versionSampleDocs.map((doc) => {
+        const docVersions = allVersions.filter((version) => version.docId === doc.id);
+        const newestSavedAt = docVersions.reduce<string | null>((latest, version) => {
+          if (!latest) return version.savedAt;
+          return new Date(version.savedAt).getTime() > new Date(latest).getTime() ? version.savedAt : latest;
+        }, null);
+
+        return {
+          docId: doc.id,
+          docTitle: doc.title || 'Untitled',
+          count: docVersions.length,
+          lastSavedAt: newestSavedAt,
+        };
+      });
       setVersionActivity(
         versionRows.sort((a, b) => {
           const aTs = a.lastSavedAt ? new Date(a.lastSavedAt).getTime() : 0;
@@ -423,7 +419,9 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
           return bTs - aTs;
         }),
       );
-      const sampledVersionTotal = versionRows.reduce((sum, row) => sum + row.count, 0);
+      const sampledVersionTotal = allVersions.reduce((sum, version) => (
+        sampleDocIds.has(version.docId) ? sum + 1 : sum
+      ), 0);
       const entitlements = entitlementsRes.entitlements;
 
       setAdminInsights({
