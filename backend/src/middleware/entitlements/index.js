@@ -2,6 +2,7 @@ const {
   getTenantEntitlements,
   isBillingWriteBlocked,
   refreshBillingStatus,
+  getTenantEntitlement,
 } = require('../../store');
 
 function ensureTenantContext(req, res) {
@@ -15,16 +16,15 @@ function ensureTenantContext(req, res) {
 async function attachEntitlements(req, res, next) {
   if (!ensureTenantContext(req, res)) return;
 
-  const billing = await refreshBillingStatus(req.tenant.id);
-  if (billing && isBillingWriteBlocked(billing)) {
+  const entitlements = await getTenantEntitlements(req.tenant.id);
+  if (entitlements.billing && isBillingWriteBlocked(entitlements.billing)) {
     return res.status(402).json({
-      error: 'Subscription suspended due to billing issues. Resolve payment to continue.',
-      code: 'subscription_suspended',
-      billing,
+      error: 'Subsription expired or suspended. Please visit the billing portal to update your payment method or renew your subscription.',
+      code: 'SubscriptionExpiredOrSuspended',
+      billing: entitlements.billing,
     });
   }
 
-  const entitlements = await getTenantEntitlements(req.tenant.id);
   if (!entitlements) {
     return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
   }

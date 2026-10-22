@@ -44,6 +44,7 @@ const {
   registerRateLimit,
 } = require('../middleware/auth/rate-limit');
 const { getAuthConfig } = require('../config/auth-config');
+const { sendVerificationEmail, sendWelcomeEmail, sendPasswordResetEmail } = require('../utils/email');
 
 const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL;
@@ -162,6 +163,22 @@ router.post('/register', registerRateLimit, async (req, res) => {
   const verificationLink = verificationToken
     ? `${FRONTEND_URL}/verify-email?token=${verificationToken}`
     : null;
+
+  if (verificationToken) {
+    try {
+      await sendVerificationEmail(user.email, verificationLink);
+    } catch (error) {
+      console.error('Failed to send verification email during registration:', error);
+      audit(req, 'register', 'partial-success', user.id, { reason: 'email-send-failed', verificationRequired });
+    }
+  } else {
+    try {
+      await sendWelcomeEmail(user.email, user.name);
+    } catch (error) {
+      console.error('Failed to send welcome email during registration:', error);
+    }
+  }
+
   audit(req, 'register', 'success', user.id, { verificationRequired });
   res.status(201).json({
     message: verificationRequired
@@ -362,9 +379,18 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
 
   const verificationToken = await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
   const verificationLink = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
+
+  try {
+    await sendVerificationEmail(email, verificationLink);
+  } catch (error) {
+    console.error('Failed to send verification email:', error);
+    audit(req, 'email-verification-resend', 'failure', user.id, { reason: 'email-send-failed', error: String(error?.message || error) });
+    return res.status(500).json({ error: 'Failed to send verification email. Please try again.' });
+  }
+
   audit(req, 'email-verification-resend', 'success', user.id);
   res.json({
-    message: 'Verification email queued.',
+    message: 'Verification email sent successfully.',
     ...(authConfig.devMode ? { verificationTokenPreview: verificationToken, verificationLinkPreview: verificationLink } : {}),
   });
 });
@@ -385,6 +411,13 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
 
   const resetToken = await issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
   const resetLink = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+  try {
+    await sendPasswordResetEmail(email, resetLink);
+  } catch (error) {
+    console.error('Failed to send password reset email:', error);
+  }
+
   audit(req, 'password-reset-request', 'success', user.id);
   res.json({
     message: 'If an account exists for that email, a reset link has been generated.',

@@ -117,7 +117,7 @@ const authRegisterSchema = {
     name: { type: 'string' },
     email: { type: 'string', format: 'email' },
     password: { type: 'string', description: 'Plain password for local testing.' },
-    passwordEncrypted: { type: 'string', description: 'Base64 RSA-OAEP encrypted password payload.' },
+    passwordEncrypted: { type: 'string', description: 'Base64 RSA-OAEP encrypted password payload. If decryption fails and `password` is present, the plain password is used as fallback.' },
   },
   required: ['name', 'email'],
 };
@@ -129,7 +129,7 @@ const authLoginSchema = {
     email: { type: 'string', format: 'email', description: 'Required for credential login. Optional when reusing an existing cookie session.' },
     username: { type: 'string', description: 'Optional alias for identifier matching when reusing session.' },
     password: { type: 'string', description: 'Plain password for local testing.' },
-    passwordEncrypted: { type: 'string', description: 'Encrypted password payload used by UI clients.' },
+    passwordEncrypted: { type: 'string', description: 'Encrypted password payload used by UI clients. If decryption fails and `password` is present, the plain password is used as fallback.' },
     remember: { type: 'boolean', description: 'Session duration preference for credential login.' },
   },
 };
@@ -139,7 +139,7 @@ const resetPasswordSchema = {
   properties: {
     token: { type: 'string' },
     password: { type: 'string' },
-    passwordEncrypted: { type: 'string' },
+    passwordEncrypted: { type: 'string', description: 'Encrypted password payload. If decryption fails and `password` is present, the plain password is used as fallback.' },
   },
   required: ['token'],
 };
@@ -311,7 +311,7 @@ const openapi = {
   info: {
     title: 'DocSync Backend API',
     version: '1.0.0',
-    description: 'OpenAPI specification for the DocSync backend. Tenant-scoped endpoints accept the optional `x-tenant-id` header and also fall back to the current tenant on the authenticated user.',
+    description: 'OpenAPI specification for the DocSync backend. Tenant-scoped endpoints accept the optional `x-tenant-id` header and also fall back to the current tenant on the authenticated user. In Swagger UI, successful auth responses automatically populate bearer authorization, cache the returned CSRF token for session refresh calls, and reuse the returned current tenant as the default `x-tenant-id` header when one is not explicitly set.',
   },
   servers: [
     { url: 'http://localhost:4000', description: 'Local development server' },
@@ -386,7 +386,7 @@ const openapi = {
         summary: 'Log in with credentials or reuse existing session',
         tags: ['Auth'],
         security: bearerSecurity,
-        description: 'Two modes are supported: (1) session reuse using refresh/csrf cookies plus `x-csrf-token`; (2) credential login using `email` (or `username`) with password/passwordEncrypted. If `email` or `username` is provided during session reuse, it must match the existing session user identity.',
+        description: 'Two modes are supported: (1) session reuse using refresh/csrf cookies plus `x-csrf-token`; (2) credential login using `email` (or `username`) with password/passwordEncrypted. If `email` or `username` is provided during session reuse, it must match the existing session user identity. In Swagger UI, a successful response automatically authorizes the returned access token, stores the CSRF token for refresh calls, and reuses the returned `user.currentTenantId` as the default `x-tenant-id` header.',
         parameters: [{
           name: 'x-csrf-token',
           in: 'header',
@@ -485,7 +485,7 @@ const openapi = {
         tags: ['Sessions'],
         security: bearerSecurity,
         parameters: [csrfHeader],
-        description: sessionCookieNote,
+        description: `${sessionCookieNote} In Swagger UI, a successful response automatically refreshes the stored bearer token and CSRF token, and keeps the current tenant header in sync with the returned user context.`,
         requestExample: {},
         responseExample: {
           accessToken: 'eyJhbGciOi...rotated',
@@ -512,7 +512,7 @@ const openapi = {
         tags: ['Sessions'],
         security: bearerSecurity,
         parameters: [csrfHeader],
-        description: `${sessionCookieNote} This is the backward-compatible alias under /api/auth.`,
+        description: `${sessionCookieNote} This is the backward-compatible alias under /api/auth. In Swagger UI, a successful response automatically refreshes the stored bearer token and CSRF token, and keeps the current tenant header in sync with the returned user context.`,
         requestExample: {},
         responseExample: {
           accessToken: 'eyJhbGciOi...rotated',
@@ -607,6 +607,7 @@ const openapi = {
         summary: 'Complete two-factor login',
         tags: ['Security'],
         security: bearerSecurity,
+        description: 'On success, Swagger UI automatically authorizes the returned access token, stores the returned CSRF token for session refresh calls, and reuses the returned `user.currentTenantId` as the default `x-tenant-id` header.',
         requestExample: { tempToken: 'pending_2fa_token', code: '123456' },
         requestSchema: twoFactorCodeSchema,
         responseExample: {

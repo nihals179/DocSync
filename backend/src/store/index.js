@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
+const { get } = require('../app');
 
 const nowIso = () => runtimeNowIso();
 const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
@@ -29,6 +30,41 @@ function normalizeUserBillingState(input, userId, fallbackEmail = null) {
 	return state;
 }
 
+function normalizeTenantUsageRecords(usageRows) {
+	if (!Array.isArray(usageRows)) return [];
+	return usageRows.map((row) => ({
+		tenantId: row.tenantId,
+		monthKey: row.monthKey,
+		aiRequests: Number(row.aiRequests || 0),
+		documentUpdates: Number(row.documentUpdates || 0),
+		updatedAt: toIsoOrNull(row.updatedAt),
+	}));
+}
+
+function normalizeTenantEntitlementSnapshot(input, tenantId, monthKey) {
+	return {
+		tenantId,
+		monthKey,
+		aiRequests: Number(input?.aiRequests || 0),
+		documentUpdates: Number(input?.documentUpdates || 0),
+		assignedSeats: Number(input?.assignedSeats || 0),
+		storageUsedBytes:
+			typeof input?.storageUsedBytes === 'bigint'
+				? Number(input.storageUsedBytes)
+				: Number(input?.storageUsedBytes || 0),
+		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
+	};
+}
+
+function isTenantEntitlementsViewMissing(error) {
+	if (!error || typeof error !== 'object') return false;
+	const prismaCode = error.code;
+	const tableName = String(error?.meta?.table || '').toLowerCase();
+	const message = String(error.message || '').toLowerCase();
+	if (prismaCode === 'P2021' && tableName.includes('tenant_entitlements')) return true;
+	return message.includes('tenant_entitlements') && message.includes('does not exist');
+}
+
 function normalizeTenantBillingState(input, tenantId) {
 	const state = {
 		tenantId,
@@ -42,6 +78,9 @@ function normalizeTenantBillingState(input, tenantId) {
 		currentPeriodEndAt: toIsoOrNull(input?.currentPeriodEndAt),
 		graceEndsAt: toIsoOrNull(input?.graceEndsAt),
 		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
+		tenant : input?.tenant,
+		tenantUsage: normalizeTenantUsageRecords(input?.tenant?.usage),
+		planCatalog: input?.planCatalog,
 	};
 
 	if (!state.planId) state.planId = 'free';
@@ -105,6 +144,14 @@ async function readTenantBillingStateFromDb(tenantId) {
 	if (!isDatabaseConfigured()) return null;
 	const row = await prisma.tenantBilling.findUnique({
 		where: { tenantId },
+		include: {
+			tenant: {
+				include: {
+					usage: true,
+				},
+			},
+			planCatalog: true,
+		},
 	});
 	if (!row) return null;
 	return normalizeTenantBillingState(row, tenantId);
@@ -138,7 +185,6 @@ async function writeTenantBillingStateToDb(tenantId, state) {
 			},
 		});
 	} catch {
-		// Another request may create the row concurrently.
 		await prisma.tenantBilling.updateMany({
 			where: { tenantId },
 			data,
@@ -353,17 +399,16 @@ async function findTenantByDomain(emailOrDomain) {
 	return null;
 }
 
-async function ensureTenantBillingState(tenant) {
-	if (!tenant?.id) return null;
+async function ensureTenantBillingState(tenantId) {
 	let billing = null;
 	if (isDatabaseConfigured()) {
-		billing = await readTenantBillingStateFromDb(tenant.id);
+		billing = await readTenantBillingStateFromDb(tenantId);
 	}
 
 	if (!billing) {
-		billing = normalizeTenantBillingState(null, tenant.id);
+		billing = normalizeTenantBillingState(null, tenantId);
 		if (isDatabaseConfigured()) {
-			await writeTenantBillingStateToDb(tenant.id, billing);
+			await writeTenantBillingStateToDb(tenantId, billing);
 		}
 	}
 	return billing;
@@ -372,13 +417,13 @@ async function ensureTenantBillingState(tenant) {
 async function getTenantBillingState(tenantId) {
 	const tenant = await resolveTenantById(tenantId);
 	if (!tenant) return null;
-	return ensureTenantBillingState(tenant);
+	return ensureTenantBillingState(tenantId);
 }
 
 async function upsertTenantBillingState(tenantId, updates = {}) {
 	const tenant = await resolveTenantById(tenantId);
 	if (!tenant) return null;
-	const current = await ensureTenantBillingState(tenant);
+	const current = await ensureTenantBillingState(tenantId);
 	const next = normalizeTenantBillingState({
 		...current,
 		...updates,
@@ -405,14 +450,21 @@ async function ensureUserBillingState(user) {
 }
 
 async function refreshBillingStatus(tenantId) {
-	const tenant = await resolveTenantById(tenantId);
-	if (!tenant) return null;
-	const billing = await ensureTenantBillingState(tenant);
+	const billing = await ensureTenantBillingState(tenantId);
 	const nowMs = Date.now();
 	let changed = false;
 
+	if ((billing.status === 'active') && billing.trialEndsAt) {
+		if (new Date(billing.trialEndsAt).getTime() >= nowMs) {
+			billing.status = 'expired';
+			billing.updatedAt = nowIso();
+			changed = true;
+		}
+	}
+
+
 	if ((billing.status === 'past_due' || billing.status === 'grace') && billing.graceEndsAt) {
-		if (new Date(billing.graceEndsAt).getTime() <= nowMs) {
+		if (new Date(billing.graceEndsAt).getTime() >= nowMs) {
 			billing.status = 'suspended';
 			billing.updatedAt = nowIso();
 			changed = true;
@@ -441,14 +493,15 @@ async function refreshBillingStatus(tenantId) {
 	}
 
 	if (changed && isDatabaseConfigured()) {
-		await writeTenantBillingStateToDb(tenant.id, billing);
+		await writeTenantBillingStateToDb(tenantId, billing);
 	}
+
 	return billing;
 }
 
 function isBillingWriteBlocked(billingState) {
 	if (!billingState) return false;
-	return billingState.status === 'suspended';
+	return billingState.status === 'suspended' || billingState.status === 'canceled' || billingState.status === 'expired';
 }
 
 async function getTenantUsage(tenantId) {
@@ -465,6 +518,51 @@ async function getTenantUsage(tenantId) {
 		}
 	}
 	return usage;
+}
+
+async function getTenantUsageMetrics(tenantId) {
+	if (!isDatabaseConfigured()) {
+		const monthKey = monthKeyFromDate(new Date());
+		return {
+			usage: normalizeUsageState(null, tenantId, monthKey),
+			assignedSeats: 0,
+			storageUsedBytes: 0,
+		};
+	}
+
+	const monthKey = monthKeyFromDate(new Date());
+	const results = await prisma.$queryRaw`
+		SELECT
+			tu."tenantId",
+			tu."monthKey",
+			tu."aiRequests",
+			tu."documentUpdates",
+			tu."updatedAt",
+			COUNT(DISTINCT tm.id)::int as "assignedSeats",
+			COALESCE(SUM(OCTET_LENGTH(d.content)), 0)::bigint AS "storageUsedBytes"
+		FROM tenant_usage tu
+		LEFT JOIN tenant_memberships tm ON tu."tenantId" = tm."tenantId" AND tm.status = 'active'
+		LEFT JOIN documents d ON tu."tenantId" = d."tenantId"
+		WHERE tu."tenantId" = ${tenantId} AND tu."monthKey" = ${monthKey}
+		GROUP BY tu."tenantId", tu."monthKey", tu."aiRequests", tu."documentUpdates", tu."updatedAt"
+	`;
+
+	if (!results || results.length === 0) {
+		const emptyUsage = normalizeUsageState(null, tenantId, monthKey);
+		await writeTenantUsageToDb(tenantId, monthKey, emptyUsage);
+		return {
+			usage: emptyUsage,
+			assignedSeats: 0,
+			storageUsedBytes: 0,
+		};
+	}
+
+	const row = results[0];
+	return {
+		usage: normalizeUsageState(row, tenantId, monthKey),
+		assignedSeats: Number(row.assignedSeats),
+		storageUsedBytes: Number(row.storageUsedBytes),
+	};
 }
 
 function isWithinPlanAccessDays(tenant, accessDays) {
@@ -484,8 +582,8 @@ async function countTenantDocuments(tenantId) {
 async function canCreateDocuments(tenantId, additionalDocuments = 1) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
-	const plan = getPlan(billing.planId);
-	const limit = plan.limits.documents;
+	const plan = billing.planCatalog ? billing.planCatalog :getPlan(billing.planId);
+	const limit = plan.limitsDocuments;
 	if (limit === null || limit === undefined) {
 		return { allowed: true, current: await countTenantDocuments(tenantId), limit: null };
 	}
@@ -651,12 +749,8 @@ async function consumeAiRequests(tenantId, count = 1) {
 async function getTenantEntitlements(tenantId) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return null;
-	const plan = getPlan(billing.planId);
-	const [usage, assignedSeats, storageUsedBytes] = await Promise.all([
-		getTenantUsage(tenantId),
-		getAssignedSeatCount(tenantId),
-		calculateTenantStorageBytes(tenantId),
-	]);
+	const plan = billing.planId ? billing.planCatalog : getPlan(billing.planId);
+	const { usage, assignedSeats, storageUsedBytes } = await getTenantUsageMetrics(tenantId);
 	const collaboratorsAssigned = assignedSeats;
 
 	return {
@@ -664,14 +758,14 @@ async function getTenantEntitlements(tenantId) {
 		plan,
 		limits: {
 			seatsPurchased: billing.purchasedSeats,
-			storageBytes: plan.limits.storageBytes,
-			aiRequestsPerMonth: plan.limits.aiRequestsPerMonth,
-			collaborators: plan.limits.collaborators,
-			documents: plan.limits.documents,
-			documentUpdatesPerMonth: plan.limits.documentUpdatesPerMonth,
-			versionHistoryDays: plan.limits.versionHistoryDays,
-			grammarAccessDays: plan.limits.grammarAccessDays,
-			aiAccessDays: plan.limits.aiAccessDays,
+			storageBytes: plan.limitStorageBytes ? plan.limitStorageBytes : (plan.limit.storageBytes || null),
+			aiRequestsPerMonth: plan.limitAiRequestsPerMonth ? plan.limitAiRequestsPerMonth : (plan.limit.aiRequestsPerMonth || null),
+			collaborators:plan.limitCollaborators ? plan.limitCollaborators : (plan.limit.collaborators || null),
+			documents: plan.limitDocuments ? plan.limitDocuments : (plan.limit.documents || null),
+			documentUpdatesPerMonth: plan.limitDocumentUpdatesPerMonth ? plan.limitDocumentUpdatesPerMonth : (plan.limit.documentUpdatesPerMonth || null),
+			versionHistoryDays: plan.limitVersionHistoryDays ? plan.limitVersionHistoryDays : (plan.limit.versionHistoryDays || null),
+			grammarAccessDays: plan.limitGrammarAccessDays ? plan.limitGrammarAccessDays : (plan.limit.grammarAccessDays || null),
+			aiAccessDays: plan.limitAiAccessDays ? plan.limitAiAccessDays : (plan.limit.aiAccessDays || null),
 		},
 		usage: {
 			monthKey: usage.monthKey,
@@ -934,7 +1028,7 @@ async function ensureDefaultTenantForUser(user) {
 		data: { security: tenant.security },
 	});
 
-	await ensureTenantBillingState(tenant);
+	await ensureTenantBillingState(tenantId);
 
 	await prisma.user.update({
 		where: { id: user.id },
@@ -966,9 +1060,6 @@ async function syncCurrentTenantFromMembership(user) {
 		orderBy: {
 			createdAt: 'asc',
 		},
-		include: {
-			tenant: true,
-		},
 	});
 
 	if (!activeMemberships.length) {
@@ -985,9 +1076,9 @@ async function syncCurrentTenantFromMembership(user) {
 	);
 	const selectedMembership = existingCurrent || activeMemberships[0];
 
+	const row = await prisma.tenant.findUnique({ where: { id: selectedMembership.tenantId } });
 	let tenant = null;
-	if (selectedMembership.tenant) {
-		const row = selectedMembership.tenant;
+	if (row) {
 		tenant = {
 			id: row.id,
 			name: row.name,
@@ -1007,7 +1098,7 @@ async function syncCurrentTenantFromMembership(user) {
 		return null;
 	}
 
-	await ensureTenantBillingState(tenant);
+	await ensureTenantBillingState(tenant.id);
 	ensureTenantSecurityState(tenant);
 	user.currentTenantId = tenant.id;
 	await prisma.user.updateMany({
@@ -1079,9 +1170,6 @@ async function ensureTenantBootstrapForUser(user) {
 		orderBy: {
 			createdAt: 'asc',
 		},
-		include: {
-			tenant: true,
-		},
 	});
 
 	if (activeMemberships.length) {
@@ -1091,10 +1179,10 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		const tenant = activeMemberships[0].tenant;
+		const tenant = await prisma.tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
 		if (!tenant) return null;
 
-		await ensureTenantBillingState(tenant);
+		await ensureTenantBillingState(tenant.id);
 		const security = ensureTenantSecurityState(tenant);
 		await prisma.tenant.updateMany({
 			where: { id: tenant.id },
@@ -1137,6 +1225,7 @@ module.exports = {
 	refreshBillingStatus,
 	isBillingWriteBlocked,
 	getTenantEntitlements,
+	getTenantUsageMetrics,
 	canAssignSeats,
 	canAssignCollaborators,
 	canConsumeAiRequests,

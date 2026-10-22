@@ -115,7 +115,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
     });
   }
 
-  const entitlements = await getTenantEntitlements(req.tenant.id);
+  const entitlements = req.entitlements;
   if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
 
   const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
@@ -267,8 +267,7 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
 router.delete('/:id', requireAuth, resolveTenantContext, requirePermission('document.delete'), attachEntitlements, async (req, res) => {
   const row = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!row) return res.status(404).json({ error: 'Document not found.' });
-
-  await prisma.document.delete({ where: { id: row.id } });
+  await prisma.document.delete({ where: { id: row.id, tenantId: req.tenant.id } });
   writeAuditLog({
     userId: req.user.id,
     tenantId: req.tenant.id,

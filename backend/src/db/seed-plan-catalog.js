@@ -56,27 +56,36 @@ async function seedPlanCatalog() {
     const featureFlags = toFeatureFlags(plan);
     const limitFields = toLimitFields(plan);
 
-    await prisma.planCatalog.upsert({
+    const data = {
+      name: plan.name,
+      priceMonthlyCents: Number(plan.priceMonthlyCents || 0),
+      displayPrice: String(plan.displayPrice || ''),
+      ...featureFlags,
+      ...limitFields,
+    };
+
+    const existing = await prisma.planCatalog.findUnique({
       where: { id: plan.id },
-      update: {
-        name: plan.name,
-        priceMonthlyCents: Number(plan.priceMonthlyCents || 0),
-        displayPrice: String(plan.displayPrice || ''),
-        ...featureFlags,
-        ...limitFields,
-      },
-      create: {
-        id: plan.id,
-        name: plan.name,
-        priceMonthlyCents: Number(plan.priceMonthlyCents || 0),
-        displayPrice: String(plan.displayPrice || ''),
-        ...featureFlags,
-        ...limitFields,
-      },
     });
+
+    if (existing) {
+      await prisma.planCatalog.update({
+        where: { id: plan.id },
+        data,
+      });
+      console.log(`✓ Updated plan: ${plan.name}`);
+    } else {
+      await prisma.planCatalog.create({
+        data: {
+          id: plan.id,
+          ...data,
+        },
+      });
+      console.log(`✓ Created plan: ${plan.name}`);
+    }
   }
   const count = await prisma.planCatalog.count();
-  console.log(`Plan catalog synced. Total plans: ${count}`);
+  console.log(`\nPlan catalog synced. Total plans: ${count}`);
 }
 
 seedPlanCatalog()

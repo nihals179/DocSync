@@ -161,7 +161,6 @@ function mapDbUserToAuthUser(dbUser) {
 }
 
 async function resolveUserFromSession(sessionId) {
-  const started = Date.now();
   if (!isDatabaseConfigured()) return null;
   const sessionRow = await prisma.authSession.findUnique({
     where: { id: sessionId },
@@ -195,9 +194,6 @@ async function resolveUserFromSession(sessionId) {
   }
   const user = mapDbUserToAuthUser(sessionRow?.user || null);
   if (!user) return null;
-  const elapsed = Date.now() - started;
-  console.warn(`resolveUserFromSession took ${elapsed} ms `);
-
   return { session, user };
 }
 

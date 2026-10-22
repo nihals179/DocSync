@@ -20,6 +20,7 @@ const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
 const billingRoutes = require('./routes/billing.routes');
 const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
 const openApiSpec = require('./openapi');
+const swaggerUiAutoAuthScript = require('./swagger-ui-auto-auth');
 const swaggerUi = require('swagger-ui-express');
 
 const app = express();
@@ -54,8 +55,13 @@ app.get(['/openapi.json', '/api/openapi.json', '/swagger.json'], (_req, res) => 
 	res.json(openApiSpec);
 });
 
+app.get('/swagger-ui/swagger-auto-auth.js', (_req, res) => {
+	res.type('application/javascript').send(swaggerUiAutoAuthScript);
+});
+
 app.use('/swagger-ui', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
 	documentTitle: 'DocSync API Swagger',
+	customJs: '/swagger-ui/swagger-auto-auth.js',
 	swaggerOptions: {
 		displayRequestDuration: true,
 		persistAuthorization: true,

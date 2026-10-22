@@ -83,7 +83,14 @@ function createAuthRouteHelpers({
   function resolvePasswordFromBody(body) {
     const raw = body ?? {};
     if (raw.passwordEncrypted) {
-      return decryptPassword(String(raw.passwordEncrypted).trim());
+      try {
+        return decryptPassword(String(raw.passwordEncrypted).trim());
+      } catch {
+        if (typeof raw.password === 'string' && raw.password.length > 0) {
+          return raw.password;
+        }
+        throw new Error('Encrypted password payload is invalid.');
+      }
     }
     if (typeof raw.password === 'string' && raw.password.length > 0) {
       return raw.password;

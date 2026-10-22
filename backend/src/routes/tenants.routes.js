@@ -21,6 +21,7 @@ const {
   parseBooleanInput,
 } = require('../middleware/tenants');
 const { writeAuditLog } = require('../lib/audit');
+const { serializeBigInt } = require('../utils/serialization');
 
 const router = express.Router();
 
@@ -407,7 +408,7 @@ router.delete('/current/members/:membershipId', requireAuth, resolveTenantContex
 router.get('/current/entitlements', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
   const entitlements = await getTenantEntitlements(req.tenant.id);
   if (!entitlements) return res.status(404).json({ error: 'Entitlements unavailable.' });
-  res.json({ entitlements });
+  res.json({ entitlements: serializeBigInt(entitlements) });
 });
 
 module.exports = router;

@@ -37,6 +37,7 @@ model PlanCatalog {
   limitAiAccessDays              Int?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  tenantBillings    tenantBilling[]
 
   @@map("plan_catalog")
 }
@@ -84,19 +85,21 @@ model Tenant {
 }
 
 model tenantBilling {
-  tenantId          String   @id 
-  planId             String
-  status             String
-  purchasedSeats     Int
-  trialEndsAt        DateTime?
-  trialUsed          Boolean  @default(false)
-  subscriptionId     String?
-  customerId         String?
+  tenantId          String   @id
+  planId            String
+  status            String
+  purchasedSeats    Int
+  trialEndsAt       DateTime?
+  trialUsed         Boolean  @default(false)
+  subscriptionId    String?
+  customerId        String?
   currentPeriodEndAt DateTime?
-  graceEndsAt        DateTime?
-  updatedAt          DateTime @updatedAt
-  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+  graceEndsAt       DateTime?
+  updatedAt         DateTime @updatedAt
+  tenant            Tenant   @relation(fields: [tenantId], references: [id])
+  planCatalog       PlanCatalog @relation(fields: [planId], references: [id])
 
+  @@index([planId])
   @@map("tenant_billing")
 }
 
@@ -170,9 +173,6 @@ model tenantsInvite {
 model AuthSession {
   id               String   @id
   userId           String
-  userName         String?
-  userEmail        String?
-  tenantId         String?
   refreshTokenHash String
   csrfToken        String
   createdAt        DateTime @default(now())
@@ -228,11 +228,13 @@ model TenantsUsage {
   aiRequests      Int      @default(0)
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@id([tenantId, monthKey])
   @@map("tenant_usage")
 }
+
 
 model UserUsage {
   userId          String
