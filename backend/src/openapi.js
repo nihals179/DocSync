@@ -1295,6 +1295,76 @@ const openapi = {
         responseExample: { issues: [{ id: 1, type: 'spelling', text: 'Teh', suggestion: 'The' }] },
       }),
     },
+
+    '/api/users/me': {
+      delete: op({
+        summary: 'Delete own account',
+        tags: ['Users'],
+        description: 'Allows authenticated users to delete their own account. Requires password confirmation for security. All related data is deleted except documents, comments, and versions which are preserved.',
+        requestExample: { confirmPassword: 'user_password_here' },
+        requestSchema: {
+          type: 'object',
+          properties: {
+            confirmPassword: { type: 'string', description: 'Current password for confirmation' },
+          },
+          required: ['confirmPassword'],
+        },
+        responseExample: {
+          message: 'User account successfully deleted.',
+          deletionDetails: {
+            userDeleted: true,
+            relationsDeleted: {
+              authSessions: 5,
+              userBilling: 1,
+              userUsage: 12,
+              tenantMembership: 1,
+              tenantsInvite: 0,
+              auditLogs: 25,
+            },
+          },
+        },
+        responseStatus: 200,
+        responseDescription: 'Account deleted successfully',
+        extraResponses: {
+          400: commonErrors[400],
+          401: commonErrors[401],
+          404: commonErrors[404],
+          500: jsonResponse({ error: 'Failed to delete user account. Please try again.' }, 'Server Error', 500),
+        },
+      }),
+    },
+
+    '/api/users/{userId}': {
+      delete: op({
+        summary: 'Delete user account (admin)',
+        tags: ['Users'],
+        description: 'Allows admins to delete any user account. Non-admin users can only delete their own account (userId must match authenticated user). All related data is deleted except documents, comments, and versions which are preserved.',
+        parameters: [
+          { name: 'userId', in: 'path', required: true, schema: { type: 'string' }, description: 'The ID of the user to delete' },
+        ],
+        responseExample: {
+          message: 'User account successfully deleted.',
+          deletionDetails: {
+            userDeleted: true,
+            relationsDeleted: {
+              authSessions: 3,
+              userBilling: 1,
+              userUsage: 8,
+              tenantMembership: 1,
+              tenantsInvite: 2,
+              auditLogs: 18,
+            },
+          },
+        },
+        responseStatus: 200,
+        responseDescription: 'Account deleted successfully',
+        extraResponses: {
+          403: commonErrors[403],
+          404: commonErrors[404],
+          500: jsonResponse({ error: 'Failed to delete user account. Please try again.' }, 'Server Error', 500),
+        },
+      }),
+    },
   },
 };
 

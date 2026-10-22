@@ -17,6 +17,7 @@ const workspacesRoutes = require('./routes/workspaces.routes');
 const templatesRoutes = require('./routes/templates.routes');
 const tenantsRoutes = require('./routes/tenants.routes');
 const enterpriseSecurityRoutes = require('./routes/enterprise-security.routes');
+const usersRoutes = require('./routes/users.routes');
 const billingRoutes = require('./routes/billing.routes');
 const billingWebhooksRoutes = require('./routes/billing-webhooks.routes');
 const openApiSpec = require('./openapi');
@@ -107,6 +108,9 @@ app.use('/api/tenants', tenantsRoutes);
 
 // Enterprise security and audit console
 app.use('/api/tenants', enterpriseSecurityRoutes);
+
+// Users
+app.use('/api/users', usersRoutes);
 
 // Billing portal and plan management
 app.use('/api/billing', billingRoutes);

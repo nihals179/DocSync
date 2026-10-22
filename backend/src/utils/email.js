@@ -1,9 +1,13 @@
 const { EmailClient } = require('@azure/communication-email');
+const mjml2html = require('mjml');
+const fs = require('fs');
+const path = require('path');
 
 require('dotenv').config();
 
 const connectionString = process.env.AZURE_COMMUNICATION_CONNECTION_STRING;
 const senderEmail = process.env.AZURE_EMAIL_SENDER;
+const emailTemplatesDir = path.join(__dirname, '../..', 'public/emails');
 
 if (!connectionString) {
   throw new Error('AZURE_COMMUNICATION_CONNECTION_STRING environment variable is not set');
@@ -14,6 +18,42 @@ if (!senderEmail) {
 }
 
 const emailClient = new EmailClient(connectionString);
+
+async function compileMjml(mjmlContent, variables = {}) {
+  let replacedContent = mjmlContent;
+  for (const [key, value] of Object.entries(variables)) {
+    replacedContent = replacedContent.replace(new RegExp(key, 'g'), value);
+  }
+
+  const result = await mjml2html(replacedContent);
+  const html = result.html || '';
+  const errors = result.errors || [];
+
+  if (Array.isArray(errors) && errors.length > 0) {
+    throw new Error(`MJML compilation error: ${errors.map(e => e.message || e).join(', ')}`);
+  }
+
+  if (!html) {
+    throw new Error('MJML compilation failed: No HTML generated');
+  }
+
+  return html;
+}
+
+function plainTextFromHtml(html) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .join('\n');
+}
 
 async function sendEmail({ to, subject, htmlContent, plainTextContent }) {
   if (!to || !subject) {
@@ -38,17 +78,16 @@ async function sendEmail({ to, subject, htmlContent, plainTextContent }) {
   return result;
 }
 
-async function sendVerificationEmail(email, verificationLink) {
-  const htmlContent = `
-    <h2>Email Verification</h2>
-    <p>Click the link below to verify your email:</p>
-    <a href="${verificationLink}">Verify Email</a>
-    <p>Or copy and paste this link in your browser:</p>
-    <p>${verificationLink}</p>
-    <p>This link expires in 24 hours.</p>
-  `;
+async function sendVerificationEmail(email, verificationLink, userName = '') {
+  const mjmlPath = path.join(emailTemplatesDir, 'verify-email.mjml');
+  const mjmlContent = fs.readFileSync(mjmlPath, 'utf-8');
 
-  const plainTextContent = `Email Verification\n\nVerify your email: ${verificationLink}\n\nThis link expires in 24 hours.`;
+  const htmlContent = await compileMjml(mjmlContent, {
+    '{{userName}}': userName,
+    '{{verificationLink}}': verificationLink,
+  });
+
+  const plainTextContent = plainTextFromHtml(htmlContent);
 
   return sendEmail({
     to: email,
@@ -58,18 +97,16 @@ async function sendVerificationEmail(email, verificationLink) {
   });
 }
 
-async function sendPasswordResetEmail(email, resetLink) {
-  const htmlContent = `
-    <h2>Password Reset</h2>
-    <p>Click the link below to reset your password:</p>
-    <a href="${resetLink}">Reset Password</a>
-    <p>Or copy and paste this link in your browser:</p>
-    <p>${resetLink}</p>
-    <p>This link expires in 1 hour.</p>
-    <p>If you didn't request this, please ignore this email.</p>
-  `;
+async function sendPasswordResetEmail(email, resetLink, userName = '') {
+  const mjmlPath = path.join(emailTemplatesDir, 'reset-password.mjml');
+  const mjmlContent = fs.readFileSync(mjmlPath, 'utf-8');
 
-  const plainTextContent = `Password Reset\n\nReset your password: ${resetLink}\n\nThis link expires in 1 hour.\n\nIf you didn't request this, please ignore this email.`;
+  const htmlContent = await compileMjml(mjmlContent, {
+    '{{userName}}': userName,
+    '{{resetLink}}': resetLink,
+  });
+
+  const plainTextContent = plainTextFromHtml(htmlContent);
 
   return sendEmail({
     to: email,
@@ -80,15 +117,14 @@ async function sendPasswordResetEmail(email, resetLink) {
 }
 
 async function sendWelcomeEmail(email, userName) {
-  const htmlContent = `
-    <h2>Welcome to DocSync!</h2>
-    <p>Hi ${userName},</p>
-    <p>Thank you for joining DocSync. We're excited to have you on board!</p>
-    <p>You can now start creating and managing your documents.</p>
-    <p>If you have any questions, feel free to reach out to our support team.</p>
-  `;
+  const mjmlPath = path.join(emailTemplatesDir, 'welcome.mjml');
+  const mjmlContent = fs.readFileSync(mjmlPath, 'utf-8');
 
-  const plainTextContent = `Welcome to DocSync!\n\nHi ${userName},\n\nThank you for joining DocSync. We're excited to have you on board!\n\nYou can now start creating and managing your documents.`;
+  const htmlContent = await compileMjml(mjmlContent, {
+    '{{userName}}': userName,
+  });
+
+  const plainTextContent = plainTextFromHtml(htmlContent);
 
   return sendEmail({
     to: email,

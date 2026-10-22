@@ -102,6 +102,8 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
   const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
   const [verificationState, setVerificationState] = useState<VerificationState | null>(null);
+  const [pendingEmailVerification, setPendingEmailVerification] = useState<string | null>(null);
+  const [isResending, setIsResending] = useState(false);
   const [globalError, setGlobalError] = useState('');
   const [globalMessage, setGlobalMessage] = useState('');
 
@@ -158,15 +160,36 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
       }
 
       if (!validateLogin()) return;
-      const result = await authApi.login(loginEmail, loginPassword, rememberMe);
+      const result = (await authApi.login(loginEmail, loginPassword, rememberMe)) as any;
+
+      // Check for email verification requirement
+      if (result.requiresEmailVerification === true) {
+        console.log('Email verification required:', result);
+        setPendingEmailVerification(result.email || loginEmail);
+        setGlobalError(result.error || 'Please verify your email before signing in.');
+        return;
+      }
+
       if ('requiresTwoFactor' in result) {
         setPendingTwoFactorToken(result.tempToken);
         setGlobalMessage(result.message);
         return;
       }
       await onAuthSuccess(result);
-    } catch (err) {
-      setGlobalError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Login failed. Please try again.';
+      console.error('Login error:', { err, errorMessage });
+
+      // Check if error is about email verification
+      const isEmailVerificationError = errorMessage.toLowerCase().includes('verify') || errorMessage.toLowerCase().includes('email');
+      console.log('Is email verification error?', isEmailVerificationError, 'Message:', errorMessage);
+
+      if (isEmailVerificationError) {
+        console.log('Setting pending email verification for:', loginEmail);
+        setPendingEmailVerification(loginEmail);
+      }
+
+      setGlobalError(errorMessage);
     } finally {
       setLoginLoading(false);
     }
@@ -235,6 +258,20 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
     }
   }
 
+  async function resendPendingVerification() {
+    if (!pendingEmailVerification) return;
+    resetMessages();
+    setIsResending(true);
+    try {
+      const result = await authApi.resendVerification(pendingEmailVerification);
+      setGlobalMessage(result.verificationLinkPreview ? `${result.message} Dev preview: ${result.verificationLinkPreview}` : result.message);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'Failed to resend verification email.');
+    } finally {
+      setIsResending(false);
+    }
+  }
+
   function switchTab(next: AuthTab) {
     setTab(next);
     resetMessages();
@@ -243,6 +280,7 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
     setSignupErrors({});
     setPendingTwoFactorToken('');
     setTwoFactorCode('');
+    setPendingEmailVerification(null);
   }
 
   function openForgotPassword() {
@@ -310,7 +348,42 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
           {globalMessage && <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{globalMessage}</div>}
           {globalError && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{globalError}</div>}
 
-          {tab === 'login' && !pendingTwoFactorToken && !forgotPasswordOpen && (
+          {tab === 'login' && pendingEmailVerification && !forgotPasswordOpen && (
+            <form className="flex flex-col gap-5">
+              <div>
+                <h2 className="text-lg font-black text-slate-900">Verify your email</h2>
+                <p className="mt-1 text-sm text-slate-600">Please verify your email address before signing in.</p>
+              </div>
+
+              <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3">
+                <p className="text-sm text-cyan-800">
+                  A verification link has been sent to <strong>{pendingEmailVerification}</strong>
+                </p>
+                <p className="mt-2 text-xs text-cyan-700">
+                  Click the link in your email to verify your account.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void resendPendingVerification()}
+                disabled={isResending}
+                className="flex w-full items-center justify-center rounded-xl bg-cyan-700 py-2.5 text-sm font-bold text-white shadow-md shadow-cyan-200 transition-all hover:bg-cyan-600 disabled:opacity-60"
+              >
+                {isResending ? 'Sending...' : 'Resend verification email'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPendingEmailVerification(null)}
+                className="text-sm font-semibold text-slate-500 hover:text-slate-700"
+              >
+                Back to sign in
+              </button>
+            </form>
+          )}
+
+          {tab === 'login' && !pendingTwoFactorToken && !forgotPasswordOpen && !pendingEmailVerification && (
             <form onSubmit={handleLogin} noValidate className="flex flex-col gap-5">
               <InputField
                 label="Email"
@@ -375,7 +448,7 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
             </form>
           )}
 
-          {tab === 'login' && pendingTwoFactorToken && (
+          {tab === 'login' && pendingTwoFactorToken && !pendingEmailVerification && (
             <form onSubmit={handleTwoFactorSubmit} className="flex flex-col gap-5">
               <div>
                 <h2 className="text-lg font-black text-slate-900">Two-factor verification</h2>
@@ -406,7 +479,7 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
             </form>
           )}
 
-          {tab === 'login' && forgotPasswordOpen && (
+          {tab === 'login' && forgotPasswordOpen && !pendingEmailVerification && (
             <form onSubmit={handleForgotPassword} className="flex flex-col gap-5">
               <div>
                 <h2 className="text-lg font-black text-slate-900">Reset your password</h2>

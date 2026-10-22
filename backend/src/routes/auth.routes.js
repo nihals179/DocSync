@@ -164,18 +164,20 @@ router.post('/register', registerRateLimit, async (req, res) => {
     ? `${FRONTEND_URL}/verify-email?token=${verificationToken}`
     : null;
 
-  if (verificationToken) {
-    try {
-      await sendVerificationEmail(user.email, verificationLink);
-    } catch (error) {
-      console.error('Failed to send verification email during registration:', error);
-      audit(req, 'register', 'partial-success', user.id, { reason: 'email-send-failed', verificationRequired });
-    }
-  } else {
-    try {
-      await sendWelcomeEmail(user.email, user.name);
-    } catch (error) {
-      console.error('Failed to send welcome email during registration:', error);
+  if (process.env.SENDMAIL === 'Y') {
+    if (verificationToken) {
+      try {
+        await sendVerificationEmail(user.email, verificationLink, user.name);
+      } catch (error) {
+        console.error('Failed to send verification email during registration:', error);
+        audit(req, 'register', 'partial-success', user.id, { reason: 'email-send-failed', verificationRequired });
+      }
+    } else {
+      try {
+        await sendWelcomeEmail(user.email, user.name);
+      } catch (error) {
+        console.error('Failed to send welcome email during registration:', error);
+      }
     }
   }
 
@@ -257,9 +259,14 @@ const authConfig = await getAuthConfig();
     });
   }
 
-  if (!authConfig.emailVerificationBypass && !user.emailVerified && process.env.DOCSYNC_ENV === 'PROD') {
+  if (!authConfig.emailVerificationBypass && !user.emailVerified) {
     audit(req, 'login', 'failure', user.id, { reason: 'email-not-verified' });
-    return res.status(403).json({ error: 'Please verify your email before signing in.' });
+    return res.status(403).json({
+      error: 'Please verify your email before signing in.',
+      requiresEmailVerification: true,
+      email: user.email,
+      message: 'Check your inbox for a verification link. If you did not receive it, you can request a new one.'
+    });
   }
 
   user.failedLoginAttempts = 0;
@@ -372,7 +379,7 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email is required.' });
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, emailVerified: true },
+    select: { id: true, name: true, emailVerified: true },
   });
   if (!user) return res.status(404).json({ error: 'User not found.' });
   if (user.emailVerified) return res.status(400).json({ error: 'Email already verified.' });
@@ -380,12 +387,14 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
   const verificationToken = await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
   const verificationLink = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
-  try {
-    await sendVerificationEmail(email, verificationLink);
-  } catch (error) {
-    console.error('Failed to send verification email:', error);
-    audit(req, 'email-verification-resend', 'failure', user.id, { reason: 'email-send-failed', error: String(error?.message || error) });
-    return res.status(500).json({ error: 'Failed to send verification email. Please try again.' });
+  if (process.env.SENDMAIL === 'Y') {
+    try {
+      await sendVerificationEmail(email, verificationLink, user.name);
+    } catch (error) {
+      console.error('Failed to send verification email:', error);
+      audit(req, 'email-verification-resend', 'failure', user.id, { reason: 'email-send-failed', error: String(error?.message || error) });
+      return res.status(500).json({ error: 'Failed to send verification email. Please try again.' });
+    }
   }
 
   audit(req, 'email-verification-resend', 'success', user.id);
@@ -402,7 +411,7 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!user) {
     audit(req, 'password-reset-request', 'success', null, { maskedEmail: email });
@@ -412,10 +421,12 @@ router.post('/forgot-password', passwordResetRateLimit, async (req, res) => {
   const resetToken = await issueOneTimeToken(user.id, 'password-reset', authConfig.resetTokenTtlMs);
   const resetLink = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
 
-  try {
-    await sendPasswordResetEmail(email, resetLink);
-  } catch (error) {
-    console.error('Failed to send password reset email:', error);
+  if (process.env.SENDMAIL === 'Y') {
+    try {
+      await sendPasswordResetEmail(email, resetLink, user.name);
+    } catch (error) {
+      console.error('Failed to send password reset email:', error);
+    }
   }
 
   audit(req, 'password-reset-request', 'success', user.id);
