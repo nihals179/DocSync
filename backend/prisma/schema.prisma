@@ -73,6 +73,7 @@ model Tenant {
   id          String   @id
   name        String
   ownerUserId String
+  ownerEmail  String?
   security    Json?
   memberships tenantMembership[]
   currentUsers User[] @relation("UserCurrentTenant")
@@ -182,7 +183,8 @@ model AuthSession {
   remember         Boolean  @default(false)
   userAgent        String
   ipAddress        String
-  user             User     @relation(fields: [userId], references: [id])
+  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId         String?
 
   @@map("auth_sessions")
 }
@@ -243,6 +245,7 @@ model UserUsage {
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
   user            User     @relation(fields: [userId], references: [id])
+  tenantId        String? 
 
   @@id([userId, monthKey])
   @@map("user_usage")
@@ -333,6 +336,7 @@ model Comment {
   text      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  TenantId        String? 
 
   @@index([docId])
   @@map("comments")
@@ -346,7 +350,8 @@ model Version {
   content   String
   savedAt   DateTime @default(now())
   createdAt DateTime @default(now())
-
+  TenantId   String? 
+  
   @@index([docId])
   @@map("versions")
 }
@@ -372,7 +377,6 @@ model Workspace {
   name           String
   ownerId        String
   tenantId        String
-  memberIds      Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

@@ -239,12 +239,12 @@ async function consumeOneTimeToken(token, type) {
   if (!isDatabaseConfigured()) {
     return null;
   }
-  const dbRecord = await prisma.authToken.findUnique({ where: { id: token } });
+  const dbRecord = await prisma.authToken.findOne({ where: { id: token } });
   if (!dbRecord || dbRecord.type !== type) return null;
 
   await prisma.authToken.deleteMany({
     where: {
-      id: token,
+      userId: dbRecord.userId,
       type,
     },
   });
@@ -291,6 +291,7 @@ function clearAuthCookies(res, scope = 'workspace') {
   const cookieNames = resolveCookieNames(scope);
   res.clearCookie(cookieNames.refreshCookie, { path: '/' });
   res.clearCookie(cookieNames.csrfCookie, { path: '/' });
+
 }
 
 async function createSession(user, req, remember) {
@@ -313,6 +314,7 @@ async function createSession(user, req, remember) {
     remember: Boolean(remember),
     userAgent: getUserAgent(req),
     ipAddress: getRequestIp(req),
+    tenantId: user.currentTenantId || null,
   };
   await prisma.authSession.create({
     data: {
@@ -386,33 +388,36 @@ async function findSessionByRefreshToken(refreshToken) {
   if (!refreshToken) return null;
   if (!isDatabaseConfigured()) return null;
   const refreshTokenHash = hashToken(refreshToken);
-  return normalizeSession(
-    await prisma.authSession.findFirst({
-      where: {
-        refreshTokenHash,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            emailVerified: true,
-            twoFactorEnabled: true,
-            currentTenantId: true,
-            currentTenant: {
-              select: {
-                security: true,
-              },
+  const session = await prisma.authSession.findFirst({
+    where: {
+      refreshTokenHash,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          emailVerified: true,
+          twoFactorEnabled: true,
+          currentTenantId: true,
+          currentTenant: {
+            select: {
+              security: true,
             },
           },
         },
       },
-      orderBy: { lastUsedAt: 'desc' },
-    }),
-  );
+    },
+    orderBy: { lastUsedAt: 'desc' },
+  });
+
+  // Return null if session doesn't have a valid user (orphaned session)
+  if (!session || !session.user) return null;
+
+  return normalizeSession(session);
 }
 
 async function listActiveSessionsForUser(userId) {
@@ -420,6 +425,20 @@ async function listActiveSessionsForUser(userId) {
   const sessions = await prisma.authSession.findMany({
     where: {
       userId,
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { lastUsedAt: 'desc' },
+  });
+
+  return sessions.map((session) => normalizeSession(session));
+}
+
+async function listActiveSessionsForTenant(tenantId) {
+  if (!isDatabaseConfigured()) return [];
+  const sessions = await prisma.authSession.findMany({
+    where: {
+      tenantId,
       revokedAt: null,
       expiresAt: { gt: new Date() },
     },
@@ -532,6 +551,7 @@ module.exports = {
   getSessionById,
   findSessionByRefreshToken,
   listActiveSessionsForUser,
+  listActiveSessionsForTenant,
   countActiveSessionsForUser,
   writeSessionCookies,
   buildAuthResponse,

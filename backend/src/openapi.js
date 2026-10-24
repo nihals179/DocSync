@@ -563,10 +563,32 @@ const openapi = {
       }),
     },
 
-    '/api/sessions/sessions': {
+    '/api/sessions/allSessions': {
       get: op({
         summary: 'List active sessions',
         tags: ['Sessions'],
+        responseExample: {
+          sessions: [
+            {
+              id: 'ses_123',
+              createdAt: '2026-10-19T11:00:00.000Z',
+              lastUsedAt: '2026-10-19T11:10:00.000Z',
+              expiresAt: '2026-10-19T11:25:00.000Z',
+              remember: true,
+              userAgent: 'PostmanRuntime/7.0',
+              ipAddress: '127.0.0.1',
+              current: true,
+            },
+          ],
+        },
+      }),
+    },
+
+    '/api/sessions/listSessions': {
+      get: op({
+        summary: 'List active sessions',
+        tags: ['Sessions'],
+        requestExample : { tenantId: 'ten_123' },
         responseExample: {
           sessions: [
             {

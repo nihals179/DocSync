@@ -992,6 +992,7 @@ async function ensureDefaultTenantForUser(user) {
 	const now = new Date();
 	const tenantName = String(user.name || '').trim() ? `${String(user.name).trim()}'s Tenant` : 'Personal Tenant';
 
+	
 	await prisma.tenant.create({
 		data: {
 			id: tenantId,
@@ -1045,17 +1046,22 @@ async function syncCurrentTenantFromMembership(user) {
 
 	const normalizedEmail = String(user.email || '').toLowerCase().trim();
 	if (!normalizedEmail) return null;
-
-	const dbUser = await prisma.user.findUnique({
-		where: { email: normalizedEmail },
-		select: { id: true },
-	});
-	if (!dbUser) return null;
+	
+	if(user.tenantMemberships){
+		return null
+	}	
 
 	const activeMemberships = await prisma.tenantMembership.findMany({
 		where: {
-			userId: dbUser.id,
-			status: 'active',
+			AND: [
+				{
+					OR: [
+						{ userId: user.id },
+						{ email: normalizedEmail },
+					],
+				},
+				{ status: 'active' },
+			],
 		},
 		orderBy: {
 			createdAt: 'asc',
@@ -1068,7 +1074,7 @@ async function syncCurrentTenantFromMembership(user) {
 			where: { email: normalizedEmail },
 			data: { currentTenantId: null },
 		});
-		return null;
+		throw new Error(`No active memberships found for user: ${user.id}`);
 	}
 
 	const existingCurrent = activeMemberships.find(
@@ -1078,6 +1084,7 @@ async function syncCurrentTenantFromMembership(user) {
 
 	const row = await prisma.tenant.findUnique({ where: { id: selectedMembership.tenantId } });
 	let tenant = null;
+	
 	if (row) {
 		tenant = {
 			id: row.id,
@@ -1095,7 +1102,7 @@ async function syncCurrentTenantFromMembership(user) {
 			where: { email: normalizedEmail },
 			data: { currentTenantId: null },
 		});
-		return null;
+		throw new Error(`Tenant not found for membership: ${selectedMembership.id}`);
 	}
 
 	await ensureTenantBillingState(tenant.id);
@@ -1106,11 +1113,11 @@ async function syncCurrentTenantFromMembership(user) {
 		data: { currentTenantId: tenant.id },
 	});
 
-	return tenant;
+	return user;
 }
 
 async function ensureWorkspaceForUserProvisioned(user) {
-	const personalScopeId = user.id;
+	const personalScopeId = user.tenant.id;
 	if (!isDatabaseConfigured()) {
 		return null;
 	}
@@ -1179,6 +1186,14 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
+		if(!user.currentTenantId){
+			await prisma.user.updateMany({
+						where: { email: normalizedEmail },
+						data: { currentTenantId: activeMemberships[0].tenantId },
+					});
+			user.currentTenantId = activeMemberships[0].tenantId;
+		}
+		
 		const tenant = await prisma.tenant.findUnique({ where: { id: activeMemberships[0].tenantId } });
 		if (!tenant) return null;
 
@@ -1195,6 +1210,27 @@ async function ensureTenantBootstrapForUser(user) {
 			data: { currentTenantId: tenant.id },
 		});
 
+		if(activeMemberships[0].userId !== user.id){
+			try{
+				await prisma.tenantMembership.updateMany({
+					where: { id: activeMemberships[0].id },
+					data: { userId: user.id },
+				});
+			}catch(e){
+				console.error('Error linking user to tenant membership:', e);
+			}
+		}
+		if(tenant.ownerUserId !== user.id && tenant.ownerEmail === user.email){
+			try{
+				await prisma.tenant.updateMany({
+					where: { ownerEmail: tenant.ownerEmail },
+					data: { ownerUserId: user.id },
+				});
+			}catch(e){
+				console.error('Error updating tenant membership email:', e);
+			}
+		}
+
 		await prisma.document.updateMany({
 			where: {
 				userId: user.id,
@@ -1208,7 +1244,7 @@ async function ensureTenantBootstrapForUser(user) {
 		return tenant;
 	}
 
-	return ensureDefaultTenantForUser(user);
+	return  ensureDefaultTenantForUser(user) ;
 }
 
 module.exports = {

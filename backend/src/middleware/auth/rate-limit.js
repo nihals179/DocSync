@@ -24,7 +24,7 @@ if (process.env.NODE_ENV === 'test') {
   const loginRateLimit = rateLimit({
     ...standardConfig,
     windowMs: 15 * 60 * 1000,
-    max: 5,
+    max: 10,
     skipSuccessfulRequests: true,
     keyGenerator: (req) => `${ipKeyGenerator(req.ip || 'unknown')}:${String(req.body?.email || req.body?.username || 'unknown').toLowerCase()}`,
     message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
@@ -33,7 +33,7 @@ if (process.env.NODE_ENV === 'test') {
   const registerRateLimit = rateLimit({
     ...standardConfig,
     windowMs: 60 * 60 * 1000,
-    max: 5,
+    max: 10,
     skipSuccessfulRequests: true,
     message: { error: 'Too many signup attempts. Please try again later.' },
   });
@@ -41,7 +41,7 @@ if (process.env.NODE_ENV === 'test') {
   const passwordResetRateLimit = rateLimit({
     ...standardConfig,
     windowMs: 60 * 60 * 1000,
-    max: 5,
+    max: 10,
     message: { error: 'Too many password reset requests. Please try again later.' },
   });
 

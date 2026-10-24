@@ -9,7 +9,7 @@
   <mj-body background-color="#f9fafb">
     <mj-section background-color="#ffffff">
       <mj-column>
-        <mj-text align="center" font-size="24px" font-weight="bold" color="#2563eb" padding="20px 0">
+        <mj-text align="center" font-size="24px" font-weight="bold" color="#0891b2" padding="20px 0">
           DocSync
         </mj-text>
       </mj-column>
@@ -17,50 +17,60 @@
 
     <mj-section background-color="#ffffff" padding-top="0">
       <mj-column>
-        <mj-text font-size="20px" font-weight="bold" color="#1f2937" padding-bottom="10px">
+        <mj-text font-size="20px" font-weight="bold" color="#1f2937" padding-bottom="15px">
           Welcome to DocSync!
         </mj-text>
 
-        <mj-text color="#6b7280" padding-bottom="15px">
+        <mj-text color="#6b7280" font-size="15px" padding-bottom="20px">
           Hi {{userName}},
         </mj-text>
 
-        <mj-text color="#6b7280">
-          Thank you for joining DocSync. We're thrilled to have you on board!
-        </mj-text>
-
-        <mj-text color="#6b7280" padding-top="20px">
-          DocSync makes document collaboration seamless and secure. Start exploring now and discover how easy it is to:
+        <mj-text color="#6b7280" font-size="15px" line-height="1.6" padding-bottom="25px">
+          Thank you for joining DocSync. We're thrilled to have you on board! Document collaboration is about to become seamless and secure.
         </mj-text>
       </mj-column>
     </mj-section>
 
-    <mj-section background-color="#f3f4f6">
+    <mj-section background-color="#f0fdf4" padding="25px">
       <mj-column>
-        <mj-text color="#6b7280" padding="15px"><strong>✓</strong> Create and manage documents in real-time</mj-text>
-        <mj-text color="#6b7280" padding="5px"><strong>✓</strong> Collaborate with your team instantly</mj-text>
-        <mj-text color="#6b7280" padding="5px"><strong>✓</strong> Keep version history and track changes</mj-text>
-        <mj-text color="#6b7280" padding="5px"><strong>✓</strong> Secure your documents with enterprise-grade protection</mj-text>
+        <mj-text color="#166534" font-size="14px" font-weight="600" padding-bottom="15px">
+          Get Started with These Features:
+        </mj-text>
+        <mj-text color="#166534" font-size="14px" line-height="1.8" padding="0">
+          ✓ Create and manage documents in real-time<br/>
+          ✓ Collaborate with your team instantly<br/>
+          ✓ Keep complete version history and track changes<br/>
+          ✓ Secure your documents with enterprise-grade protection
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="30px 0">
+      <mj-column>
+        <mj-button font-size="16px" font-weight="bold" background-color="#0891b2" href="{{appUrl}}" padding="15px 0">
+          Launch DocSync
+        </mj-button>
       </mj-column>
     </mj-section>
 
     <mj-section background-color="#ffffff">
       <mj-column>
-        <mj-text color="#6b7280" padding-top="20px">
-          You can now start creating and managing your documents right away.
+        <mj-text color="#6b7280" font-size="14px" line-height="1.6" padding-bottom="20px">
+          You're all set to start creating and collaborating. Dive in and explore the power of DocSync today!
         </mj-text>
 
-        <mj-text color="#6b7280" padding-bottom="20px">
-          If you have any questions or need help getting started, feel free to reach out to our support team.
+        <mj-text color="#6b7280" font-size="14px" line-height="1.6">
+          If you need help getting started or have any questions, our support team is here to assist you at any time.
         </mj-text>
       </mj-column>
     </mj-section>
 
-    <mj-section background-color="#ffffff" padding-top="0" border-top="2px solid #f0f0f0">
+    <mj-section background-color="#f9fafb" padding-top="0" border-top="1px solid #e5e7eb">
       <mj-column>
-        <mj-text align="center" color="#9ca3af" font-size="12px" padding="20px 0">
+        <mj-text align="center" color="#9ca3af" font-size="12px" padding="20px 0" line-height="1.6">
           &copy; 2026 DocSync. All rights reserved.<br/>
-          This is an automated message. Please do not reply to this email.
+          <br/>
+          This is an automated message. Please do not reply directly to this email.
         </mj-text>
       </mj-column>
     </mj-section>

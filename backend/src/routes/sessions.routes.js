@@ -18,6 +18,7 @@ const {
   getSessionById,
   findSessionByRefreshToken,
   listActiveSessionsForUser,
+  listActiveSessionsForTenant,
   writeSessionCookies,
   buildAuthResponse,
   validateCsrf,
@@ -65,14 +66,20 @@ router.post('/refresh', authRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
 
-  if (!await isTenantIpAllowedForUser(req, resolved)) {
-    clearAuthCookies(res, authScope);
-    audit(req, 'session-refresh-ip-policy', 'failure', resolved.id, {
-      reason: 'ip-not-allowlisted',
-      tenantId: resolved.currentTenantId,
-      sessionId: session.id,
-    });
-    return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
+  const security = resolved.currentTenant?.security;
+  const resolvedTenantId = resolved.currentTenantId;
+
+
+  if(security?.ipAllowlistEnabled && Array.isArray(security.ipAllowlist) && security.ipAllowlist.length > 0) {
+    const requestIp = getRequestIp(req);
+    if (!security.ipAllowlist.includes(requestIp)) {
+      audit(req, 'login-ip-policy', 'failure', resolved.id, {
+        reason: 'ip-not-allowlisted',
+        tenantId: resolvedTenantId,
+        requestIp,
+      });
+      return res.status(403).json({ error: 'Your tenant only allows access from approved IP addresses.' });
+    }
   }
 
   const rotated = await rotateSession(session, resolved,req);
@@ -95,8 +102,23 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ user: publicUser(user), session: req.authSession, csrfToken: req.authSession.csrfToken });
 });
 
-router.get('/sessions', requireAuth, async (req, res) => {
+router.get('/allSessions', requireAuth, async (req, res) => {
   const sessions = (await listActiveSessionsForUser(req.user.id)).map((session) => ({
+    id: session.id,
+    createdAt: session.createdAt,
+    lastUsedAt: session.lastUsedAt,
+    expiresAt: session.expiresAt,
+    remember: session.remember,
+    userAgent: session.userAgent,
+    ipAddress: session.ipAddress,
+    current: session.id === req.authSession.id,
+  }));
+  res.json({ sessions });
+});
+
+router.get('/listSessions', requireAuth, async (req, res) => {
+
+  const sessions = (await listActiveSessionsForTenant(req.user.currentTenantId)).map((session) => ({
     id: session.id,
     createdAt: session.createdAt,
     lastUsedAt: session.lastUsedAt,

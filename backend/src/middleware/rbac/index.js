@@ -72,10 +72,10 @@ async function resolveTenantContext(req, res, next) {
   const dbMembership = canReusePreloadedMembership
     ? preloadedMembership
     : await prisma.tenantMembership.findFirst({
-      where: membershipWhere,
-      orderBy: { createdAt: 'asc' },
-      include: { tenant: true },
-    });
+        where: membershipWhere,
+        orderBy: { createdAt: 'asc' },
+        include: { tenant: true },
+      });
 
   if (!dbMembership) {
     return res.status(403).json({

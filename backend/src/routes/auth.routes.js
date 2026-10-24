@@ -69,8 +69,8 @@ async function resolveExistingSessionForLogin(req, authScope, expectedIdentifier
   if (!session) return null;
   if (!validateCsrf(req, session)) return null;
 
-  const user = await prisma.user.findUnique({ where: { id: session.userId } });
-  if (!user) return null;
+  const user = await prisma.user.findUnique({ where: { id: session.userId },include : { tenantMembership: true } , });
+  if (!user || !user.tenantMembership) return null;
 
   const normalizedUser = {
     ...user,
@@ -134,7 +134,7 @@ router.post('/register', registerRateLimit, async (req, res) => {
   }
 
   const verificationRequired = !authConfig.emailVerificationBypass;
-  const user = {
+  let user = {
     id: uuidv4(),
     name: String(name).trim(),
     email: normalizedEmail,
@@ -219,7 +219,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(400).json({ error: 'email/username and password are required.' });
   }
 
-  const user = await findUserByIdentifier(identifier);
+  let user = await findUserByIdentifier(identifier);
   if (!user) {
     audit(req, 'login', 'failure', null, { reason: 'unknown-user', identifier });
     return res.status(401).json({ error: 'Invalid credentials.' });
@@ -229,7 +229,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
     audit(req, 'login-lockout', 'failure', user.id, { lockoutUntil: user.lockoutUntil });
     return res.status(423).json({ error: 'Account temporarily locked after repeated failed attempts.' });
   }
-const authConfig = await getAuthConfig();
+  const authConfig = await getAuthConfig();
 
   const valid = await bcrypt.compare(String(decryptedPassword), user.passwordHash);
   if (!valid) {
@@ -273,20 +273,25 @@ const authConfig = await getAuthConfig();
   user.lockoutUntil = null;
 
   // Legacy users may exist without org membership; bootstrap tenant context on login.
-  await ensureTenantBootstrapForUser(user);
+  const tenant = await ensureTenantBootstrapForUser(user);
+  user.tenant = tenant;
   // Keep the current tenant in sync with the user's active memberships. This is important for users who may have been added to a new tenant or removed from an existing one.
-  // await syncCurrentTenantFromMembership(user);
-  function getCurrentTenantId(user) {
-    return user.currentTenantId;
+  try {
+    user = await syncCurrentTenantFromMembership(user);
+  } catch (error) {
+    audit(req, 'login', 'failure', user.id, { reason: 'sync-current-tenant-failed', error: String(error?.message || error) });
+    return res.status(500).json({ error: 'Failed to synchronize your tenant memberships. Please contact support.' });
   }
-  
+  user = await syncCurrentTenantFromMembership(user);
+
   function buildCurrentTenantUpdateData(tenantId) {
     if (prisma.Tenant) {
       return { currentTenantId: tenantId || null };
     }
     return { currentTenantId: tenantId || null };
   }
-  const resolvedTenantId = getCurrentTenantId(user);
+  
+  const resolvedTenantId = user.currentTenantId;
 
   if (resolvedTenantId) {
     try {
@@ -387,7 +392,7 @@ router.post('/resend-verification', authRateLimit, async (req, res) => {
   const verificationToken = await issueOneTimeToken(user.id, 'email-verification', authConfig.emailTokenTtlMs);
   const verificationLink = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
-  if (process.env.SENDMAIL === 'Y') {
+    if (process.env.SENDMAIL === 'Y') {
     try {
       await sendVerificationEmail(email, verificationLink, user.name);
     } catch (error) {
