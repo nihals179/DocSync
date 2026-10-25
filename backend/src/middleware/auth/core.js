@@ -183,7 +183,7 @@ async function resolveUserFromSession(sessionId) {
               security: true,
             },
           },
-          tenantMembership: {
+          tenantMemberships: {
             select: {
               tenantId: true,
               userId: true,
@@ -245,7 +245,7 @@ async function requireAuth(req, res, next) {
       emailVerified: resolved.user.emailVerified,
       twoFactorEnabled: resolved.user.twoFactorEnabled,
       currentTenantId: resolved.user.currentTenantId || null,
-      tenantMembership: Array.isArray(resolved.user.tenantMembership) ? resolved.user.tenantMembership : [],
+      tenantMemberships: Array.isArray(resolved.user.tenantMemberships) ? resolved.user.tenantMemberships : [],
     };
     req.authSession = resolved.session;
     req.accessToken = token;

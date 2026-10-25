@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import ThemeListbox from '../components/common/ThemeListbox';
 import { billingApi, docsApi, templatesApi, versionsApi, workspaceApi } from '../services/api';
+import { useAuth } from '../features/auth/hooks/useAuth';
 import { buildDocumentTree } from '../utils/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../utils/workspaceSelection';
 
@@ -91,6 +92,7 @@ export default function WorkspaceHomePage({
 }: WorkspaceHomePageProps) {
   const PAGE_SIZE = 5;
   const navigate = useNavigate();
+  const { session } = useAuth();
   const [docs, setDocs] = useState<DocSummary[]>([]);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -153,17 +155,28 @@ export default function WorkspaceHomePage({
         setDocs(list);
         setTemplates(availableTemplates);
 
-        // Fallback to a real workspace if saved selection no longer exists.
+        // Use currentTenantId if available, otherwise fall back to saved selection
+        const currentTenantId = session?.user?.currentTenantId;
         const savedSelection = selectedWorkspaceIdRef.current;
-        const fallbackWorkspaceId = availableWorkspaces[0]?.id ?? '';
-        if (!availableWorkspaces.some((workspace) => workspace.id === savedSelection)) {
+        const defaultWorkspaceId = currentTenantId || savedSelection || availableWorkspaces[0]?.id || '';
+
+        if (defaultWorkspaceId && availableWorkspaces.some((workspace) => workspace.id === defaultWorkspaceId)) {
+          if (selectedWorkspaceIdRef.current !== defaultWorkspaceId) {
+            selectedWorkspaceIdRef.current = defaultWorkspaceId;
+            setSelectedWorkspaceId(defaultWorkspaceId);
+          }
+        } else if (availableWorkspaces.length > 0) {
+          const fallbackWorkspaceId = availableWorkspaces[0].id;
           selectedWorkspaceIdRef.current = fallbackWorkspaceId;
           setSelectedWorkspaceId(fallbackWorkspaceId);
         }
 
         const { versions: allVersions } = await versionsApi.listAll(token, { limit: 200 });
         if (ignore) return;
-        const recentDocIds = new Set(list.slice(0, 4).map((doc) => doc.id));
+
+        // Filter versions by workspace and recent docs
+        const workspaceDocs = list.filter((doc) => doc.workspaceId === selectedWorkspaceIdRef.current);
+        const recentDocIds = new Set(workspaceDocs.slice(0, 4).map((doc) => doc.id));
         const flat = allVersions
           .filter((item) => recentDocIds.has(item.docId))
           .map((item) => ({
@@ -328,6 +341,37 @@ export default function WorkspaceHomePage({
     }
   }, [docs, selectedRecentDocId]);
 
+  // Reload versions when workspace changes
+  useEffect(() => {
+    if (!token || docs.length === 0) return;
+
+    const loadVersionsForWorkspace = async () => {
+      try {
+        const { versions: allVersions } = await versionsApi.listAll(token, { limit: 200 });
+
+        // Filter versions by workspace and recent docs
+        const workspaceDocs = docs.filter((doc) => doc.workspaceId === selectedWorkspaceId);
+        const recentDocIds = new Set(workspaceDocs.slice(0, 4).map((doc) => doc.id));
+        const flat = allVersions
+          .filter((item) => recentDocIds.has(item.docId))
+          .map((item) => ({
+            id: item.id,
+            preview: item.preview,
+            savedAt: item.savedAt,
+            docId: item.docId,
+            docTitle: item.docTitle || docs.find((doc) => doc.id === item.docId)?.title || 'Untitled',
+          }))
+          .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime())
+          .slice(0, 8);
+        setVersions(flat);
+      } catch (err) {
+        console.error('Failed to load versions for workspace:', err);
+      }
+    };
+
+    void loadVersionsForWorkspace();
+  }, [selectedWorkspaceId, token, docs]);
+
   useEffect(() => {
     if (docsPage > docsPageCount) setDocsPage(docsPageCount);
   }, [docsPage, docsPageCount]);
@@ -395,7 +439,12 @@ export default function WorkspaceHomePage({
   const docTree = useMemo(() => buildDocumentTree(bookNavigation) as DocNode[], [bookNavigation]);
 
   const workspaceOptions = useMemo(
-    () => workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name })),
+    () => workspaces.map((workspace) => ({
+      id: workspace.id,
+      name: workspace.name,
+      description: `${workspace.memberIds?.length || 0} members`,
+      icon: '🏢',
+    })),
     [workspaces],
   );
 
@@ -803,17 +852,31 @@ export default function WorkspaceHomePage({
                 <span className="hidden text-lg font-black text-cyan-700 sm:inline">DocSync</span>
               </div>
 
-              <div className="w-40 shrink-0">
-                <ThemeListbox
-                  value={selectedWorkspaceId}
-                  options={workspaceOptions}
-                  onChange={(nextValue) => {
-                    selectedWorkspaceIdRef.current = nextValue;
-                    setSelectedWorkspaceId(nextValue);
-                  }}
-                  placeholder="Select workspace"
-                />
-              </div> 
+              <div className="flex items-center gap-3">
+                <div className="w-48 shrink-0">
+                  <ThemeListbox
+                    value={selectedWorkspaceId}
+                    options={workspaceOptions}
+                    onChange={async (nextValue) => {
+                      selectedWorkspaceIdRef.current = nextValue;
+                      setSelectedWorkspaceId(nextValue);
+
+                      // Update user's currentTenantId when workspace is switched
+                      try {
+                        await workspaceApi.setCurrent(token, nextValue);
+                      } catch (err) {
+                        console.error('Failed to update current workspace:', err);
+                      }
+                    }}
+                    placeholder="Select workspace"
+                  />
+                </div>
+
+                {/* Show workspaces count */}
+                <div className="rounded-lg bg-cyan-50 px-3 py-1.5">
+                  <span className="text-xs font-semibold text-cyan-700">{workspaces.length}</span>
+                </div>
+              </div>
 
               <div className="relative w-full max-w-sm">
                 <span className="material-icons absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" style={{ fontSize: '1.2rem' }}>search</span>

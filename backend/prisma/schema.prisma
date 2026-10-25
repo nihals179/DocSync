@@ -61,10 +61,12 @@ model User {
   twoFactorTempSecret   String?
   currentTenantId       String?
   currentTenant         Tenant?            @relation("UserCurrentTenant", fields: [currentTenantId], references: [id])
-  tenantMembership     tenantMembership?  @relation("UserMemberships")
+  tenantMemberships    tenantMembership[] @relation("UserMemberships")
   userBilling           UserBilling?
   userUsage             UserUsage[]
   authSessions          AuthSession[]
+  invitesSent           tenantsInvite[]    @relation("InvitedByUser")
+  invitesAccepted       tenantsInvite[]    @relation("AcceptedByUser")
 
   @@map("users")
 }
@@ -107,17 +109,16 @@ model tenantBilling {
 model tenantMembership {
   id           String   @id
   tenantId     String
-  userId       String
+  userId       String?
   email        String?
   billingAdmin Boolean  @default(false)
   status       String
   tenant       Tenant   @relation(fields: [tenantId], references: [id])
-  user         User     @relation("UserMemberships", fields: [userId], references: [id])
+  user         User?    @relation("UserMemberships", fields: [userId], references: [id])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@unique([tenantId, userId])
-  @@unique([userId])
   @@unique([tenantId, email])
   @@index([email])
   @@map("tenant_memberships")
@@ -162,7 +163,10 @@ model tenantsInvite {
   email           String
   billingAdmin    Boolean  @default(false)
   status          String
-  invitedByUserId String
+  invitedByUserId String?
+  invitedByUser   User?    @relation("InvitedByUser", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  acceptedByUser  User?    @relation("AcceptedByUser", fields: [email], references: [email], onDelete: Cascade)
+  inviteLink      String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   expiresAt       DateTime
@@ -350,7 +354,7 @@ model Version {
   content   String
   savedAt   DateTime @default(now())
   createdAt DateTime @default(now())
-  TenantId   String? 
+  tenantId   String? 
   
   @@index([docId])
   @@map("versions")
@@ -376,6 +380,7 @@ model Workspace {
   id             String   @id
   name           String
   ownerId        String
+  memberIds      Json?
   tenantId        String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

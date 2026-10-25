@@ -867,6 +867,12 @@ export const workspaceApi = {
       method: 'DELETE',
       token,
     }),
+  setCurrent: (token: string, workspaceId: string) =>
+    apiFetch<{ message: string }>('/api/workspaces/current', {
+      method: 'POST',
+      token,
+      body: JSON.stringify({ workspaceId }),
+    }),
 };
 
 export const templatesApi = {
@@ -907,16 +913,24 @@ export const tenantsApi = {
       token,
     }),
   inviteMember: (token: string, payload: { email: string; billingAdmin?: boolean }) =>
-    apiFetch<{ invite: TenantInvite }>('/api/tenants/current/invites', {
+    apiFetch<{ invite: TenantInvite }>('/api/tenants/current/sendinvites', {
       method: 'POST',
       token,
       body: JSON.stringify(payload),
     }),
   acceptInvite: (token: string, tokenValue: string) =>
-    apiFetch<{ message: string; tenantId: string }>('/api/tenants/invites/accept', {
+    apiFetch<{ message: string; tenantId: string; email: string }>('/api/tenants/invites/accept', {
       method: 'POST',
       token,
       body: JSON.stringify({ token: tokenValue }),
+    }).then((response) => {
+      persistTenantContextId(response.tenantId);
+      return response;
+    }),
+  acceptInviteAnonymous: (inviteToken: string) =>
+    apiFetch<{ message: string; tenantId: string; email: string }>('/api/tenants/invites/accept', {
+      method: 'POST',
+      body: JSON.stringify({ token: inviteToken }),
     }).then((response) => {
       persistTenantContextId(response.tenantId);
       return response;

@@ -239,7 +239,7 @@ async function consumeOneTimeToken(token, type) {
   if (!isDatabaseConfigured()) {
     return null;
   }
-  const dbRecord = await prisma.authToken.findOne({ where: { id: token } });
+  const dbRecord = await prisma.authToken.findFirst({ where: { id: token } });
   if (!dbRecord || dbRecord.type !== type) return null;
 
   await prisma.authToken.deleteMany({

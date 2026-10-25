@@ -171,6 +171,30 @@ const tenantInviteSchema = {
   required: ['email'],
 };
 
+const profileCreateSchema = {
+  type: 'object',
+  properties: {
+    role: { type: 'string', description: 'Unique role identifier' },
+    permissions: {
+      type: 'object',
+      properties: {
+        canAccessAdminBoard: { type: 'boolean' },
+        canReviewSecurityAudit: { type: 'boolean' },
+        canManageGlobalSettings: { type: 'boolean' },
+        canManageMembers: { type: 'boolean' },
+        canManageMemberBillingAdmin: { type: 'boolean' },
+        canManageTenantBilling: { type: 'boolean' },
+        canManageWorkspacesDocuments: { type: 'boolean' },
+        canReadTenantResources: { type: 'boolean' },
+        canUseAiGrammarByPlan: { type: 'boolean' },
+        canManageBillingSettings: { type: 'boolean' },
+        canViewInvoicesSubscription: { type: 'boolean' },
+      },
+    },
+  },
+  required: ['role'],
+};
+
 const securityPoliciesSchema = {
   type: 'object',
   properties: {
@@ -351,7 +375,7 @@ const openapi = {
         requestExample: {
           name: 'Ava Smith',
           email: 'ava@example.com',
-          password: 'P@ssw0rd123',
+          password: 'Password123!',
         },
         requestSchema: authRegisterSchema,
         responseExample: {
@@ -396,7 +420,7 @@ const openapi = {
         }],
         requestExample: {
           email: 'ava@example.com',
-          password: 'P@ssw0rd123',
+          password: 'Password123!',
           remember: true,
         },
         requestSchema: authLoginSchema,
@@ -722,6 +746,59 @@ const openapi = {
         parameters: [tenantHeader],
         responseExample: { profiles: [{ id: 'prof_1', role: 'owner', canManageMembers: true }] },
       }),
+      post: op({
+        summary: 'Create a new profile',
+        tags: ['Tenants'],
+        parameters: [tenantHeader],
+        requestExample: {
+          role: 'editor',
+          permissions: {
+            canManageMembers: false,
+            canManageWorkspacesDocuments: true,
+            canReadTenantResources: true,
+            canAccessAdminBoard: false,
+            canReviewSecurityAudit: false,
+            canManageGlobalSettings: false,
+            canManageMemberBillingAdmin: false,
+            canManageTenantBilling: false,
+            canUseAiGrammarByPlan: false,
+            canManageBillingSettings: false,
+            canViewInvoicesSubscription: false,
+          },
+        },
+        requestSchema: profileCreateSchema,
+        responseExample: {
+          message: 'Profile created.',
+          profile: {
+            id: 'editor',
+            role: 'editor',
+            canAccessAdminBoard: false,
+            canManageMembers: false,
+            canManageWorkspacesDocuments: true,
+            canReadTenantResources: true,
+            canReviewSecurityAudit: false,
+            canManageGlobalSettings: false,
+            canManageMemberBillingAdmin: false,
+            canManageTenantBilling: false,
+            canUseAiGrammarByPlan: false,
+            canManageBillingSettings: false,
+            canViewInvoicesSubscription: false,
+          },
+        },
+        responseStatus: 201,
+        responseDescription: 'Created',
+        extraResponses: { 400: commonErrors[400], 409: commonErrors[409] },
+      }),
+    },
+
+    '/api/tenants/profiles/{role}': {
+      delete: op({
+        summary: 'Delete a profile',
+        tags: ['Tenants'],
+        parameters: [{ name: 'role', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
+        responseExample: { message: 'Profile deleted.', role: 'editor' },
+        extraResponses: { 404: commonErrors[404] },
+      }),
     },
 
     '/api/tenants/switch': {
@@ -763,6 +840,9 @@ const openapi = {
         parameters: [tenantHeader],
         responseExample: { invites: [{ id: 'inv_123', email: 'bob@example.com', role: 'tenant_member', billingAdmin: false, status: 'pending', createdAt: '2026-10-19T11:00:00.000Z', expiresAt: '2026-10-26T11:00:00.000Z' }] },
       }),
+    },
+
+    '/api/tenants/current/sendinvites': {
       post: op({
         summary: 'Create tenant invite',
         tags: ['Tenants'],
@@ -1339,7 +1419,7 @@ const openapi = {
               authSessions: 5,
               userBilling: 1,
               userUsage: 12,
-              tenantMembership: 1,
+              tenantMemberships: 1,
               tenantsInvite: 0,
               auditLogs: 25,
             },
@@ -1372,7 +1452,7 @@ const openapi = {
               authSessions: 3,
               userBilling: 1,
               userUsage: 8,
-              tenantMembership: 1,
+              tenantMemberships: 1,
               tenantsInvite: 2,
               auditLogs: 18,
             },

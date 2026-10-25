@@ -661,33 +661,39 @@ async function getCollaboratorCount(tenantId) {
 	return getAssignedSeatCount(tenantId);
 }
 
-async function canAssignSeats(tenantId, additionalSeats = 1) {
+async function canAssignResources(tenantId, additionalSeats = 1, additionalCollaborators = 1) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
-	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
+	if (!billing) return { allowed: false, reason: 'Tenant not found.', seats: null, collaborators: null };
+
 	const assignedSeats = await getAssignedSeatCount(tenantId);
 	const nextAssigned = assignedSeats + Math.max(0, additionalSeats);
-	if (nextAssigned > billing.purchasedSeats) {
-		return {
-			allowed: false,
-			reason: `Seat limit reached (${assignedSeats}/${billing.purchasedSeats}). Purchase more seats to continue.`,
-		};
-	}
-	return { allowed: true, assignedSeats, purchasedSeats: billing.purchasedSeats };
-}
+	const seatsExceeded = nextAssigned > billing.planCatalog.limitSeats;
 
-async function canAssignCollaborators(tenantId, additionalCollaborators = 1) {
-	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
-	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
 	const plan = getPlan(billing.planId);
-	const current = await getCollaboratorCount(tenantId);
-	const nextTotal = current + Math.max(0, additionalCollaborators);
-	if (nextTotal > plan.limits.collaborators) {
-		return {
-			allowed: false,
-			reason: `Collaborator limit reached (${current}/${plan.limits.collaborators}) for ${plan.name} plan.`,
-		};
-	}
-	return { allowed: true, current, limit: plan.limits.collaborators };
+	const currentCollaborators = await getCollaboratorCount(tenantId);
+	const nextTotal = currentCollaborators + Math.max(0, additionalCollaborators);
+	const collaboratorsExceeded = nextTotal > plan.limits.collaborators;
+
+	const seats = {
+		allowed: !seatsExceeded,
+		assignedSeats,
+		purchasedSeats: billing.purchasedSeats,
+		reason: seatsExceeded ? `Seat limit reached (${assignedSeats}/${billing.planCatalog.limitSeats}). Purchase more seats to continue.` : null,
+	};
+
+	const collaborators = {
+		allowed: !collaboratorsExceeded,
+		current: currentCollaborators,
+		limit: plan.limits.collaborators,
+		reason: collaboratorsExceeded ? `Collaborator limit reached (${currentCollaborators}/${plan.limits.collaborators}) for ${plan.name} plan.` : null,
+	};
+
+	return {
+		allowed: !seatsExceeded && !collaboratorsExceeded,
+		reason: seatsExceeded ? seats.reason : collaboratorsExceeded ? collaborators.reason : null,
+		seats,
+		collaborators,
+	};
 }
 
 async function calculateTenantStorageBytes(tenantId) {
@@ -1117,7 +1123,7 @@ async function syncCurrentTenantFromMembership(user) {
 }
 
 async function ensureWorkspaceForUserProvisioned(user) {
-	const personalScopeId = user.tenant.id;
+	const personalScopeId = user.currentTenantId;
 	if (!isDatabaseConfigured()) {
 		return null;
 	}
@@ -1132,24 +1138,13 @@ async function ensureWorkspaceForUserProvisioned(user) {
 		},
 	});
 	if (!row) {
-		const workspace = {
-			id: uuidv4(),
-			name: `${user.name}'s Workspace`,
-			ownerId: user.id,
-			memberIds: [user.id],
-			tenantId: personalScopeId,
-			createdAt: nowIso(),
-			updatedAt: nowIso(),
-		};
-
 		row = await prisma.workspace.create({
 			data: {
-				id: workspace.id,
-				name: workspace.name,
-				ownerId: workspace.ownerId,
-				tenantId: workspace.tenantId,
-				memberIds: workspace.memberIds,
-				createdAt: new Date(workspace.createdAt),
+				id: uuidv4(),
+				name: `${user.name}'s Workspace`,
+				ownerId: user.id,
+				memberIds: [user.id],
+				tenantId: personalScopeId,
 			},
 		});
 	}
@@ -1262,8 +1257,7 @@ module.exports = {
 	isBillingWriteBlocked,
 	getTenantEntitlements,
 	getTenantUsageMetrics,
-	canAssignSeats,
-	canAssignCollaborators,
+	canAssignResources,
 	canConsumeAiRequests,
 	consumeAiRequests,
 	canCreateDocuments,

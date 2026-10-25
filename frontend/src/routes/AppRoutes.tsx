@@ -1,7 +1,7 @@
 import { lazy, useCallback } from 'react';
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 
-import { useAuth } from '../features/auth/context/AuthContext';
+import { useAuth } from '../features/auth/hooks/useAuth';
 import { docsApi } from '../services/api';
 
 const AuthPage = lazy(() => import('../pages/AuthPage'));
@@ -12,6 +12,7 @@ const ResetPasswordPage = lazy(() => import('../pages/ResetPasswordPage'));
 const SecuritySettingsPage = lazy(() => import('../pages/SecuritySettingsPage'));
 const SettingsDashboardPage = lazy(() => import('../pages/SettingsDashboardPage'));
 const VerifyEmailPage = lazy(() => import('../pages/VerifyEmailPage'));
+const AcceptInvitePage = lazy(() => import('../pages/AcceptInvitePage'));
 const WorkspaceHomePage = lazy(() => import('../pages/WorkspaceHomePage'));
 const BuyPlanPage = lazy(() => import('../pages/BuyPlanPage'));
 const EditorPage = lazy(() => import('../pages/EditorPage'));
@@ -105,6 +106,7 @@ export function AppRoutes() {
       />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/invites/:token" element={<AcceptInvitePage />} />
       <Route
         path="/security"
         element={

@@ -55,10 +55,13 @@ function plainTextFromHtml(html) {
     .join('\n');
 }
 
-async function sendEmail({ to, subject, htmlContent, plainTextContent }) {
+async function sendEmail({ to, subject, htmlContent, plainTextContent, importance = 'normal', replyTo = null }) {
   if (!to || !subject) {
     throw new Error('Email recipient (to) and subject are required');
   }
+
+  const supportEmail = process.env.SUPPORT_EMAIL || 'support@docsync.app';
+  const appUrl = process.env.APP_URL || 'http://localhost:3000';
 
   const emailMessage = {
     senderAddress: senderEmail,
@@ -69,6 +72,16 @@ async function sendEmail({ to, subject, htmlContent, plainTextContent }) {
       subject,
       ...(htmlContent && { html: htmlContent }),
       ...(plainTextContent && { plainText: plainTextContent }),
+    },
+    headers: {
+      'X-Priority': importance === 'high' ? '1' : '3',
+      'Importance': importance === 'high' ? 'high' : 'normal',
+      'X-MSMail-Priority': importance === 'high' ? 'High' : 'Normal',
+      'X-Mailer': 'DocSync',
+      'Reply-To': replyTo || supportEmail,
+      'List-Unsubscribe': `<${appUrl}/unsubscribe>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      'Precedence': 'bulk',
     },
   };
 
@@ -134,10 +147,39 @@ async function sendWelcomeEmail(email, userName) {
   });
 }
 
+async function sendInviteEmail(email, inviterName, tenantName, acceptLink, expirationDate) {
+  const mjmlPath = path.join(emailTemplatesDir, 'invite.mjml');
+  const mjmlContent = fs.readFileSync(mjmlPath, 'utf-8');
+
+  const appUrl = process.env.APP_URL || 'http://localhost:3000';
+  const supportEmail = process.env.SUPPORT_EMAIL || 'support@docsync.app';
+
+  const htmlContent = await compileMjml(mjmlContent, {
+    '{{inviterName}}': inviterName,
+    '{{tenantName}}': tenantName,
+    '{{acceptLink}}': acceptLink,
+    '{{expirationDate}}': expirationDate,
+    '{{supportUrl}}': `${appUrl}/support`,
+    '{{unsubscribeUrl}}': `${appUrl}/unsubscribe?email=${encodeURIComponent(email)}`,
+  });
+
+  const plainTextContent = plainTextFromHtml(htmlContent);
+
+  return sendEmail({
+    to: email,
+    subject: `You're invited to join ${tenantName} on DocSync`,
+    htmlContent,
+    plainTextContent,
+    importance: 'high',
+    replyTo: supportEmail,
+  });
+}
+
 module.exports = {
   sendEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
+  sendInviteEmail,
   emailClient,
 };

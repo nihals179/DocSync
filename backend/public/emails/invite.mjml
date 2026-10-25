@@ -1,0 +1,77 @@
+<mjml>
+  <mj-head>
+    <mj-title>Tenant Invitation</mj-title>
+    <mj-preview>{{inviterName}} has invited you to join {{tenantName}} on DocSync.</mj-preview>
+    <mj-style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="#f9fafb">
+    <mj-section background-color="#ffffff">
+      <mj-column>
+        <mj-text align="center" font-size="24px" font-weight="bold" color="#0891b2" padding="20px 0">
+          DocSync
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding-top="0">
+      <mj-column>
+        <mj-text font-size="20px" font-weight="bold" color="#1f2937" padding-bottom="15px">
+          You're Invited!
+        </mj-text>
+
+        <mj-text color="#6b7280" font-size="15px" line-height="1.6" padding-bottom="25px">
+          Hi there,
+        </mj-text>
+
+        <mj-text color="#6b7280" font-size="15px" line-height="1.6" padding-bottom="25px">
+          <strong>{{inviterName}}</strong> has invited you to join <strong>{{tenantName}}</strong> on DocSync. You're joining a collaborative team workspace where you can create, edit, and manage documents together.
+        </mj-text>
+
+        <mj-button font-size="16px" font-weight="bold" background-color="#0891b2" href="{{acceptLink}}" padding="15px 0">
+          Accept Invitation
+        </mj-button>
+
+        <mj-text align="center" color="#9ca3af" font-size="13px" padding="25px 0 15px 0">
+          If the button doesn't work, copy and paste this link into your browser:
+        </mj-text>
+
+        <mj-text color="#0891b2" font-size="12px" padding="12px" background-color="#ecfdf5" font-family="'Courier New', monospace">
+          {{acceptLink}}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#fef3c7" padding="15px">
+      <mj-column>
+        <mj-text color="#78350f" font-size="13px" line-height="1.6">
+          <strong>⏱️ Important:</strong> This invitation expires on {{expirationDate}}. If you didn't expect this invitation, you can safely ignore this email.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff">
+      <mj-column>
+        <mj-text color="#6b7280" font-size="14px" line-height="1.6" padding-bottom="20px">
+          Once you accept this invitation, you'll have full access to {{tenantName}}'s workspace on DocSync and can start collaborating with the team immediately.
+        </mj-text>
+
+        <mj-text color="#6b7280" font-size="14px" line-height="1.6">
+          If you have any questions or need help, feel free to reach out to our support team.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#f9fafb" padding-top="0" border-top="1px solid #e5e7eb">
+      <mj-column>
+        <mj-text align="center" color="#9ca3af" font-size="12px" padding="20px 0" line-height="1.6">
+          DocSync | <a href="{{supportUrl}}" style="color: #0891b2; text-decoration: none;">Support</a><br/>
+          <br/>
+          &copy; 2026 DocSync. All rights reserved.<br/>
+          This is a transactional email. <a href="{{unsubscribeUrl}}" style="color: #0891b2; text-decoration: none;">Manage preferences</a>
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

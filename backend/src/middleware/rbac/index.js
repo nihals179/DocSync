@@ -60,8 +60,8 @@ async function resolveTenantContext(req, res, next) {
   const membershipWhere = requestedTenantId
     ? { userId: req.user.id, status: 'active', tenantId: requestedTenantId }
     : { userId: req.user.id, status: 'active' };
-  const preloadedMembership = Array.isArray(req.user.tenantMembership)
-    ? req.user.tenantMembership[0]
+  const preloadedMembership = Array.isArray(req.user.tenantMemberships)
+    ? req.user.tenantMemberships[0]
     : null;
   const canReusePreloadedMembership = Boolean(
     preloadedMembership

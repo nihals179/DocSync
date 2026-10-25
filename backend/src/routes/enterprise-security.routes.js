@@ -12,8 +12,7 @@ const {
   sanitizeImportedUser,
 } = require('../middleware/enterprise-security');
 const {
-	canAssignCollaborators,
-	canAssignSeats,
+	canAssignResources,
   findTenantByDomain,
   getTenantBillingState,
   getTenantEntitlements,
@@ -364,19 +363,12 @@ router.post('/current/security/ldap/import-users', requirePermission('tenant.mem
       })
       : null;
 
-    const needsSeat = !existingMembership || existingMembership.status !== 'active';
-    if (needsSeat) {
-      const seatCheck = await canAssignSeats(req.tenant.id, 1);
-      if (!seatCheck.allowed) {
-        failed.push({ email: parsed.email, reason: seatCheck.reason, code: 'seat_limit_exceeded' });
-        continue;
-      }
-    }
-
-    if (!existingMembership || existingMembership.status !== 'active') {
-      const collaboratorCheck = await canAssignCollaborators(req.tenant.id, 1);
-      if (!collaboratorCheck.allowed) {
-        failed.push({ email: parsed.email, reason: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+    const isNewMembership = !existingMembership || existingMembership.status !== 'active';
+    if (isNewMembership) {
+      const resourceCheck = await canAssignResources(req.tenant.id, 1, 1);
+      if (!resourceCheck.allowed) {
+        const code = !resourceCheck.seats.allowed ? 'seat_limit_exceeded' : 'collaborator_limit_exceeded';
+        failed.push({ email: parsed.email, reason: resourceCheck.reason, code });
         continue;
       }
     }

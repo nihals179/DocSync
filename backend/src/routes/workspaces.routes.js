@@ -93,6 +93,40 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('workspace
 });
 
 /**
+ * POST /api/workspaces/current
+ * Updates the user's current workspace (currentTenantId).
+ * Body: { workspaceId }
+ */
+router.post('/current', requireAuth, async (req, res) => {
+  const workspaceId = String(req.body?.workspaceId || '').trim();
+  if (!workspaceId) {
+    return res.status(400).json({ error: 'Workspace ID is required.' });
+  }
+
+  try {
+    // Verify the workspace exists and user has access
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+    });
+
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found.' });
+    }
+
+    // Update user's currentTenantId
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { currentTenantId: workspace.tenantId },
+    });
+
+    res.json({ message: 'Current workspace updated.' });
+  } catch (err) {
+    console.error('Failed to update current workspace:', err);
+    res.status(500).json({ error: 'Failed to update current workspace.' });
+  }
+});
+
+/**
  * DELETE /api/workspaces/:workspaceId
  * Deletes a workspace visible to the current user and clears workspace links from documents.
  */

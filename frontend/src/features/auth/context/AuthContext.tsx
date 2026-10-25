@@ -10,7 +10,7 @@ const SESSION_STORAGE_KEY = 'docsync.session';
 const ADMIN_SESSION_KEY = 'docsync.adminSession';
 const UI_AUTH_STATE_KEY = 'docsync.uiAuthState';
 
-interface AuthContextValue {
+export interface AuthContextValue {
   session: Session | null;
   adminSession: Session | null;
   authReady: boolean;
@@ -22,7 +22,7 @@ interface AuthContextValue {
   handleLogout: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+export const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -229,7 +229,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         navigate('/security?setupMfa=1', { replace: true });
         return;
       }
-      navigate('/workspace', { replace: true });
+
+      const redirectTo = new URLSearchParams(window.location.search).get('redirectTo');
+      if (redirectTo) {
+        navigate(redirectTo, { replace: true });
+      } else {
+        navigate('/workspace', { replace: true });
+      }
     },
     [applySession, navigate],
   );

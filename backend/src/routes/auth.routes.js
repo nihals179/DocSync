@@ -69,8 +69,8 @@ async function resolveExistingSessionForLogin(req, authScope, expectedIdentifier
   if (!session) return null;
   if (!validateCsrf(req, session)) return null;
 
-  const user = await prisma.user.findUnique({ where: { id: session.userId },include : { tenantMembership: true } , });
-  if (!user || !user.tenantMembership) return null;
+  const user = await prisma.user.findUnique({ where: { id: session.userId },include : { tenantMemberships: true } , });
+  if (!user || !user.tenantMemberships) return null;
 
   const normalizedUser = {
     ...user,

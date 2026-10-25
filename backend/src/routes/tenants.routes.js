@@ -3,8 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 
 const {
-  canAssignCollaborators,
-  canAssignSeats,
+  canAssignResources,
   ensureWorkspaceForUserProvisioned,
   getTenantBillingState,
   getTenantEntitlements,
@@ -22,6 +21,7 @@ const {
 } = require('../middleware/tenants');
 const { writeAuditLog } = require('../lib/audit');
 const { serializeBigInt } = require('../utils/serialization');
+const { sendInviteEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -57,10 +57,9 @@ function mapInviteRecord(invite) {
 
 router.get('/mine', requireAuth, async (req, res) => {
   const tenants = await getUserTenants(req.user.id);
-  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { currentTenantId: true } });
   res.json({
     tenants: tenants,
-    currentTenantId: user?.currentTenantId || null,
+    currentTenantId: req.user?.currentTenantId || null,
   });
 });
 
@@ -68,8 +67,57 @@ router.get('/profiles', requireAuth, resolveTenantContext, requirePermission('te
   res.json({ profiles: await getProfileTable() });
 });
 
+router.post('/profiles', requireAuth, resolveTenantContext, requirePermission('tenant.write'), async (req, res) => {
+  const { role, permissions } = req.body;
+  if (!role) return res.status(400).json({ error: 'Role is required.' });
+
+  try {
+    const profile = await prisma.profile.create({
+      data: {
+        id: role,
+        role,
+        canAccessAdminBoard: permissions?.canAccessAdminBoard || false,
+        canReviewSecurityAudit: permissions?.canReviewSecurityAudit || false,
+        canManageGlobalSettings: permissions?.canManageGlobalSettings || false,
+        canManageMembers: permissions?.canManageMembers || false,
+        canManageMemberBillingAdmin: permissions?.canManageMemberBillingAdmin || false,
+        canManageTenantBilling: permissions?.canManageTenantBilling || false,
+        canManageWorkspacesDocuments: permissions?.canManageWorkspacesDocuments || false,
+        canReadTenantResources: permissions?.canReadTenantResources || false,
+        canUseAiGrammarByPlan: permissions?.canUseAiGrammarByPlan || false,
+        canManageBillingSettings: permissions?.canManageBillingSettings || false,
+        canViewInvoicesSubscription: permissions?.canViewInvoicesSubscription || false,
+      },
+    });
+    res.status(201).json({ message: 'Profile created.', profile });
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Role already exists.' });
+    }
+    res.status(500).json({ error: 'Failed to create profile.' });
+  }
+});
+
+router.delete('/profiles/:role', requireAuth, resolveTenantContext, requirePermission('tenant.write'), async (req, res) => {
+  const { role } = req.params;
+  if (!role) return res.status(400).json({ error: 'Role is required.' });
+
+  try {
+    const deleted = await prisma.profile.delete({
+      where: { id: role },
+    });
+    if (!deleted) return res.status(404).json({ error: 'Profile not found.' });
+    res.json({ message: 'Profile deleted.', role });
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Profile not found.' });
+    }
+    res.status(500).json({ error: 'Failed to delete profile.' });
+  }
+});
+
 router.post('/switch', requireAuth, async (req, res) => {
-  const tenantId = String(req.body?.tenants || '');
+  const tenantId = String(req.body?.tenantId || '');
   if (!tenantId) return res.status(400).json({ error: 'Tenant id is required.' });
 
   const membership = await prisma.tenantMembership.findFirst({
@@ -116,7 +164,7 @@ router.get('/current/members', requireAuth, resolveTenantContext, requirePermiss
 });
 
 router.get('/current/invites', requireAuth, resolveTenantContext, requirePermission('tenant.invite.read'), async (req, res) => {
-  const invites = (await prisma.TenantInvite.findMany({
+  const invites = (await prisma.tenantsInvite.findMany({
     where: {
       tenantId: req.tenant.id,
       status: 'pending',
@@ -128,7 +176,7 @@ router.get('/current/invites', requireAuth, resolveTenantContext, requirePermiss
   res.json({ invites });
 });
 
-router.post('/current/invites', requireAuth, resolveTenantContext, requirePermission('tenant.member.invite'), async (req, res) => {
+router.post('/current/sendinvites', requireAuth, resolveTenantContext, requirePermission('tenant.member.invite'), async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim();
   const billingAdminInput = parseBooleanInput(req.body?.billingAdmin, 'billingAdmin');
   if (!billingAdminInput.ok) return res.status(400).json({ error: billingAdminInput.error });
@@ -138,18 +186,15 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
   if (!email) return res.status(400).json({ error: 'email is required.' });
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Invalid email address.' });
 
-  const seatCheck = await canAssignSeats(req.tenant.id, 1);
-  if (!seatCheck.allowed) {
-    return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
-  }
-  const collaboratorCheck = await canAssignCollaborators(req.tenant.id, 1);
-  if (!collaboratorCheck.allowed) {
-    return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
+  const resourceCheck = await canAssignResources(req.tenant.id, 1, 1);
+  if (!resourceCheck.allowed) {
+    const code = !resourceCheck.seats.allowed ? 'seat_limit_exceeded' : 'collaborator_limit_exceeded';
+    return res.status(402).json({ error: resourceCheck.reason, code });
   }
 
   const existingMembership = await prisma.tenantMembership.findFirst({
     where: {
-      tenantId: req.tenant.id,
+      tenantId: req.user.currentTenantId,
       status: 'active',
       email,
     },
@@ -158,7 +203,7 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
     return res.status(409).json({ error: 'User is already a member of this tenant.' });
   }
 
-  const duplicateInvite = await prisma.TenantInvite.findFirst({
+  const duplicateInvite = await prisma.tenantsInvite.findFirst({
     where: {
       tenantId: req.tenant.id,
       email,
@@ -169,15 +214,20 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
     return res.status(409).json({ error: 'Pending invite already exists for this email.' });
   }
 
-  const invite = await prisma.TenantInvite.create({
+  const inviteToken = generateOpaqueToken();
+  const appUrl = process.env.FRONTEND_URL;
+  const acceptLink = `${appUrl}/invites/${inviteToken}`;
+
+  const invite = await prisma.tenantsInvite.create({
     data: {
       id: uuidv4(),
-      token: generateOpaqueToken(),
+      token: inviteToken,
       tenantId: req.tenant.id,
       email,
       billingAdmin,
       status: 'pending',
       invitedByUserId: req.user.id,
+      inviteLink: acceptLink,
       createdAt: new Date(),
       updatedAt: new Date(),
       expiresAt: new Date(Date.now() + INVITE_TTL_MS),
@@ -186,6 +236,18 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
   });
 
   const inviteRecord = mapInviteRecord(invite);
+
+  const expirationDate = new Date(inviteRecord.expiresAt).toLocaleDateString();
+
+  sendInviteEmail(
+    inviteRecord.email,
+    req.user.name,
+    req.tenant.name,
+    acceptLink,
+    expirationDate,
+  ).catch((err) => {
+    console.error('Failed to send invite email:', err);
+  });
 
   writeAuditLog({
     userId: req.user.id,
@@ -203,18 +265,36 @@ router.post('/current/invites', requireAuth, resolveTenantContext, requirePermis
   });
 });
 
-router.post('/invites/accept', requireAuth, async (req, res) => {
+router.post('/invites/accept', async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'Invite token is required.' });
 
-  const invite = await prisma.TenantInvite.findUnique({
+  const invite = await prisma.tenantsInvite.findUnique({
     where: { token },
+    include: {
+      invitedByUser: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      acceptedByUser: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          emailVerified: true,
+          createdAt: true,
+        },
+      },
+    },
   });
   if (!invite || invite.status !== 'pending') {
     return res.status(404).json({ error: 'Invite not found or already consumed.' });
   }
   if (new Date(invite.expiresAt).getTime() <= Date.now()) {
-    await prisma.TenantInvite.update({
+    await prisma.tenantsInvite.update({
       where: { id: invite.id },
       data: {
         status: 'expired',
@@ -224,60 +304,7 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Invite has expired.' });
   }
 
-  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-  if (!user) return res.status(404).json({ error: 'User not found.' });
-  if ((user.email || '').toLowerCase() !== invite.email.toLowerCase()) {
-    return res.status(403).json({ error: 'Invite email does not match signed-in account.' });
-  }
-
-  const existingMembership = await prisma.tenantMembership.findFirst({
-    where: {
-      tenantId: invite.tenantId,
-      userId: user.id,
-    },
-  });
-
-  const needsSeat = !existingMembership || existingMembership.status !== 'active';
-  if (needsSeat) {
-    const seatCheck = await canAssignSeats(invite.tenantId, 1);
-    if (!seatCheck.allowed) {
-      return res.status(402).json({ error: seatCheck.reason, code: 'seat_limit_exceeded' });
-    }
-  }
-
-  if (!existingMembership || existingMembership.status !== 'active') {
-    const collaboratorCheck = await canAssignCollaborators(invite.tenantId, 1);
-    if (!collaboratorCheck.allowed) {
-      return res.status(402).json({ error: collaboratorCheck.reason, code: 'collaborator_limit_exceeded' });
-    }
-  }
-
-  if (existingMembership) {
-    await prisma.tenantMembership.update({
-      where: { id: existingMembership.id },
-      data: {
-        status: 'active',
-        billingAdmin: invite.billingAdmin,
-        email: user.email,
-        updatedAt: new Date(),
-      },
-    });
-  } else {
-    await prisma.tenantMembership.create({
-      data: {
-        id: uuidv4(),
-        tenantId: invite.tenantId,
-        userId: user.id,
-        email: user.email,
-        billingAdmin: invite.billingAdmin,
-        status: 'active',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-  }
-
-  await prisma.TenantInvite.update({
+  await prisma.tenantsInvite.update({
     where: { id: invite.id },
     data: {
       status: 'accepted',
@@ -286,32 +313,74 @@ router.post('/invites/accept', requireAuth, async (req, res) => {
     },
   });
 
-  const userUpdateData = {
-    currentTenantId: invite.tenantId,
-  };
-  const tenantBilling = await getTenantBillingState(invite.tenantId);
-  if (tenantBilling?.planId === 'enterprise') {
-    userUpdateData.accountType = 'Enterprise';
-  }
-  await prisma.user.update({
-    where: { id: user.id },
-    data: userUpdateData,
+  // Find user by invited email
+  const invitedUser = await prisma.user.findUnique({
+    where: { email: invite.email },
   });
 
-  try {
-    await ensureWorkspaceForUserProvisioned(user);
-  } catch {
-    return res.status(500).json({ error: 'Invite accepted, but workspace provisioning failed.' });
+  // Check if membership already exists by email
+  const existingMembership = await prisma.tenantMembership.findFirst({
+    where: {
+      tenantId: invite.tenantId,
+      email: invite.email,
+    },
+  });
+
+  if (existingMembership) {
+    // Update existing membership
+    await prisma.tenantMembership.update({
+      where: { id: existingMembership.id },
+      data: {
+        status: 'active',
+        billingAdmin: invite.billingAdmin,
+        userId: invitedUser?.id || null,
+        updatedAt: new Date(),
+      },
+    });
+  } else {
+    // Create new membership with email (userId optional, will be filled when user registers)
+    await prisma.tenantMembership.create({
+      data: {
+        id: uuidv4(),
+        tenantId: invite.tenantId,
+        userId: invitedUser?.id || null,
+        email: invite.email,
+        billingAdmin: invite.billingAdmin,
+        status: 'active',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
   }
 
-  writeAuditLog({
-    userId: req.user.id,
+  if (invite.invitedByUserId) {
+    writeAuditLog({
+      userId: invite.invitedByUserId,
+      tenantId: invite.tenantId,
+      action: 'tenant.invite.accept',
+      metadata: { inviteId: invite.id, inviteEmail: invite.email },
+    });
+  }
+
+
+
+  res.json({
+    message: 'Invite accepted successfully.',
     tenantId: invite.tenantId,
-    action: 'tenant.invite.accept',
-    metadata: { inviteId: invite.id },
+    invitedEmail: invite.email,
+    invitedBy: invite.invitedByUser ? {
+      id: invite.invitedByUser.id,
+      name: invite.invitedByUser.name,
+      email: invite.invitedByUser.email,
+    } : null,
+    invitedUser: invite.acceptedByUser ? {
+      id: invite.acceptedByUser.id,
+      name: invite.acceptedByUser.name,
+      email: invite.acceptedByUser.email,
+      emailVerified: invite.acceptedByUser.emailVerified,
+      createdAt: invite.acceptedByUser.createdAt,
+    } : null,
   });
-
-  res.json({ message: 'Tenant invite accepted.', tenantId: invite.tenantId });
 });
 
 router.patch('/current/members/:membershipId', requireAuth, resolveTenantContext, requirePermission('tenant.member.manage'), async (req, res) => {
