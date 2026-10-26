@@ -195,7 +195,7 @@ model AuthSession {
 
 model Invoice {
   id             String   @id
-  TenantId       String?
+  tenantId       String?
   provider       String
   invoiceNumber  String?
   amountCents    Int
@@ -340,7 +340,7 @@ model Comment {
   text      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  TenantId        String? 
+  tenantId  String?  @map("tenantid")
 
   @@index([docId])
   @@map("comments")
