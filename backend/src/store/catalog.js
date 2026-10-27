@@ -240,6 +240,5 @@ void refreshPlanCatalogFromDb({ force: true }).catch(() => {});
 module.exports = {
   PLAN_CATALOG,
   TRIAL_DAYS_BY_PLAN,
-  mapDbPlanToCatalogRecord,
   refreshPlanCatalogFromDb,
 };

@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
-const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, mapDbPlanToCatalogRecord, refreshPlanCatalogFromDb } = require('./catalog');
+const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 const { get } = require('../app');
 
@@ -755,9 +755,12 @@ async function consumeAiRequests(tenantId, count = 1) {
 async function getTenantEntitlements(tenantId) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return null;
-	// Raw Prisma relations carry BigInt columns that JSON.stringify cannot serialize.
+	// Raw Prisma relations are left out of the response; plan_catalog stores limits as flat
+	// limit* columns, and limitStorageBytes is a BigInt, which JSON.stringify cannot serialize.
 	const { tenant, tenantUsage, planCatalog, ...billingSummary } = billing;
-	const plan = planCatalog ? mapDbPlanToCatalogRecord(planCatalog) : getPlan(billing.planId);
+	const plan = planCatalog
+		? { ...planCatalog, limitStorageBytes: Number(planCatalog.limitStorageBytes) }
+		: getPlan(billing.planId);
 	const { usage, assignedSeats, storageUsedBytes } = await getTenantUsageMetrics(tenantId);
 	const collaboratorsAssigned = assignedSeats;
 
@@ -766,14 +769,14 @@ async function getTenantEntitlements(tenantId) {
 		plan,
 		limits: {
 			seatsPurchased: billing.purchasedSeats,
-			storageBytes: plan.limits.storageBytes || null,
-			aiRequestsPerMonth: plan.limits.aiRequestsPerMonth || null,
-			collaborators: plan.limits.collaborators || null,
-			documents: plan.limits.documents || null,
-			documentUpdatesPerMonth: plan.limits.documentUpdatesPerMonth || null,
-			versionHistoryDays: plan.limits.versionHistoryDays || null,
-			grammarAccessDays: plan.limits.grammarAccessDays || null,
-			aiAccessDays: plan.limits.aiAccessDays || null,
+			storageBytes: plan.limitStorageBytes || null,
+			aiRequestsPerMonth: plan.limitAiRequestsPerMonth || null,
+			collaborators: plan.limitCollaborators || null,
+			documents: plan.limitDocuments || null,
+			documentUpdatesPerMonth: plan.limitDocumentUpdatesPerMonth || null,
+			versionHistoryDays: plan.limitVersionHistoryDays || null,
+			grammarAccessDays: plan.limitGrammarAccessDays || null,
+			aiAccessDays: plan.limitAiAccessDays || null,
 		},
 		usage: {
 			monthKey: usage.monthKey,
