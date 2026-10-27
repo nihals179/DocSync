@@ -755,23 +755,28 @@ async function consumeAiRequests(tenantId, count = 1) {
 async function getTenantEntitlements(tenantId) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return null;
-	const plan = billing.planId ? billing.planCatalog : getPlan(billing.planId);
+	// Raw Prisma relations are left out of the response; plan_catalog stores limits as flat
+	// limit* columns, and limitStorageBytes is a BigInt, which JSON.stringify cannot serialize.
+	const { tenant, tenantUsage, planCatalog, ...billingSummary } = billing;
+	const plan = planCatalog
+		? { ...planCatalog, limitStorageBytes: Number(planCatalog.limitStorageBytes) }
+		: getPlan(billing.planId);
 	const { usage, assignedSeats, storageUsedBytes } = await getTenantUsageMetrics(tenantId);
 	const collaboratorsAssigned = assignedSeats;
 
 	return {
-		billing,
+		billing: billingSummary,
 		plan,
 		limits: {
 			seatsPurchased: billing.purchasedSeats,
-			storageBytes: plan.limitStorageBytes ? plan.limitStorageBytes : (plan.limit.storageBytes || null),
-			aiRequestsPerMonth: plan.limitAiRequestsPerMonth ? plan.limitAiRequestsPerMonth : (plan.limit.aiRequestsPerMonth || null),
-			collaborators:plan.limitCollaborators ? plan.limitCollaborators : (plan.limit.collaborators || null),
-			documents: plan.limitDocuments ? plan.limitDocuments : (plan.limit.documents || null),
-			documentUpdatesPerMonth: plan.limitDocumentUpdatesPerMonth ? plan.limitDocumentUpdatesPerMonth : (plan.limit.documentUpdatesPerMonth || null),
-			versionHistoryDays: plan.limitVersionHistoryDays ? plan.limitVersionHistoryDays : (plan.limit.versionHistoryDays || null),
-			grammarAccessDays: plan.limitGrammarAccessDays ? plan.limitGrammarAccessDays : (plan.limit.grammarAccessDays || null),
-			aiAccessDays: plan.limitAiAccessDays ? plan.limitAiAccessDays : (plan.limit.aiAccessDays || null),
+			storageBytes: plan.limitStorageBytes || null,
+			aiRequestsPerMonth: plan.limitAiRequestsPerMonth || null,
+			collaborators: plan.limitCollaborators || null,
+			documents: plan.limitDocuments || null,
+			documentUpdatesPerMonth: plan.limitDocumentUpdatesPerMonth || null,
+			versionHistoryDays: plan.limitVersionHistoryDays || null,
+			grammarAccessDays: plan.limitGrammarAccessDays || null,
+			aiAccessDays: plan.limitAiAccessDays || null,
 		},
 		usage: {
 			monthKey: usage.monthKey,
