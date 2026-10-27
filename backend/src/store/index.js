@@ -1210,10 +1210,11 @@ async function ensureTenantBootstrapForUser(user) {
 			data: { currentTenantId: tenant.id },
 		});
 
-		if(activeMemberships[0].userId !== user.id){
+		// Link every membership created by an invite before this user had an account.
+		if(activeMemberships.some((membership) => !membership.userId)){
 			try{
 				await prisma.tenantMembership.updateMany({
-					where: { id: activeMemberships[0].id },
+					where: { email: normalizedEmail, userId: null },
 					data: { userId: user.id },
 				});
 			}catch(e){
