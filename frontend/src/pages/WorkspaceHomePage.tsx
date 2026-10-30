@@ -54,6 +54,14 @@ type WorkspaceModalState =
     options: Array<{ id: string; name: string }>;
     error?: string;
   }
+  | {
+    type: 'confirm-delete';
+    docId: string;
+    title: string;
+    descendantCount: number;
+    deleting?: boolean;
+    error?: string;
+  }
   | { type: 'info'; title: string; message: string };
 
 function prettyDate(iso: string) {
@@ -553,6 +561,41 @@ export default function WorkspaceHomePage({
     }
 
     return descendants;
+  }
+
+  function openDeleteModal(docId: string) {
+    const doc = docs.find((d) => d.id === docId);
+    if (!doc) return;
+    setWorkspaceModal({
+      type: 'confirm-delete',
+      docId,
+      title: doc.title || 'Untitled',
+      descendantCount: getDescendantIds(docId).size,
+    });
+  }
+
+  async function deleteDocument(docId: string) {
+    // The server deletes the whole subtree; drop the same documents from local state.
+    const deletedIds = new Set([docId, ...getDescendantIds(docId)]);
+    setWorkspaceModal((prev) =>
+      prev && prev.type === 'confirm-delete' ? { ...prev, deleting: true, error: undefined } : prev,
+    );
+    try {
+      await docsApi.delete(token, docId);
+      const { docs: list } = await docsApi.list(token);
+      setDocs(list);
+      setVersions((prev) => prev.filter((version) => !deletedIds.has(version.docId)));
+      if (selectedRecentDocId && deletedIds.has(selectedRecentDocId)) {
+        setSelectedRecentDocId(null);
+        setSelectedDocVersions([]);
+      }
+      setWorkspaceModal(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to delete document';
+      setWorkspaceModal((prev) =>
+        prev && prev.type === 'confirm-delete' ? { ...prev, deleting: false, error: message } : prev,
+      );
+    }
   }
 
   async function moveDocWithDrag(docId: string, targetId: string | null, mode: 'before' | 'after' | 'inside' | 'root') {
@@ -1241,6 +1284,18 @@ export default function WorkspaceHomePage({
             <span className="material-icons" style={{ fontSize: '0.9rem' }}>drive_file_move</span>
             Move to
           </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-red-600 hover:bg-red-50 hover:text-red-700"
+            onClick={() => {
+              openDeleteModal(contextMenu.docId);
+              setContextMenu(null);
+            }}
+          >
+            <span className="material-icons" style={{ fontSize: '0.9rem' }}>delete</span>
+            Delete
+          </button>
         </div>
       )}
 
@@ -1336,6 +1391,38 @@ export default function WorkspaceHomePage({
                     className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-700"
                   >
                     Confirm
+                  </button>
+                </div>
+              </>
+            )}
+
+            {workspaceModal.type === 'confirm-delete' && (
+              <>
+                <h3 className="text-base font-bold text-slate-800">Delete Document</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Delete <span className="font-semibold text-slate-800">&lsquo;{workspaceModal.title}&rsquo;</span>
+                  {workspaceModal.descendantCount > 0
+                    ? ` and its ${workspaceModal.descendantCount} sub-document${workspaceModal.descendantCount === 1 ? '' : 's'}`
+                    : ''}
+                  ? {workspaceModal.descendantCount > 0 ? 'Their' : 'Its'} comments and saved versions are deleted too. This can&apos;t be undone.
+                </p>
+                {workspaceModal.error && <p className="mt-2 text-xs text-red-600">{workspaceModal.error}</p>}
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceModal(null)}
+                    disabled={workspaceModal.deleting}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteDocument(workspaceModal.docId)}
+                    disabled={workspaceModal.deleting}
+                    className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {workspaceModal.deleting ? 'Deleting…' : 'Delete'}
                   </button>
                 </div>
               </>

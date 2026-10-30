@@ -729,6 +729,9 @@ export const docsApi = {
       `/api/docs/${id}/move`,
       { method: 'POST', token, body: JSON.stringify(target) },
     ),
+  /** Deletes a document with its whole subtree, including their comments and versions. */
+  delete: (token: string, id: string) =>
+    apiFetch<{ message: string; deletedCount: number }>(`/api/docs/${id}`, { method: 'DELETE', token }),
 };
 
 export const editorApi = {
