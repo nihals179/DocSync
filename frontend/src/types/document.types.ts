@@ -37,6 +37,14 @@ export type EditorWorkspaceModalState =
     options: Array<{ id: string; name: string }>;
     error?: string;
   }
+  | {
+    type: 'confirm-delete';
+    docId: string;
+    title: string;
+    descendantCount: number;
+    deleting?: boolean;
+    error?: string;
+  }
   | { type: 'info'; title: string; message: string };
 
 export type RightTool = 'comments' | 'versions' | 'todo' | 'grammar' | 'ai' | 'html';

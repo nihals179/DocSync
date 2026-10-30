@@ -244,11 +244,47 @@ const enterpriseEnvironmentSchema = {
 const documentSchema = {
   type: 'object',
   properties: {
-    title: { type: 'string' },
-    content: { type: 'string' },
-    workspaceId: { type: ['string', 'null'] },
+    title: { type: 'string', minLength: 1, maxLength: 255, description: 'Trimmed. Defaults to "Untitled" on create.' },
+    content: { type: 'string', description: 'HTML content. Defaults to an empty string on create.' },
+    workspaceId: { type: ['string', 'null'], description: 'A workspace of the current tenant (or your personal workspace) that you can see; null for no workspace. On update, moves the document and its subtree to the top level of that workspace.' },
   },
 };
+
+const documentCreateSchema = {
+  ...documentSchema,
+  properties: {
+    ...documentSchema.properties,
+    parentId: { type: ['string', 'null'], description: 'Create as a child of this document. The child takes the parent\'s workspace; workspaceId, if given, must match it.' },
+  },
+};
+
+const documentMoveSchema = {
+  type: 'object',
+  required: ['parentId', 'index'],
+  properties: {
+    parentId: { type: ['string', 'null'], description: 'New parent, or null for the top level. Cannot be the document itself or one of its descendants.' },
+    index: { type: 'integer', minimum: 0, description: 'Position among the new siblings (0 = first). Values past the end place the document last.' },
+    workspaceId: { type: ['string', 'null'], description: 'Optional target workspace. Defaults to the parent\'s workspace, or the current one for top-level moves.' },
+  },
+};
+
+const documentExample = {
+  id: 'doc_1',
+  title: 'Project Plan',
+  content: '<p>Initial draft</p>',
+  userId: 'usr_123',
+  tenantId: 'ten_123',
+  workspaceId: 'ws_123',
+  parentId: null,
+  sortOrder: 1,
+  createdAt: '2026-10-30T10:00:00.000Z',
+  updatedAt: '2026-10-30T10:05:00.000Z',
+  preview: 'Initial draft',
+};
+
+const { content: _documentContent, ...documentSummaryExample } = documentExample;
+
+const documentIdParam = { name: 'id', in: 'path', required: true, schema: { type: 'string' } };
 
 const commentSchema = {
   type: 'object',
@@ -1136,19 +1172,28 @@ const openapi = {
     '/api/docs': {
       get: op({
         summary: 'List documents',
+        description: 'Lists every document in the current tenant, most recently updated first. Content is not included; `preview` holds the first 100 characters of plain text. Build the chapter tree from `parentId` and order siblings by `sortOrder` (ascending).',
         tags: ['Documents'],
         parameters: [tenantHeader],
-        responseExample: { docs: [{ id: 'doc_1', title: 'Project Plan', content: '...', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', preview: 'Project Plan' }] },
+        responseExample: { docs: [documentSummaryExample] },
+        extraResponses: { 401: commonErrors[401], 403: commonErrors[403] },
       }),
       post: op({
         summary: 'Create document',
+        description: 'Creates a document at the top of its sibling list, optionally as a child of `parentId`. Fails with 402 when the plan\'s document count or storage limit would be exceeded.',
         tags: ['Documents'],
         parameters: [tenantHeader],
-        requestExample: { title: 'Project Plan', content: 'Initial draft', workspaceId: 'ws_123' },
-        requestSchema: documentSchema,
-        responseExample: { doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', preview: 'Initial draft' } },
+        requestExample: { title: 'Project Plan', content: '<p>Initial draft</p>', workspaceId: 'ws_123', parentId: null },
+        requestSchema: documentCreateSchema,
+        responseExample: { doc: documentExample },
         responseStatus: 201,
         responseDescription: 'Created',
+        extraResponses: {
+          400: jsonResponse({ error: 'Invalid parentId.' }, 'Invalid body, workspace or parent', 400),
+          401: commonErrors[401],
+          402: jsonResponse({ error: 'Document limit reached (25/25) for Free plan.', code: 'document_limit_exceeded' }, 'Plan limit reached (document_limit_exceeded, storage_quota_exceeded) or subscription inactive', 402),
+          403: commonErrors[403],
+        },
       }),
     },
 
@@ -1156,22 +1201,52 @@ const openapi = {
       get: op({
         summary: 'Get one document',
         tags: ['Documents'],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
-        responseExample: { doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', preview: 'Initial draft' } },
+        parameters: [documentIdParam, tenantHeader],
+        responseExample: { doc: documentExample },
+        extraResponses: { 401: commonErrors[401], 403: commonErrors[403], 404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404) },
       }),
       put: op({
         summary: 'Update document',
+        description: 'Updates any of title, content and workspaceId. Only title/content changes count toward the monthly document update limit; a request that changes nothing returns the document unchanged.',
         tags: ['Documents'],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
-        requestExample: { title: 'Project Plan v2', content: 'Updated draft', workspaceId: 'ws_123' },
+        parameters: [documentIdParam, tenantHeader],
+        requestExample: { title: 'Project Plan v2', content: '<p>Updated draft</p>', workspaceId: 'ws_123' },
         requestSchema: documentSchema,
-        responseExample: { doc: { id: 'doc_1', title: 'Project Plan v2', content: 'Updated draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', preview: 'Updated draft' } },
+        responseExample: { doc: { ...documentExample, title: 'Project Plan v2', content: '<p>Updated draft</p>', preview: 'Updated draft' } },
+        extraResponses: {
+          400: jsonResponse({ error: 'title cannot be empty.' }, 'Invalid body or workspace', 400),
+          401: commonErrors[401],
+          402: jsonResponse({ error: 'Document update limit reached (100/100) for Free plan.', code: 'document_update_limit_exceeded' }, 'Plan limit reached (document_update_limit_exceeded, storage_quota_exceeded) or subscription inactive', 402),
+          403: commonErrors[403],
+          404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404),
+        },
       }),
       delete: op({
         summary: 'Delete document',
+        description: 'Deletes the document and its whole subtree (all descendants), together with their comments and saved versions. `deletedCount` is the number of documents removed.',
         tags: ['Documents'],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
-        responseExample: { message: 'Document deleted.' },
+        parameters: [documentIdParam, tenantHeader],
+        responseExample: { message: 'Document deleted.', deletedCount: 3 },
+        extraResponses: { 401: commonErrors[401], 402: commonErrors[402], 403: commonErrors[403], 404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404) },
+      }),
+    },
+
+    '/api/docs/{id}/move': {
+      post: op({
+        summary: 'Move document in the chapter tree',
+        description: 'Moves the document, with its subtree, under `parentId` (or to the top level) at position `index` among its new siblings, optionally into another workspace. Both sibling lists are renumbered. Does not count toward the monthly document update limit and does not change `updatedAt`.',
+        tags: ['Documents'],
+        parameters: [documentIdParam, tenantHeader],
+        requestExample: { parentId: 'doc_2', index: 0 },
+        requestSchema: documentMoveSchema,
+        responseExample: { doc: { ...documentExample, parentId: 'doc_2', sortOrder: 1 } },
+        extraResponses: {
+          400: jsonResponse({ error: 'Cannot move a document inside itself.' }, 'Invalid body, workspace or parent (including moves into the document\'s own subtree)', 400),
+          401: commonErrors[401],
+          402: commonErrors[402],
+          403: commonErrors[403],
+          404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404),
+        },
       }),
     },
 
