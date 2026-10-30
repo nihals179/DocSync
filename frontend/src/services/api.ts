@@ -718,11 +718,20 @@ export const docsApi = {
       `/api/docs/${id}`,
       { token },
     ),
-  update: (token: string, id: string, patch: { title?: string; content?: string; parentId?: string | null; workspaceId?: string | null; sortOrder?: number }) =>
+  update: (token: string, id: string, patch: { title?: string; content?: string; workspaceId?: string | null }) =>
     apiFetch<{ doc: { id: string; title: string; content: string } }>(
       `/api/docs/${id}`,
       { method: 'PUT', token, body: JSON.stringify(patch) },
     ),
+  /** Re-parents a document (with its subtree) and places it at `index` among its new siblings. */
+  move: (token: string, id: string, target: { parentId: string | null; index: number; workspaceId?: string | null }) =>
+    apiFetch<{ doc: { id: string; parentId: string | null; workspaceId: string | null; sortOrder: number } }>(
+      `/api/docs/${id}/move`,
+      { method: 'POST', token, body: JSON.stringify(target) },
+    ),
+  /** Deletes a document with its whole subtree, including their comments and versions. */
+  delete: (token: string, id: string) =>
+    apiFetch<{ message: string; deletedCount: number }>(`/api/docs/${id}`, { method: 'DELETE', token }),
 };
 
 export const editorApi = {

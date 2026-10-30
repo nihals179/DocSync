@@ -130,4 +130,27 @@ app.use('/api/versions', versionsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/grammar', grammarRoutes);
 
+// Final error handler: every unhandled error (including rejected async route handlers,
+// which Express 5 forwards here) becomes a JSON response instead of Express's default
+// HTML page, which includes the stack trace outside production.
+app.use((err, req, res, next) => {
+	if (err?.type === 'entity.parse.failed') {
+		return res.status(400).json({ error: 'Malformed JSON request body.' });
+	}
+	if (err?.type === 'entity.too.large') {
+		return res.status(413).json({ error: 'Request body is too large.' });
+	}
+
+	const status = Number(err?.status || err?.statusCode);
+	if (status >= 400 && status < 500) {
+		return res.status(status).json({ error: err.expose === false ? 'Bad request.' : String(err.message || 'Bad request.') });
+	}
+
+	console.error(`[${req.method} ${req.originalUrl}]`, err);
+	if (res.headersSent) return next(err);
+	return res.status(500).json({
+		error: process.env.NODE_ENV === 'production' ? 'Internal server error.' : String(err?.message || err),
+	});
+});
+
 module.exports = app;
