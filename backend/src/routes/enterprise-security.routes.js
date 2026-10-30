@@ -66,7 +66,7 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
   const activeMemberUserIds = (await prisma.tenantMembership.findMany({
     where: { tenantId: tenant.id, status: 'active' },
     select: { userId: true },
-  })).map((membership) => membership.userId);
+  })).map((membership) => membership.userId).filter(Boolean);
   if (activeMemberUserIds.length) {
     await prisma.user.updateMany({
       where: { id: { in: activeMemberUserIds } },
