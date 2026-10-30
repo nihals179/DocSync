@@ -38,6 +38,16 @@ const RIGHT_TOOLS: { id: RightTool; icon: string; label: string }[] = [
 
 const WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.workspacePanelCollapsed';
 const PAGE_SIZE_STORAGE_KEY = 'docsync.pageSize';
+const MAX_TITLE_LENGTH = 255;
+const EMPTY_TITLE_MESSAGE = 'Add a title — changes aren’t being saved until the document has one.';
+
+/** Turns a failed request into a sentence for the editor's error bar. */
+function describeSaveError(error: unknown): string {
+  // fetch() rejects with a TypeError when the server can't be reached.
+  if (error instanceof TypeError) return 'Can’t reach the server.';
+  const message = error instanceof Error && error.message ? error.message : 'Something went wrong.';
+  return message.charAt(0).toUpperCase() + message.slice(1);
+}
 
 // ─── Editor page (all hooks live here, never behind a conditional) ────────────
 function EditorPage({ token, docId }: { token: string; docId: string }) {
@@ -64,6 +74,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   const [showSavePopup, setShowSavePopup] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState('');
   const [isWorkspacePanelCollapsed, setIsWorkspacePanelCollapsed] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem(WORKSPACE_PANEL_COLLAPSED_KEY) === '1';
@@ -111,6 +122,9 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   const lastAutoSavedHtmlRef = useRef<string>('');
   const lastAutoSavedTitleRef = useRef<string>('');
   const isAutoSavingRef = useRef(false);
+  // A change made while a save is in flight is saved once that save finishes.
+  const pendingAutoSaveRef = useRef(false);
+  const [autoSaveRetry, setAutoSaveRetry] = useState(0);
   const isDocLoadedRef = useRef(false);
 
   function normalizeVersionHtml(html: string) {
@@ -179,7 +193,10 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     if (!docId || !isDocLoadedRef.current) return;
 
     const timeoutId = window.setTimeout(async () => {
-      if (isAutoSavingRef.current) return;
+      if (isAutoSavingRef.current) {
+        pendingAutoSaveRef.current = true;
+        return;
+      }
 
       const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
       const normalizedHtml = normalizeVersionHtml(html);
@@ -187,7 +204,21 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
       const unchanged = normalizedHtml === lastAutoSavedHtmlRef.current
         && normalizedTitle === lastAutoSavedTitleRef.current;
-      if (unchanged) return;
+      if (unchanged) {
+        // Back to what is already saved (e.g. the old title was typed again): nothing is
+        // unsaved, so an earlier error no longer applies.
+        setSaveError('');
+        setAutoSaveStatus((status) => (status === 'error' ? 'saved' : status));
+        return;
+      }
+
+      // The server rejects an empty title, and title and content save together, so
+      // nothing is sent until the document has a title again.
+      if (!normalizedTitle) {
+        setAutoSaveStatus('error');
+        setSaveError(`Not saved: ${EMPTY_TITLE_MESSAGE}`);
+        return;
+      }
 
       isAutoSavingRef.current = true;
       setAutoSaveStatus('saving');
@@ -196,6 +227,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
         lastAutoSavedHtmlRef.current = normalizedHtml;
         lastAutoSavedTitleRef.current = normalizedTitle;
         setAutoSaveStatus('saved');
+        setSaveError('');
 
         setSavedDocuments((prev) => prev.map((doc) => {
           if (doc.id !== docId) return doc;
@@ -210,13 +242,18 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
       } catch (error: unknown) {
         console.error('Autosave failed.', error);
         setAutoSaveStatus('error');
+        setSaveError(`Not saved: ${describeSaveError(error)}`);
       } finally {
         isAutoSavingRef.current = false;
+        if (pendingAutoSaveRef.current) {
+          pendingAutoSaveRef.current = false;
+          setAutoSaveRetry((n) => n + 1);
+        }
       }
     }, 1500);
 
     return () => window.clearTimeout(timeoutId);
-  }, [token, docId, title, currentText, currentRuns]);
+  }, [token, docId, title, currentText, currentRuns, autoSaveRetry]);
 
   useEffect(() => {
     try {
@@ -226,22 +263,26 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     }
   }, [pageSize]);
 
+  /** Saves a version of the current content. Resolves false when saving failed. */
   const saveVersion = useCallback(
-    async (previewText?: string) => {
-      if (!docId) return;
+    async (previewText?: string): Promise<boolean> => {
+      if (!docId) return false;
       try {
         const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
         const normalizedHtml = normalizeVersionHtml(html);
         if (normalizedHtml === lastSavedVersionHtmlRef.current) {
-          return;
+          return true;
         }
 
         const preview = buildVersionPreview(html, previewText);
         const { version } = await versionsApi.save(token, docId, html, preview);
         lastSavedVersionHtmlRef.current = normalizedHtml;
         setSavedVersions((prev) => [version, ...prev].slice(0, 20));
+        return true;
       } catch (error: unknown) {
         console.error('Failed to save version.', error);
+        setSaveError(`Version not saved: ${describeSaveError(error)}`);
+        return false;
       }
     },
     [token, docId, currentText, currentRuns],
@@ -277,8 +318,10 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
         lastSavedVersionHtmlRef.current = normalizedHtml;
         lastAutoSavedHtmlRef.current = normalizedHtml;
         lastAutoSavedTitleRef.current = normalizedTitle;
+        setSaveError('');
       } catch (error: unknown) {
         console.error('Failed to switch saved version.', error);
+        setSaveError(`Couldn’t restore that version: ${describeSaveError(error)}`);
       }
     },
     [docId, token],
@@ -754,24 +797,41 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     };
   }, []);
 
+  /** Saves title and content right away (Commit, Publish). Resolves false when it failed. */
+  const saveDocumentNow = useCallback(async (): Promise<boolean> => {
+    if (!docId) return false;
+    const normalizedTitle = String(title || '').trim();
+    if (!normalizedTitle) {
+      setAutoSaveStatus('error');
+      setSaveError(`Not saved: ${EMPTY_TITLE_MESSAGE}`);
+      return false;
+    }
+    const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+    try {
+      await docsApi.update(token, docId, { title, content: html });
+    } catch (error: unknown) {
+      console.error('Save failed.', error);
+      setAutoSaveStatus('error');
+      setSaveError(`Not saved: ${describeSaveError(error)}`);
+      return false;
+    }
+    lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
+    lastAutoSavedTitleRef.current = normalizedTitle;
+    setAutoSaveStatus('saved');
+    setSaveError('');
+    // Refreshing the sidebar is best effort; the save itself already succeeded.
+    void docsApi.list(token).then(({ docs }) => setSavedDocuments(docs)).catch(() => {});
+    return true;
+  }, [token, docId, title, currentText, currentRuns]);
+
   const handleSaveDocument = useCallback(async () => {
     const trimmed = saveMessage.trim();
-    if (docId) {
-      try {
-        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
-        await docsApi.update(token, docId, { title, content: html });
-        lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
-        lastAutoSavedTitleRef.current = String(title || '').trim();
-        const { docs } = await docsApi.list(token);
-        setSavedDocuments(docs);
-      } catch {
-        // silent
-      }
-    }
-    await saveVersion(trimmed.length > 0 ? trimmed : undefined);
+    // On failure the commit popup stays open and no version is saved for unsaved content.
+    if (!(await saveDocumentNow())) return;
+    if (!(await saveVersion(trimmed.length > 0 ? trimmed : undefined))) return;
     setShowSavePopup(false);
     setSaveMessage('');
-  }, [saveMessage, saveVersion, token, docId, title, currentText, currentRuns]);
+  }, [saveMessage, saveVersion, saveDocumentNow]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -787,21 +847,10 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, [handleSaveDocument]);
 
   const handlePublishDocument = useCallback(async () => {
-    if (docId) {
-      try {
-        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
-        await docsApi.update(token, docId, { title, content: html });
-        lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
-        lastAutoSavedTitleRef.current = String(title || '').trim();
-        const { docs } = await docsApi.list(token);
-        setSavedDocuments(docs);
-      } catch {
-        // silent
-      }
-    }
-    await saveVersion();
+    if (!(await saveDocumentNow())) return;
+    if (!(await saveVersion())) return;
     window.alert('Document published successfully.');
-  }, [saveVersion, token, docId, title, currentText, currentRuns]);
+  }, [saveVersion, saveDocumentNow]);
 
   const docText = currentText;
   const renderedHtml = useMemo(
@@ -977,10 +1026,12 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
           >
             <div className="flex min-h-0 w-full flex-col">
               {!showFullscreenEditor && (
+                <>
                 <div className="mb-1 flex items-center gap-2 border-b border-slate-200 px-1 pb-1">
                   <input
                     value={title}
                     onChange={(e) => handleTitleChange(e.target.value)}
+                    maxLength={MAX_TITLE_LENGTH}
                     placeholder="Untitled document"
                     className="w-full bg-transparent px-2 py-1 text-sm font-semibold text-slate-800 outline-none"
                   />
@@ -992,7 +1043,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                         : autoSaveStatus === 'saving'
                           ? 'Saving...'
                           : autoSaveStatus === 'error'
-                            ? 'Save failed'
+                            ? saveError || 'Save failed'
                             : 'Auto-save'
                     }
                     aria-label={
@@ -1045,6 +1096,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                           className="mb-2 h-20 w-full resize-none rounded border border-slate-300 px-2 py-2 text-xs leading-4 text-slate-700 outline-none placeholder:align-top focus:border-cyan-500"
                           autoFocus
                         />
+                        {saveError && <p className="mb-2 text-[11px] leading-4 text-red-600">{saveError}</p>}
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -1072,6 +1124,24 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                     Publish
                   </button>
                 </div>
+                {saveError && (
+                  <div
+                    role="alert"
+                    className="mb-1 flex items-start gap-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600"
+                  >
+                    <span className="material-icons shrink-0" style={{ fontSize: '0.95rem' }}>error_outline</span>
+                    <span className="min-w-0 flex-1">{saveError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSaveError('')}
+                      aria-label="Dismiss"
+                      className="shrink-0 rounded text-red-400 hover:text-red-600"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>close</span>
+                    </button>
+                  </div>
+                )}
+                </>
               )}
               <Toolbar
                 editorRef={editorRef}
