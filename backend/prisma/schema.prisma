@@ -336,7 +336,7 @@ model Document {
   children       Document[] @relation("DocumentTree")
 
   @@index([userId])
-  @@index([tenantId])
+  @@index([tenantId, updatedAt(sort: Desc)])
   @@index([tenantId, workspaceId, parentId, sortOrder])
   @@map("documents")
 }

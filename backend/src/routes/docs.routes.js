@@ -6,18 +6,32 @@ const {
   canCreateDocuments,
   canUpdateDocuments,
   consumeDocumentUpdates,
-  getTenantEntitlements,
 } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
 const { bytes } = require('../middleware/docs');
+const { isWorkspaceVisibleToUser } = require('../middleware/workspaces');
 const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
 
+const MAX_TITLE_LENGTH = 255;
+const PREVIEW_LENGTH = 100;
+// Raw HTML spends most of its first characters on tags and inline styles, so the list
+// query reads this many characters of content to build a 100-character text preview.
+const PREVIEW_SOURCE_LENGTH = 4000;
 // Guards the recursive subtree query; real trees are far shallower.
 const MAX_TREE_DEPTH = 100;
+
+const HTML_ENTITIES = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
 
 /** An error with an HTTP status, thrown inside tree operations and turned into a response. */
 class DocRequestError extends Error {
@@ -27,20 +41,46 @@ class DocRequestError extends Error {
   }
 }
 
-function formatDoc(doc) {
+function decodeHtmlEntities(text) {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
+    if (entity[0] === '#') {
+      const code = entity[1] === 'x' || entity[1] === 'X'
+        ? parseInt(entity.slice(2), 16)
+        : parseInt(entity.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return HTML_ENTITIES[entity.toLowerCase()] ?? match;
+  });
+}
+
+function buildPreview(content) {
+  // The list query reads a content prefix, which can end inside a long tag (table tokens
+  // carry kilobytes of attribute data); drop that unterminated tag before stripping tags.
+  const text = String(content || '').replace(/<[^>]*$/, '').replace(/<[^>]+>/g, ' ');
+  return decodeHtmlEntities(text).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_LENGTH);
+}
+
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function formatDocSummary(doc, previewSource = doc.content) {
   return {
     id: doc.id,
     title: doc.title,
-    content: doc.content,
     userId: doc.userId,
     tenantId: doc.tenantId,
-    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
-    updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
-    parentId: doc.parentId ?? null,
     workspaceId: doc.workspaceId ?? null,
-    sortOrder: doc.sortOrder ?? 0,
-    preview: String(doc.content || '').replace(/<[^>]+>/g, '').slice(0, 100),
+    parentId: doc.parentId ?? null,
+    sortOrder: Number(doc.sortOrder ?? 0),
+    createdAt: toIso(doc.createdAt),
+    updatedAt: toIso(doc.updatedAt),
+    preview: buildPreview(previewSource),
   };
+}
+
+function formatDoc(doc) {
+  return { ...formatDocSummary(doc), content: doc.content };
 }
 
 function sendDocRequestError(res, err) {
@@ -50,17 +90,79 @@ function sendDocRequestError(res, err) {
   throw err;
 }
 
+/**
+ * Validates a create (partial = false) or update (partial = true) body.
+ * Returns { error } or { value } holding only the fields that were provided.
+ */
+function validateDocInput(body, { partial }) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be a JSON object.' };
+  }
+
+  const value = {};
+
+  if (body.title !== undefined) {
+    if (typeof body.title !== 'string') return { error: 'title must be a string.' };
+    const title = body.title.trim();
+    if (!title) return { error: 'title cannot be empty.' };
+    if (title.length > MAX_TITLE_LENGTH) {
+      return { error: `title must be at most ${MAX_TITLE_LENGTH} characters.` };
+    }
+    value.title = title;
+  } else if (!partial) {
+    value.title = 'Untitled';
+  }
+
+  if (body.content !== undefined) {
+    if (typeof body.content !== 'string') return { error: 'content must be a string.' };
+    value.content = body.content;
+  } else if (!partial) {
+    value.content = '';
+  }
+
+  if (body.workspaceId !== undefined) {
+    if (body.workspaceId !== null && typeof body.workspaceId !== 'string') {
+      return { error: 'workspaceId must be a string or null.' };
+    }
+    value.workspaceId = body.workspaceId;
+  }
+
+  // Only creates take a parent; updates change the tree through POST /:id/move.
+  if (!partial && body.parentId !== undefined) {
+    if (body.parentId !== null && typeof body.parentId !== 'string') {
+      return { error: 'parentId must be a string or null.' };
+    }
+    value.parentId = body.parentId;
+  }
+
+  return { value };
+}
+
+function validateMoveInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be a JSON object.' };
+  }
+  if (body.parentId === undefined || (body.parentId !== null && typeof body.parentId !== 'string')) {
+    return { error: 'parentId must be a string or null.' };
+  }
+  if (!Number.isInteger(body.index) || body.index < 0) {
+    return { error: 'index must be a non-negative integer.' };
+  }
+  if (body.workspaceId !== undefined && body.workspaceId !== null && typeof body.workspaceId !== 'string') {
+    return { error: 'workspaceId must be a string or null.' };
+  }
+  return { value: { parentId: body.parentId, index: body.index, workspaceId: body.workspaceId } };
+}
+
 async function getDocForTenantDb(docId, tenantId, db = prisma) {
   return db.document.findFirst({ where: { id: docId, tenantId } });
 }
 
-function hasWorkspaceAccess(workspace, userId) {
-  if (!workspace) return false;
-  if (workspace.ownerId === userId) return true;
-  if (Array.isArray(workspace.memberIds) && workspace.memberIds.includes(userId)) return true;
-  return false;
-}
-
+/**
+ * Resolves a workspaceId from the request body. Documents may live in a workspace of the
+ * current tenant or in the user's personal workspace (tenantId === userId), and the user
+ * must be able to see it under the same rule the workspace list uses.
+ */
 async function resolveWorkspaceForTenant(workspaceId, tenantId, userId) {
   if (workspaceId === undefined) {
     return { ok: true, workspaceId: undefined };
@@ -69,20 +171,20 @@ async function resolveWorkspaceForTenant(workspaceId, tenantId, userId) {
     return { ok: true, workspaceId: null };
   }
 
-  const normalizedWorkspaceId = String(workspaceId || '').trim();
+  const normalizedWorkspaceId = workspaceId.trim();
   if (!normalizedWorkspaceId) {
     return { ok: false, error: 'Invalid workspaceId.' };
   }
 
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: normalizedWorkspaceId },
+  const workspace = await prisma.workspace.findFirst({
+    where: {
+      id: normalizedWorkspaceId,
+      OR: [{ tenantId }, { tenantId: userId }],
+    },
     select: { id: true, tenantId: true, ownerId: true, memberIds: true },
   });
 
-  const inAllowedScope = workspace
-    && (workspace.tenantId === tenantId || workspace.tenantId === userId);
-
-  if (!workspace || !inAllowedScope || !hasWorkspaceAccess(workspace, userId)) {
+  if (!workspace || !isWorkspaceVisibleToUser(workspace, userId)) {
     return { ok: false, error: 'Workspace not found for tenant.' };
   }
 
@@ -213,22 +315,6 @@ async function moveDocument(db, { doc, tenantId, workspaceId, parentId, index })
   return getDocForTenantDb(doc.id, tenantId, db);
 }
 
-function validateMoveInput(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return { error: 'Request body must be a JSON object.' };
-  }
-  if (body.parentId === undefined || (body.parentId !== null && typeof body.parentId !== 'string')) {
-    return { error: 'parentId must be a string or null.' };
-  }
-  if (!Number.isInteger(body.index) || body.index < 0) {
-    return { error: 'index must be a non-negative integer.' };
-  }
-  if (body.workspaceId !== undefined && body.workspaceId !== null && typeof body.workspaceId !== 'string') {
-    return { error: 'workspaceId must be a string or null.' };
-  }
-  return { value: { parentId: body.parentId, index: body.index, workspaceId: body.workspaceId } };
-}
-
 async function calculateTenantStorageBytesDb(tenantId) {
   try {
     const rows = await prisma.$queryRaw`
@@ -250,19 +336,37 @@ async function calculateTenantStorageBytesDb(tenantId) {
 }
 
 /**
+ * Returns a 402 payload when replacing `previousBytes` with `nextBytes` would exceed the
+ * tenant's storage limit, or null when it fits. A null limit means unlimited storage.
+ */
+async function checkStorageQuota(tenantId, limits, nextBytes, previousBytes = 0) {
+  const limitBytes = limits?.storageBytes;
+  if (limitBytes === null || limitBytes === undefined) return null;
+  if (nextBytes <= previousBytes) return null;
+
+  const currentStorage = await calculateTenantStorageBytesDb(tenantId);
+  const projectedStorage = currentStorage - previousBytes + nextBytes;
+  if (projectedStorage <= limitBytes) return null;
+  return {
+    error: `Storage limit exceeded (${projectedStorage}/${limitBytes} bytes).`,
+    code: 'storage_quota_exceeded',
+  };
+}
+
+/**
  * POST /api/docs
  * Create a new document at the top of its sibling list.
  * Body: { title?, content?, workspaceId?, parentId? }
  * A child takes its parent's workspace.
  */
 router.post('/', requireAuth, resolveTenantContext, requirePermission('document.create'), attachEntitlements, async (req, res) => {
-  const { title = 'Untitled', content = '' } = req.body;
-  const parentId = req.body.parentId ?? null;
-  if (parentId !== null && typeof parentId !== 'string') {
-    return res.status(400).json({ error: 'parentId must be a string or null.' });
-  }
+  const input = validateDocInput(req.body, { partial: false });
+  if (input.error) return res.status(400).json({ error: input.error });
+  const { title, content } = input.value;
+  const parentId = input.value.parentId ?? null;
+
   const workspaceResolution = await resolveWorkspaceForTenant(
-    parentId ? req.body.workspaceId : (req.body.workspaceId ?? null),
+    parentId ? input.value.workspaceId : (input.value.workspaceId ?? null),
     req.tenant.id,
     req.user.id,
   );
@@ -270,7 +374,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
     return res.status(400).json({ error: workspaceResolution.error });
   }
 
-  let { workspaceId } = workspaceResolution;
+  let workspaceId = workspaceResolution.workspaceId;
   try {
     if (parentId) {
       ({ workspaceId } = await resolveParent(prisma, { parentId, tenantId: req.tenant.id, workspaceId }));
@@ -287,24 +391,13 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
     });
   }
 
-  const entitlements = req.entitlements;
-  if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
+  const storageError = await checkStorageQuota(req.tenant.id, req.entitlements.limits, bytes(content));
+  if (storageError) return res.status(402).json(storageError);
 
-  const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
-  const incomingBytes = bytes(content);
-  const limitBytes = entitlements.limits.storageBytes;
-  if (currentStorage + incomingBytes > limitBytes) {
-    return res.status(402).json({
-      error: `Storage limit exceeded (${currentStorage}/${limitBytes} bytes used).`,
-      code: 'storage_quota_exceeded',
-    });
-  }
-
-  const id = uuidv4();
   const sortOrder = await topSortOrder(prisma, { tenantId: req.tenant.id, workspaceId, parentId });
   const created = await prisma.document.create({
     data: {
-      id,
+      id: uuidv4(),
       title,
       content,
       userId: req.user.id,
@@ -327,26 +420,19 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
 
 /**
  * GET /api/docs
- * List all documents belonging to the current user.
+ * List all documents in the current tenant, most recently updated first. Each carries
+ * parentId and sortOrder so clients can build the chapter tree.
+ * Only a content prefix is read from the database to build each preview.
  */
 router.get('/', requireAuth, resolveTenantContext, requirePermission('document.read'), async (req, res) => {
-
-  const rows = await prisma.document.findMany({
-    where: { tenantId: req.tenant.id },
-    orderBy: { updatedAt: 'desc' },
-  });
-  const docs = rows.map((doc) => ({
-    id: doc.id,
-    title: doc.title,
-    userId: doc.userId,
-    tenantId: doc.tenantId,
-    createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt,
-    updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : doc.updatedAt,
-    parentId: doc.parentId ?? null,
-    workspaceId: doc.workspaceId ?? null,
-    sortOrder: doc.sortOrder ?? 0,
-    preview: String(doc.content || '').replace(/<[^>]+>/g, '').slice(0, 100),
-  }));
+  const rows = await prisma.$queryRaw`
+    SELECT id, title, "userId", "tenantId", "workspaceId", "parentId", "sortOrder", "createdAt", "updatedAt",
+      LEFT(content, ${PREVIEW_SOURCE_LENGTH}::int) AS "previewSource"
+    FROM documents
+    WHERE "tenantId" = ${req.tenant.id}
+    ORDER BY "updatedAt" DESC
+  `;
+  const docs = rows.map((row) => formatDocSummary(row, row.previewSource));
 
   writeAuditLog({
     userId: req.user.id,
@@ -421,14 +507,19 @@ router.post('/:id/move', requireAuth, resolveTenantContext, requirePermission('d
  * PUT /api/docs/:id
  * Update title, content and/or workspace.
  * Body: { title?, content?, workspaceId? }
- * Changing the workspace moves the document and its subtree to the top level of that workspace.
+ * Changing the workspace moves the document and its subtree to the top level of that
+ * workspace. Only title/content changes count toward the monthly document update quota;
+ * a request that changes nothing returns the current document without touching it.
  */
 router.put('/:id', requireAuth, resolveTenantContext, requirePermission('document.update'), attachEntitlements, async (req, res) => {
+  const input = validateDocInput(req.body, { partial: true });
+  if (input.error) return res.status(400).json({ error: input.error });
+
   const existing = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!existing) return res.status(404).json({ error: 'Document not found.' });
 
   const workspaceResolution = await resolveWorkspaceForTenant(
-    req.body.workspaceId,
+    input.value.workspaceId,
     req.tenant.id,
     req.user.id,
   );
@@ -436,35 +527,44 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
     return res.status(400).json({ error: workspaceResolution.error });
   }
 
-  const updateCheck = await canUpdateDocuments(req.tenant.id, 1);
-  if (!updateCheck.allowed) {
-    return res.status(402).json({
-      error: updateCheck.reason,
-      code: 'document_update_limit_exceeded',
-    });
+  const changes = {};
+  if (input.value.title !== undefined && input.value.title !== existing.title) {
+    changes.title = input.value.title;
+  }
+  if (input.value.content !== undefined && input.value.content !== existing.content) {
+    changes.content = input.value.content;
+  }
+  const movesWorkspace = workspaceResolution.workspaceId !== undefined
+    && workspaceResolution.workspaceId !== (existing.workspaceId ?? null);
+
+  if (Object.keys(changes).length === 0 && !movesWorkspace) {
+    return res.json({ doc: formatDoc(existing) });
   }
 
-  if (req.body.content !== undefined) {
-    const entitlements = await getTenantEntitlements(req.tenant.id);
-    if (!entitlements) return res.status(404).json({ error: 'Tenant entitlements unavailable.' });
-
-    const currentStorage = await calculateTenantStorageBytesDb(req.tenant.id);
-    const nextBytes = bytes(req.body.content);
-    const previousBytes = bytes(existing.content);
-    const projectedStorage = currentStorage - previousBytes + nextBytes;
-    if (projectedStorage > entitlements.limits.storageBytes) {
+  const countsAsEdit = Object.keys(changes).length > 0;
+  if (countsAsEdit) {
+    const updateCheck = await canUpdateDocuments(req.tenant.id, 1);
+    if (!updateCheck.allowed) {
       return res.status(402).json({
-        error: `Storage limit exceeded (${projectedStorage}/${entitlements.limits.storageBytes} bytes).`,
-        code: 'storage_quota_exceeded',
+        error: updateCheck.reason,
+        code: 'document_update_limit_exceeded',
       });
     }
   }
 
-  if (workspaceResolution.workspaceId !== undefined
-    && workspaceResolution.workspaceId !== (existing.workspaceId ?? null)) {
-    // Children always live in their parent's workspace, so the whole subtree moves,
-    // to the top level of the target workspace.
-    await prisma.$transaction((tx) => moveDocument(tx, {
+  if (changes.content !== undefined) {
+    const storageError = await checkStorageQuota(
+      req.tenant.id,
+      req.entitlements.limits,
+      bytes(changes.content),
+      bytes(existing.content),
+    );
+    if (storageError) return res.status(402).json(storageError);
+  }
+
+  let updated = existing;
+  if (movesWorkspace) {
+    updated = await prisma.$transaction((tx) => moveDocument(tx, {
       doc: existing,
       tenantId: req.tenant.id,
       workspaceId: workspaceResolution.workspaceId,
@@ -472,21 +572,20 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
       index: 0,
     }));
   }
+  if (countsAsEdit) {
+    updated = await prisma.document.update({
+      where: { id: existing.id },
+      data: changes,
+    });
+    await consumeDocumentUpdates(req.tenant.id, 1);
+  }
 
-  const updated = await prisma.document.update({
-    where: { id: existing.id },
-    data: {
-      ...(req.body.title !== undefined ? { title: req.body.title } : {}),
-      ...(req.body.content !== undefined ? { content: req.body.content } : {}),
-    },
-  });
-  await consumeDocumentUpdates(req.tenant.id, 1);
   const doc = formatDoc(updated);
   writeAuditLog({
     userId: req.user.id,
     tenantId: req.tenant.id,
     action: 'document.update',
-    metadata: { docId: doc.id },
+    metadata: { docId: doc.id, fields: [...Object.keys(changes), ...(movesWorkspace ? ['workspaceId'] : [])] },
   });
   res.json({ doc });
 });

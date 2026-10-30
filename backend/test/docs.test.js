@@ -1,6 +1,6 @@
-// Route tests for the /api/docs chapter tree. Prisma, the billing store, auth/RBAC/
-// entitlements middleware and the audit log are replaced in require.cache, so these run
-// without a database. The fake Prisma understands exactly the query shapes the route uses.
+// Route tests for /api/docs. Prisma, the billing store, auth/RBAC/entitlements middleware and
+// the audit log are replaced in require.cache, so these run without a database. The fake
+// Prisma understands exactly the query shapes docs.routes.js uses.
 const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -16,8 +16,11 @@ function resetState() {
   state.comments = [];
   state.versions = [];
   state.workspaces = [];
+  state.createCheck = { allowed: true };
+  state.updateCheck = { allowed: true };
   state.consumed = 0;
   state.audit = [];
+  state.entitlements = { limits: { storageBytes: null } };
   state.clock = Date.parse('2026-10-01T00:00:00Z');
 }
 
@@ -65,8 +68,7 @@ const prisma = {
     findFirst: async ({ where, select }) => pick(docs().find((d) => matches(d, where)), select),
     findMany: async ({ where, select, orderBy }) => {
       const rows = docs().filter((d) => matches(d, where));
-      if (Array.isArray(orderBy)) rows.sort((a, b) => (a.sortOrder - b.sortOrder) || (b.createdAt - a.createdAt));
-      else if (orderBy?.updatedAt) rows.sort((a, b) => b.updatedAt - a.updatedAt);
+      if (orderBy) rows.sort((a, b) => (a.sortOrder - b.sortOrder) || (b.createdAt - a.createdAt));
       return rows.map((row) => pick(row, select));
     },
     aggregate: async ({ where }) => {
@@ -100,7 +102,8 @@ const prisma = {
     },
   },
   workspace: {
-    findUnique: async ({ where }) => state.workspaces.find((w) => w.id === where.id) || null,
+    findFirst: async ({ where }) => state.workspaces.find((w) => w.id === where.id
+      && where.OR.some((scope) => scope.tenantId === w.tenantId)) || null,
   },
   $transaction: async (work) => (typeof work === 'function' ? work(prisma) : Promise.all(work)),
   $queryRaw: async (strings, ...values) => {
@@ -116,8 +119,15 @@ const prisma = {
       return ids.map((id) => ({ id }));
     }
     if (sql.includes('FOR UPDATE')) return [];
-    if (sql.includes('SUM(')) return [{ total: 0n }];
-    throw new Error(`unexpected $queryRaw: ${sql}`);
+    if (sql.includes('SUM(')) {
+      const rows = docs().filter((d) => d.tenantId === values[0]);
+      return [{ total: BigInt(rows.reduce((n, d) => n + Buffer.byteLength(d.content), 0)) }];
+    }
+    const [previewLength, tenantId] = values;
+    return docs()
+      .filter((d) => d.tenantId === tenantId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map(({ content, ...rest }) => ({ ...rest, previewSource: content.slice(0, previewLength) }));
   },
   $executeRaw: async (strings, ...values) => {
     const sql = strings.join('?');
@@ -137,8 +147,6 @@ const prisma = {
   },
 };
 
-const ENTITLEMENTS = { limits: { storageBytes: 1e12 } };
-
 function stub(rel, exports) {
   const id = src(rel);
   require.cache[id] = { id, filename: id, loaded: true, exports };
@@ -146,13 +154,12 @@ function stub(rel, exports) {
 
 stub('db/client.js', { prisma });
 stub('store/index.js', {
-  canCreateDocuments: async () => ({ allowed: true }),
-  canUpdateDocuments: async () => ({ allowed: true }),
+  canCreateDocuments: async () => state.createCheck,
+  canUpdateDocuments: async () => state.updateCheck,
   consumeDocumentUpdates: async (_tenantId, count) => {
     state.consumed += count;
     return { allowed: true };
   },
-  getTenantEntitlements: async () => ENTITLEMENTS,
 });
 stub('middleware/auth/core.js', {
   requireAuth: (req, _res, next) => {
@@ -169,7 +176,7 @@ stub('middleware/rbac/index.js', {
 });
 stub('middleware/entitlements/index.js', {
   attachEntitlements: (req, _res, next) => {
-    req.entitlements = ENTITLEMENTS;
+    req.entitlements = state.entitlements;
     next();
   },
 });
@@ -183,7 +190,7 @@ app.use('/api/docs', docsRoutes);
 
 beforeEach(resetState);
 
-/** A sibling group as `id:sortOrder`, in display order. */
+/** Titles of a sibling group in display order. */
 function group(workspaceId, parentId) {
   return docs()
     .filter((d) => d.tenantId === 'tenant-1' && d.workspaceId === workspaceId && d.parentId === parentId)
@@ -191,15 +198,136 @@ function group(workspaceId, parentId) {
     .map((d) => `${d.id}:${d.sortOrder}`);
 }
 
-test('GET list returns each document\'s real parentId and sortOrder', async () => {
-  addDoc({ id: 'parent', sortOrder: 3 });
-  addDoc({ id: 'child', parentId: 'parent', sortOrder: 1 });
+// ─── Validation, limits and quota ───────────────────────────────────────────────
+
+test('POST rejects a non-string or empty title with 400 instead of a database error', async () => {
+  for (const title of [null, 42, { a: 1 }, '   ']) {
+    const res = await request(app).post('/api/docs').send({ title });
+    assert.equal(res.status, 400, `title ${JSON.stringify(title)}`);
+    assert.match(res.body.error, /title/);
+  }
+  const tooLong = await request(app).post('/api/docs').send({ title: 'x'.repeat(256) });
+  assert.equal(tooLong.status, 400);
+  assert.equal(state.docs.size, 0);
+});
+
+test('POST rejects non-string content, workspaceId and parentId', async () => {
+  assert.equal((await request(app).post('/api/docs').send({ content: ['a'] })).status, 400);
+  assert.equal((await request(app).post('/api/docs').send({ workspaceId: 5 })).status, 400);
+  assert.equal((await request(app).post('/api/docs').send({ parentId: 5 })).status, 400);
+});
+
+test('POST creates with defaults and a trimmed title', async () => {
+  const res = await request(app).post('/api/docs').send({ title: '  Plan  ' });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.doc.title, 'Plan');
+  assert.equal(res.body.doc.content, '');
+  assert.equal(res.body.doc.workspaceId, null);
+  assert.equal(res.body.doc.parentId, null);
+});
+
+test('POST returns 402 when the plan document limit is reached', async () => {
+  state.createCheck = { allowed: false, reason: 'Document limit reached (25/25) for Free plan.' };
+  const res = await request(app).post('/api/docs').send({ title: 'One too many' });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.code, 'document_limit_exceeded');
+  assert.equal(state.docs.size, 0);
+});
+
+test('a null storage limit means unlimited, a finite one is enforced', async () => {
+  state.entitlements = { limits: { storageBytes: null } };
+  assert.equal((await request(app).post('/api/docs').send({ content: 'hello' })).status, 201);
+
+  state.entitlements = { limits: { storageBytes: 8 } };
+  const over = await request(app).post('/api/docs').send({ content: 'more than eight bytes' });
+  assert.equal(over.status, 402);
+  assert.equal(over.body.code, 'storage_quota_exceeded');
+});
+
+test('POST only accepts a workspace in the tenant (or personal) that the user can see', async () => {
+  state.workspaces = [
+    { id: 'ws-team', tenantId: 'tenant-1', ownerId: 'user-2', memberIds: ['user-2', 'user-1'] },
+    { id: 'ws-private', tenantId: 'tenant-1', ownerId: 'user-2', memberIds: ['user-2', 'user-3'] },
+    { id: 'ws-personal', tenantId: 'user-1', ownerId: 'user-1', memberIds: ['user-1'] },
+    { id: 'ws-other-tenant', tenantId: 'tenant-2', ownerId: 'user-1', memberIds: ['user-1', 'user-9'] },
+  ];
+  assert.equal((await request(app).post('/api/docs').send({ workspaceId: 'ws-team' })).status, 201);
+  assert.equal((await request(app).post('/api/docs').send({ workspaceId: 'ws-personal' })).status, 201);
+  assert.equal((await request(app).post('/api/docs').send({ workspaceId: 'ws-private' })).status, 400);
+  assert.equal((await request(app).post('/api/docs').send({ workspaceId: 'ws-other-tenant' })).status, 400);
+});
+
+test('PUT that changes nothing returns the doc without using quota or writing an audit entry', async () => {
+  addDoc({ id: 'doc-1', title: 'Plan', content: '<p>x</p>' });
+  for (const body of [{}, { title: 'Plan' }, { content: '<p>x</p>' }, { workspaceId: null }, { parentId: 'doc-2', sortOrder: 3 }]) {
+    const res = await request(app).put('/api/docs/doc-1').send(body);
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.equal(res.body.doc.title, 'Plan');
+  }
+  assert.equal(state.consumed, 0);
+  assert.equal(state.audit.length, 0);
+  assert.equal(state.docs.get('doc-1').updatedAt.toISOString(), '2026-10-01T00:00:00.000Z');
+});
+
+test('PUT counts title/content edits toward the update quota, but not workspace moves', async () => {
+  state.workspaces = [{ id: 'ws-team', tenantId: 'tenant-1', ownerId: 'user-1', memberIds: [] }];
+  addDoc({ id: 'doc-1', title: 'Plan' });
+
+  const moved = await request(app).put('/api/docs/doc-1').send({ workspaceId: 'ws-team' });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.body.doc.workspaceId, 'ws-team');
+  assert.equal(state.consumed, 0);
+
+  const edited = await request(app).put('/api/docs/doc-1').send({ title: 'Plan v2' });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.doc.title, 'Plan v2');
+  assert.equal(state.consumed, 1);
+});
+
+test('PUT returns 402 when the monthly update limit is reached', async () => {
+  addDoc({ id: 'doc-1', title: 'Plan' });
+  state.updateCheck = { allowed: false, reason: 'Document update limit reached (100/100) for Free plan.' };
+  const res = await request(app).put('/api/docs/doc-1').send({ title: 'Plan v2' });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.code, 'document_update_limit_exceeded');
+  assert.equal(state.docs.get('doc-1').title, 'Plan');
+});
+
+test('PUT validates the body and 404s for documents of another tenant', async () => {
+  addDoc({ id: 'doc-1' });
+  addDoc({ id: 'doc-other', tenantId: 'tenant-2' });
+  assert.equal((await request(app).put('/api/docs/doc-1').send({ title: '' })).status, 400);
+  assert.equal((await request(app).put('/api/docs/doc-other').send({ title: 'x' })).status, 404);
+});
+
+// ─── List and previews ──────────────────────────────────────────────────────────
+
+test('GET list omits content, returns tree fields and a plain-text preview with entities decoded', async () => {
+  addDoc({
+    id: 'doc-1',
+    sortOrder: 3,
+    content: '<h1><span style="font-family:Montserrat">Meeting Notes</span></h1><p>Product &amp; Delivery&nbsp;Sync &#8212; &lt;Q4&gt;</p>',
+  });
+  addDoc({ id: 'doc-2', parentId: 'doc-1', sortOrder: 1 });
   const res = await request(app).get('/api/docs');
   assert.equal(res.status, 200);
   const byId = Object.fromEntries(res.body.docs.map((d) => [d.id, d]));
-  assert.equal(byId.parent.sortOrder, 3);
-  assert.equal(byId.child.parentId, 'parent');
+  assert.equal('content' in byId['doc-1'], false);
+  assert.equal(byId['doc-1'].preview, 'Meeting Notes Product & Delivery Sync — <Q4>');
+  assert.equal(byId['doc-1'].sortOrder, 3);
+  assert.equal(byId['doc-2'].parentId, 'doc-1');
 });
+
+test('GET list preview drops a tag cut off by the content prefix', async () => {
+  addDoc({
+    id: 'doc-1',
+    content: `<p>Case Study</p><div data-docsync-table-token="${'x'.repeat(5000)}"><table></table></div>`,
+  });
+  const res = await request(app).get('/api/docs');
+  assert.equal(res.body.docs[0].preview, 'Case Study');
+});
+
+// ─── Tree: create, move, delete ─────────────────────────────────────────────────
 
 test('POST places new documents at the top of their sibling list', async () => {
   addDoc({ id: 'a', sortOrder: 1 });
@@ -221,11 +349,10 @@ test('POST with a parent creates a child in the parent workspace, at the top', a
   assert.ok(res.body.doc.sortOrder < 1);
 });
 
-test('POST rejects an invalid parent', async () => {
+test('POST rejects a parent from another tenant or another workspace', async () => {
   state.workspaces = [{ id: 'ws-team', tenantId: 'tenant-1', ownerId: 'user-1', memberIds: [] }];
   addDoc({ id: 'foreign', tenantId: 'tenant-2' });
   addDoc({ id: 'root-doc' });
-  assert.equal((await request(app).post('/api/docs').send({ parentId: 5 })).status, 400);
   assert.equal((await request(app).post('/api/docs').send({ parentId: 'foreign' })).status, 400);
   assert.equal((await request(app).post('/api/docs').send({ parentId: 'missing' })).status, 400);
   const mismatch = await request(app).post('/api/docs').send({ parentId: 'root-doc', workspaceId: 'ws-team' });
