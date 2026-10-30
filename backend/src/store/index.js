@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
-const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb } = require('./catalog');
+const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb, mapDbPlanToCatalogRecord } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 const { get } = require('../app');
 
@@ -142,19 +142,18 @@ async function writeUserBillingStateToDb(state) {
 
 async function readTenantBillingStateFromDb(tenantId) {
 	if (!isDatabaseConfigured()) return null;
-	const row = await prisma.tenantBilling.findUnique({
-		where: { tenantId },
+	// Load from the tenant side: billing rows can outlive their tenant row, and a required
+	// `tenant` include on tenantBilling throws instead of returning null for those.
+	const tenantRow = await prisma.tenant.findUnique({
+		where: { id: tenantId },
 		include: {
-			tenant: {
-				include: {
-					usage: true,
-				},
-			},
-			planCatalog: true,
+			usage: true,
+			billing: { include: { planCatalog: true } },
 		},
 	});
-	if (!row) return null;
-	return normalizeTenantBillingState(row, tenantId);
+	if (!tenantRow?.billing) return null;
+	const { billing, ...tenant } = tenantRow;
+	return normalizeTenantBillingState({ ...billing, tenant }, tenantId);
 }
 
 async function writeTenantBillingStateToDb(tenantId, state) {
@@ -276,6 +275,13 @@ function getPlan(planId) {
 		void refreshPlanCatalogFromDb().catch(() => {});
 	}
 	return PLAN_CATALOG[planId] || PLAN_CATALOG.free;
+}
+
+// The tenant's joined plan_catalog row wins over the cached catalog; both come back in the
+// catalog record shape (`plan.limits.*`), so limit checks never read flat `limit*` columns.
+function resolveBillingPlan(billing) {
+	if (billing?.planCatalog) return mapDbPlanToCatalogRecord(billing.planCatalog);
+	return getPlan(billing?.planId);
 }
 
 async function getAllPlans() {
@@ -406,6 +412,8 @@ async function ensureTenantBillingState(tenantId) {
 	}
 
 	if (!billing) {
+		// Never create (or overwrite) billing for a tenant that does not exist.
+		if (isDatabaseConfigured() && !await resolveTenantById(tenantId)) return null;
 		billing = normalizeTenantBillingState(null, tenantId);
 		if (isDatabaseConfigured()) {
 			await writeTenantBillingStateToDb(tenantId, billing);
@@ -451,6 +459,7 @@ async function ensureUserBillingState(user) {
 
 async function refreshBillingStatus(tenantId) {
 	const billing = await ensureTenantBillingState(tenantId);
+	if (!billing) return null;
 	const nowMs = Date.now();
 	let changed = false;
 
@@ -582,12 +591,12 @@ async function countTenantDocuments(tenantId) {
 async function canCreateDocuments(tenantId, additionalDocuments = 1) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
-	const plan = billing.planCatalog ? billing.planCatalog :getPlan(billing.planId);
-	const limit = plan.limitsDocuments;
-	if (limit === null || limit === undefined) {
-		return { allowed: true, current: await countTenantDocuments(tenantId), limit: null };
-	}
+	const plan = resolveBillingPlan(billing);
+	const limit = plan.limits.documents;
 	const current = await countTenantDocuments(tenantId);
+	if (limit === null || limit === undefined) {
+		return { allowed: true, current, limit: null };
+	}
 	const nextTotal = current + Math.max(0, additionalDocuments);
 	if (nextTotal > limit) {
 		return {
@@ -601,7 +610,7 @@ async function canCreateDocuments(tenantId, additionalDocuments = 1) {
 async function canUpdateDocuments(tenantId, additionalUpdates = 1) {
 	const billing = await refreshBillingStatus(tenantId) || await getTenantBillingState(tenantId);
 	if (!billing) return { allowed: false, reason: 'Tenant not found.' };
-	const plan = getPlan(billing.planId);
+	const plan = resolveBillingPlan(billing);
 	const limit = plan.limits.documentUpdatesPerMonth;
 	const usage = await getTenantUsage(tenantId);
 	if (limit === null || limit === undefined) {
@@ -619,15 +628,18 @@ async function canUpdateDocuments(tenantId, additionalUpdates = 1) {
 	return { allowed: true, usage, limit };
 }
 
+// Callers check canUpdateDocuments first. The increment is a single atomic upsert so
+// concurrent saves cannot overwrite each other's count (read-modify-write lost updates).
 async function consumeDocumentUpdates(tenantId, count = 1) {
-	const check = await canUpdateDocuments(tenantId, count);
-	if (!check.allowed) return check;
-	const usage = await getTenantUsage(tenantId);
-	usage.documentUpdates = (usage.documentUpdates || 0) + Math.max(0, count);
-	if (isDatabaseConfigured()) {
-		await writeTenantUsageToDb(tenantId, usage.monthKey, usage);
-	}
-	return { allowed: true, usage };
+	const increment = Math.max(0, count);
+	const monthKey = monthKeyFromDate(new Date());
+	if (!isDatabaseConfigured() || !increment) return { allowed: true };
+	const row = await prisma.tenantsUsage.upsert({
+		where: { tenantId_monthKey: { tenantId, monthKey } },
+		update: { documentUpdates: { increment } },
+		create: { tenantId, monthKey, documentUpdates: increment },
+	});
+	return { allowed: true, usage: normalizeUsageState(row, tenantId, monthKey) };
 }
 
 async function canUseGrammar(tenantId) {
@@ -761,6 +773,9 @@ async function getTenantEntitlements(tenantId) {
 	const plan = planCatalog
 		? { ...planCatalog, limitStorageBytes: Number(planCatalog.limitStorageBytes) }
 		: getPlan(billing.planId);
+	// Limits come from the normalized plan record so they are correct whether or not the
+	// billing row has a joined plan_catalog row (the cached catalog has no flat limit* fields).
+	const { limits } = resolveBillingPlan(billing);
 	const { usage, assignedSeats, storageUsedBytes } = await getTenantUsageMetrics(tenantId);
 	const collaboratorsAssigned = assignedSeats;
 
@@ -769,14 +784,14 @@ async function getTenantEntitlements(tenantId) {
 		plan,
 		limits: {
 			seatsPurchased: billing.purchasedSeats,
-			storageBytes: plan.limitStorageBytes || null,
-			aiRequestsPerMonth: plan.limitAiRequestsPerMonth || null,
-			collaborators: plan.limitCollaborators || null,
-			documents: plan.limitDocuments || null,
-			documentUpdatesPerMonth: plan.limitDocumentUpdatesPerMonth || null,
-			versionHistoryDays: plan.limitVersionHistoryDays || null,
-			grammarAccessDays: plan.limitGrammarAccessDays || null,
-			aiAccessDays: plan.limitAiAccessDays || null,
+			storageBytes: limits.storageBytes || null,
+			aiRequestsPerMonth: limits.aiRequestsPerMonth || null,
+			collaborators: limits.collaborators || null,
+			documents: limits.documents || null,
+			documentUpdatesPerMonth: limits.documentUpdatesPerMonth || null,
+			versionHistoryDays: limits.versionHistoryDays || null,
+			grammarAccessDays: limits.grammarAccessDays || null,
+			aiAccessDays: limits.aiAccessDays || null,
 		},
 		usage: {
 			monthKey: usage.monthKey,

@@ -402,6 +402,8 @@ export default function WorkspaceHomePage({
     try {
       setCreatingTemplate(template.id);
       await onCreateDocument(template.title, template.content, selectedWorkspaceIdRef.current || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create document');
     } finally {
       setCreatingTemplate(null);
     }
@@ -411,6 +413,8 @@ export default function WorkspaceHomePage({
     try {
       setCreatingTemplate('blank');
       await onCreateDocument('Untitled', '', selectedWorkspaceIdRef.current || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create document');
     } finally {
       setCreatingTemplate(null);
     }
