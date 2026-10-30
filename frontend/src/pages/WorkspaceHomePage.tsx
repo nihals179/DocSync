@@ -505,15 +505,9 @@ export default function WorkspaceHomePage({
     const doc = docs.find((d) => d.id === docId);
     if (!doc) return;
 
-    const siblings = docs.filter((d) => (d.workspaceId ?? null) === targetWorkspaceId && (d.parentId ?? null) === null);
-    const targetSortOrder = siblings.reduce((max, d) => Math.max(max, d.sortOrder ?? 0), 0) + 1;
-
     try {
-      await docsApi.update(token, docId, {
-        workspaceId: targetWorkspaceId,
-        parentId: null,
-        sortOrder: targetSortOrder,
-      });
+      // The server moves the document with its subtree to the top of the target workspace.
+      await docsApi.update(token, docId, { workspaceId: targetWorkspaceId });
       const { docs: list } = await docsApi.list(token);
       setDocs(list);
       setWorkspaceModal(null);
@@ -612,52 +606,14 @@ export default function WorkspaceHomePage({
       }
     }
 
-    const sameGroup =
-      (moved.workspaceId ?? null) === destinationWorkspaceId &&
-      (moved.parentId ?? null) === destinationParentId;
-
-    const newDestination = [...destinationSiblings];
-    newDestination.splice(insertIndex, 0, moved);
-
     try {
-      const updates: Array<Promise<unknown>> = [];
-
-      if (!sameGroup) {
-        const oldSiblings = docs
-          .filter(
-            (d) =>
-              d.id !== docId &&
-              (d.workspaceId ?? null) === (moved.workspaceId ?? null) &&
-              (d.parentId ?? null) === (moved.parentId ?? null),
-          )
-          .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-
-        oldSiblings.forEach((doc, idx) => {
-          const nextOrder = idx + 1;
-          if ((doc.sortOrder ?? 0) !== nextOrder) {
-            updates.push(docsApi.update(token, doc.id, { sortOrder: nextOrder }));
-          }
-        });
-      }
-
-      newDestination.forEach((doc, idx) => {
-        const nextOrder = idx + 1;
-        if (doc.id === moved.id) {
-          updates.push(
-            docsApi.update(token, doc.id, {
-              workspaceId: destinationWorkspaceId,
-              parentId: destinationParentId,
-              sortOrder: nextOrder,
-            }),
-          );
-          return;
-        }
-        if ((doc.sortOrder ?? 0) !== nextOrder) {
-          updates.push(docsApi.update(token, doc.id, { sortOrder: nextOrder }));
-        }
+      // One request: the server re-parents the document (and its subtree) and renumbers
+      // both the old and the new sibling lists in a single transaction.
+      await docsApi.move(token, docId, {
+        workspaceId: destinationWorkspaceId,
+        parentId: destinationParentId,
+        index: insertIndex,
       });
-
-      await Promise.all(updates);
       const { docs: list } = await docsApi.list(token);
       setDocs(list);
       if (destinationParentId) {

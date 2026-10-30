@@ -156,6 +156,18 @@ router.delete('/:workspaceId', requireAuth, resolveTenantContext, requirePermiss
 
   try {
     await prisma.$transaction([
+      // The workspace's top-level chapters join the tenant's no-workspace chapters; shift
+      // them so they keep their order and sit above the existing ones. Subtrees move intact.
+      prisma.$executeRaw`
+        UPDATE documents
+        SET "sortOrder" = "sortOrder"
+          - (SELECT COALESCE(MAX("sortOrder"), 0) FROM documents
+             WHERE "tenantId" = ${req.tenant.id} AND "workspaceId" = ${workspaceId} AND "parentId" IS NULL)
+          + (SELECT COALESCE(MIN("sortOrder"), 1) FROM documents
+             WHERE "tenantId" = ${req.tenant.id} AND "workspaceId" IS NULL AND "parentId" IS NULL)
+          - 1
+        WHERE "tenantId" = ${req.tenant.id} AND "workspaceId" = ${workspaceId} AND "parentId" IS NULL
+      `,
       prisma.document.updateMany({
         where: {
           workspaceId,

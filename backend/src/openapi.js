@@ -250,6 +250,24 @@ const documentSchema = {
   },
 };
 
+const documentCreateSchema = {
+  ...documentSchema,
+  properties: {
+    ...documentSchema.properties,
+    parentId: { type: ['string', 'null'], description: 'Create as a child of this document. The child takes the parent\'s workspace; workspaceId, if given, must match it.' },
+  },
+};
+
+const documentMoveSchema = {
+  type: 'object',
+  required: ['parentId', 'index'],
+  properties: {
+    parentId: { type: ['string', 'null'], description: 'New parent, or null for the top level. Cannot be the document itself or one of its descendants.' },
+    index: { type: 'integer', minimum: 0, description: 'Position among the new siblings (0 = first). Values past the end place the document last.' },
+    workspaceId: { type: ['string', 'null'], description: 'Optional target workspace. Defaults to the parent\'s workspace, or the current one for top-level moves.' },
+  },
+};
+
 const commentSchema = {
   type: 'object',
   properties: {
@@ -1142,11 +1160,12 @@ const openapi = {
       }),
       post: op({
         summary: 'Create document',
+        description: 'Creates a document at the top of its sibling list, optionally as a child of `parentId`.',
         tags: ['Documents'],
         parameters: [tenantHeader],
-        requestExample: { title: 'Project Plan', content: 'Initial draft', workspaceId: 'ws_123' },
-        requestSchema: documentSchema,
-        responseExample: { doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', preview: 'Initial draft' } },
+        requestExample: { title: 'Project Plan', content: 'Initial draft', workspaceId: 'ws_123', parentId: null },
+        requestSchema: documentCreateSchema,
+        responseExample: { doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', parentId: null, sortOrder: 0, preview: 'Initial draft' } },
         responseStatus: 201,
         responseDescription: 'Created',
       }),
@@ -1169,9 +1188,26 @@ const openapi = {
       }),
       delete: op({
         summary: 'Delete document',
+        description: 'Deletes the document and its whole subtree (all descendants), together with their comments and saved versions. `deletedCount` is the number of documents removed.',
         tags: ['Documents'],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
-        responseExample: { message: 'Document deleted.' },
+        responseExample: { message: 'Document deleted.', deletedCount: 3 },
+      }),
+    },
+
+    '/api/docs/{id}/move': {
+      post: op({
+        summary: 'Move document in the chapter tree',
+        description: 'Moves the document, with its subtree, under `parentId` (or to the top level) at position `index` among its new siblings, optionally into another workspace. Both sibling lists are renumbered. Does not count toward the monthly document update limit and does not change `updatedAt`.',
+        tags: ['Documents'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
+        requestExample: { parentId: 'doc_2', index: 0 },
+        requestSchema: documentMoveSchema,
+        responseExample: { doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', userId: 'usr_123', tenantId: 'ten_123', workspaceId: 'ws_123', parentId: 'doc_2', sortOrder: 1, preview: 'Initial draft' } },
+        extraResponses: {
+          400: jsonResponse({ error: 'Cannot move a document inside itself.' }, 'Invalid body, workspace or parent (including moves into the document\'s own subtree)', 400),
+          404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404),
+        },
       }),
     },
 
