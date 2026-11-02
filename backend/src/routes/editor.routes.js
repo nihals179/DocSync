@@ -22,9 +22,9 @@ function mapDoc(row) {
     tenantId: row.tenantId,
     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
     updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-    parentId: null,
+    parentId: row.parentId ?? null,
     workspaceId: row.workspaceId ?? null,
-    sortOrder: 0,
+    sortOrder: row.sortOrder ?? 0,
     preview: mapDocPreview(row.content),
   };
 }

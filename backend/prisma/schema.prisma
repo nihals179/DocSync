@@ -323,13 +323,21 @@ model Document {
   userId         String
   tenantId       String?
   workspaceId    String?
+  parentId       String?
+  sortOrder      Int      @default(0)
   title          String
   content        String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  // Deleting a parent goes through the API, which removes the whole subtree with its
+  // comments and versions; the database refuses deletes that would orphan children.
+  parent         Document?  @relation("DocumentTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  children       Document[] @relation("DocumentTree")
+
   @@index([userId])
-  @@index([tenantId])
+  @@index([tenantId, updatedAt(sort: Desc)])
+  @@index([tenantId, workspaceId, parentId, sortOrder])
   @@map("documents")
 }
 

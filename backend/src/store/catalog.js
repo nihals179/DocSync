@@ -241,4 +241,5 @@ module.exports = {
   PLAN_CATALOG,
   TRIAL_DAYS_BY_PLAN,
   refreshPlanCatalogFromDb,
+  mapDbPlanToCatalogRecord,
 };
