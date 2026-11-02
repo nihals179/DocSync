@@ -9,9 +9,28 @@ const { filterVersionsByRetention } = require('../middleware/versions');
 
 const router = express.Router({ mergeParams: true });
 
+const MAX_UNPUBLISHED_VERSIONS = 20;
+
 function normalizeQueryString(value) {
   if (typeof value !== 'string') return '';
   return value.trim();
+}
+
+function previewOf(item) {
+  return item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90);
+}
+
+function savedAtOf(item) {
+  return item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt;
+}
+
+function formatVersion(item) {
+  return {
+    id: item.id,
+    preview: previewOf(item),
+    savedAt: savedAtOf(item),
+    isPublished: Boolean(item.isPublished),
+  };
 }
 
 async function getDocForTenant(docId, tenantId, res) {
@@ -78,16 +97,15 @@ router.get('/all', requireAuth, resolveTenantContext, requirePermission('documen
     .map((item) => {
       const doc = docById.get(item.docId);
       if (!doc) return null;
-      const preview = item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90);
-      const savedAt = item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt;
       return {
         id: item.id,
         docId: item.docId,
         workspaceId: doc.workspaceId,
         userId: item.userId || doc.userId,
         docTitle: doc.title,
-        preview,
-        savedAt,
+        preview: previewOf(item),
+        savedAt: savedAtOf(item),
+        isPublished: Boolean(item.isPublished),
       };
     })
     .filter(Boolean);
@@ -110,39 +128,63 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('document.v
     orderBy: { savedAt: 'desc' },
   });
   const retained = filterVersionsByRetention(rows, retentionDays);
-  const list = retained.map((item) => ({
-    id: item.id,
-    preview: item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90),
-    savedAt: item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt,
-  }));
-  res.json({ versions: list });
+  res.json({ versions: retained.map(formatVersion) });
 });
 
 /**
  * POST /api/docs/:docId/versions
- * Body: { preview?, content }
+ * Body: { preview?, content, published? }
+ * Content identical to the latest version is refused with 409 NO_CHANGES, except that
+ * publishing it marks that latest version as published instead of saving a duplicate.
+ * Only unpublished versions count toward, and are pruned by, the per-document cap.
  */
 router.post('/', requireAuth, resolveTenantContext, requirePermission('document.version.write'), async (req, res) => {
   const doc = await getDocForTenant(req.params.docId, req.tenant.id, res);
   if (!doc) return;
-  const { content, preview } = req.body;
+  const { content, preview, published } = req.body;
   if (typeof content !== 'string') return res.status(400).json({ error: 'content is required.' });
+  if (published !== undefined && typeof published !== 'boolean') {
+    return res.status(400).json({ error: 'published must be a boolean.' });
+  }
+  const publish = published === true;
+
+  const latest = await prisma.version.findFirst({
+    where: { docId: doc.id },
+    orderBy: { savedAt: 'desc' },
+  });
+  if (latest && String(latest.content || '').trim() === content.trim()) {
+    if (!publish || latest.isPublished) {
+      return res.status(409).json({
+        error: publish ? 'Already published — no changes since.' : 'No changes since the last version.',
+        code: 'NO_CHANGES',
+      });
+    }
+    const promoted = await prisma.version.update({
+      where: { id: latest.id },
+      data: { isPublished: true, docTitle: doc.title },
+    });
+    return res.json({ version: formatVersion(promoted), promoted: true });
+  }
 
   const derivedPreview = (preview ?? content.replace(/<[^>]+>/g, '').trim()).slice(0, 90);
   const created = await prisma.version.create({
     data: {
       id: uuidv4(),
       docId: doc.id,
+      userId: req.user.id,
+      tenantId: req.tenant.id,
       title: derivedPreview,
       content,
       savedAt: new Date(),
+      isPublished: publish,
+      docTitle: publish ? doc.title : null,
     },
   });
 
   const overflow = await prisma.version.findMany({
-    where: { docId: req.params.docId },
+    where: { docId: doc.id, isPublished: false },
     orderBy: { savedAt: 'desc' },
-    skip: 20,
+    skip: MAX_UNPUBLISHED_VERSIONS,
     select: { id: true },
   });
   if (overflow.length) {
@@ -151,13 +193,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
     });
   }
 
-  res.status(201).json({
-    version: {
-      id: created.id,
-      preview: created.title,
-      savedAt: created.savedAt instanceof Date ? created.savedAt.toISOString() : created.savedAt,
-    },
-  });
+  res.status(201).json({ version: formatVersion(created) });
 });
 
 /**

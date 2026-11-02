@@ -1408,7 +1408,7 @@ export default function WorkspaceHomePage({
                   {workspaceModal.descendantCount > 0
                     ? ` and its ${workspaceModal.descendantCount} sub-document${workspaceModal.descendantCount === 1 ? '' : 's'}`
                     : ''}
-                  ? {workspaceModal.descendantCount > 0 ? 'Their' : 'Its'} comments and saved versions are deleted too. This can&apos;t be undone.
+                  ? {workspaceModal.descendantCount > 0 ? 'Their' : 'Its'} comments and unpublished versions are deleted too; published versions are kept as a backup. This can&apos;t be undone.
                 </p>
                 {workspaceModal.error && <p className="mt-2 text-xs text-red-600">{workspaceModal.error}</p>}
                 <div className="mt-4 flex justify-end gap-2">

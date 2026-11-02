@@ -331,7 +331,7 @@ model Document {
   updatedAt      DateTime @updatedAt
 
   // Deleting a parent goes through the API, which removes the whole subtree with its
-  // comments and versions; the database refuses deletes that would orphan children.
+  // comments and unpublished versions; the database refuses deletes that would orphan children.
   parent         Document?  @relation("DocumentTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
   children       Document[] @relation("DocumentTree")
 
@@ -362,8 +362,13 @@ model Version {
   content   String
   savedAt   DateTime @default(now())
   createdAt DateTime @default(now())
-  tenantId   String? 
-  
+  tenantId   String?
+  // Published versions are kept as a backup when their document is deleted, and the
+  // per-document version cap never prunes them. docTitle is captured at publish time so
+  // a backup whose document is gone can still be identified.
+  isPublished Boolean @default(false)
+  docTitle    String?
+
   @@index([docId])
   @@map("versions")
 }
