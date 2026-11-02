@@ -85,13 +85,17 @@ router.get(
     const retentionDays = await getVersionHistoryRetentionDays(req.tenant.id);
     const retainedVersions = filterVersionsByRetention(versionRows, retentionDays);
 
+    const [latest] = retainedVersions;
     const response = {
       doc: mapDoc(docRow),
       versions: retainedVersions.map((item) => ({
         id: item.id,
         preview: item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90),
         savedAt: item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt,
+        isPublished: Boolean(item.isPublished),
       })),
+      // What the editor compares against to tell whether there is anything to commit.
+      latestVersion: latest ? { content: latest.content, isPublished: Boolean(latest.isPublished) } : null,
       docs: docsRows.map(mapDoc),
       workspaces: sortWorkspacesForUser(
         workspaceRows.map(mapWorkspace).filter((workspace) => isWorkspaceVisibleToUser(workspace, req.user.id)),

@@ -592,29 +592,40 @@ router.put('/:id', requireAuth, resolveTenantContext, requirePermission('documen
 
 /**
  * DELETE /api/docs/:id
- * Delete a document and its whole subtree, together with their comments and versions.
+ * Delete a document and its whole subtree, together with their comments and unpublished
+ * versions. Published versions stay in the database as a backup, under the title the
+ * document had when it was deleted.
  */
 router.delete('/:id', requireAuth, resolveTenantContext, requirePermission('document.delete'), attachEntitlements, async (req, res) => {
   const row = await getDocForTenantDb(req.params.id, req.tenant.id);
   if (!row) return res.status(404).json({ error: 'Document not found.' });
 
-  const deletedCount = await prisma.$transaction(async (tx) => {
+  const { deletedCount, preservedVersionCount } = await prisma.$transaction(async (tx) => {
     const ids = await getSubtreeIds(tx, row.id, req.tenant.id);
+    // Backups are listed under the title the document had when it was deleted, not the one
+    // it had when it was published, and always belong to the document's tenant.
+    await tx.$executeRaw`
+      UPDATE versions v
+      SET "docTitle" = d.title, "tenantId" = COALESCE(v."tenantId", d."tenantId")
+      FROM documents d
+      WHERE v."docId" = d.id AND v."isPublished" = true AND d.id = ANY(${ids})
+    `;
     await tx.comment.deleteMany({ where: { docId: { in: ids } } });
-    await tx.version.deleteMany({ where: { docId: { in: ids } } });
+    await tx.version.deleteMany({ where: { docId: { in: ids }, isPublished: false } });
+    const preserved = await tx.version.count({ where: { docId: { in: ids }, isPublished: true } });
     // One statement for the whole subtree, so the parentId foreign key never sees a
     // child whose parent is already gone.
     const { count } = await tx.document.deleteMany({ where: { id: { in: ids }, tenantId: req.tenant.id } });
-    return count;
+    return { deletedCount: count, preservedVersionCount: preserved };
   });
 
   writeAuditLog({
     userId: req.user.id,
     tenantId: req.tenant.id,
     action: 'document.delete',
-    metadata: { docId: row.id, deletedCount },
+    metadata: { docId: row.id, deletedCount, preservedVersionCount },
   });
-  res.json({ message: 'Document deleted.', deletedCount });
+  res.json({ message: 'Document deleted.', deletedCount, preservedVersionCount });
 });
 
 module.exports = router;

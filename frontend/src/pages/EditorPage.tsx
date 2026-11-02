@@ -7,7 +7,7 @@ import Toolbar from '../components/editor/toolbar/Toolbar';
 import ThemeListbox from '../components/common/ThemeListbox';
 import type { CursorFormat, RichEditorHandle, Run } from '../components/editor';
 import { isPageSize, type PageSize } from '../components/editor/pageConfig';
-import { docsApi, editorApi, versionsApi } from '../services/api';
+import { ApiError, docsApi, editorApi, versionsApi } from '../services/api';
 import { canvasRunsToHtml, canvasTextToHtml, htmlToRuns } from '../utils/contentAdapter';
 import { buildDocumentTree } from '../utils/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../utils/workspaceSelection';
@@ -40,6 +40,13 @@ const WORKSPACE_PANEL_COLLAPSED_KEY = 'docsync.workspacePanelCollapsed';
 const PAGE_SIZE_STORAGE_KEY = 'docsync.pageSize';
 const MAX_TITLE_LENGTH = 255;
 const EMPTY_TITLE_MESSAGE = 'Add a title — changes aren’t being saved until the document has one.';
+const NO_CHANGES_MESSAGE = 'No changes since the last commit.';
+const ALREADY_PUBLISHED_MESSAGE = 'Already published — no changes since.';
+const SAVE_NOTICE_MS = 4000;
+/** The server keeps this many unpublished versions per document; published ones are never pruned. */
+const MAX_UNPUBLISHED_VERSIONS = 20;
+
+type VersionSaveResult = 'saved' | 'promoted' | 'unchanged' | 'failed';
 
 /** Turns a failed request into a sentence for the editor's error bar. */
 function describeSaveError(error: unknown): string {
@@ -75,6 +82,13 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   const [saveMessage, setSaveMessage] = useState('');
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
+  const [saveNotice, setSaveNotice] = useState('');
+  // Content of the newest version (null when there is none); what Commit compares against.
+  const [lastVersionHtml, setLastVersionHtml] = useState<string | null>(null);
+  const [lastVersionPublished, setLastVersionPublished] = useState(false);
+  const [versionAction, setVersionAction] = useState<'commit' | 'publish' | null>(null);
+  // Guards against a second Commit/Publish (double click, held Ctrl+S) before React re-renders.
+  const versionActionRef = useRef<'commit' | 'publish' | null>(null);
   const [isWorkspacePanelCollapsed, setIsWorkspacePanelCollapsed] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem(WORKSPACE_PANEL_COLLAPSED_KEY) === '1';
@@ -118,7 +132,6 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     tableBorderRadiusPx: 0,
   });
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
-  const lastSavedVersionHtmlRef = useRef<string>('');
   const lastAutoSavedHtmlRef = useRef<string>('');
   const lastAutoSavedTitleRef = useRef<string>('');
   const isAutoSavingRef = useRef(false);
@@ -129,6 +142,11 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
   function normalizeVersionHtml(html: string) {
     return String(html || '').trim();
+  }
+
+  function showSaveNotice(message: string) {
+    setSaveError('');
+    setSaveNotice(message);
   }
 
   function buildVersionPreview(html: string, previewText?: string) {
@@ -154,7 +172,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
     editorApi
       .bootstrap(token, docId)
-      .then(({ doc, versions, docs, workspaces: available }) => {
+      .then(({ doc, versions, latestVersion, docs, workspaces: available }) => {
         if (cancelled) return;
 
         setTitle(doc.title ?? '');
@@ -170,7 +188,8 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
         const normalizedHtml = normalizeVersionHtml(doc.content ?? '');
         const normalizedTitle = String(doc.title || '').trim();
-        lastSavedVersionHtmlRef.current = normalizedHtml;
+        setLastVersionHtml(latestVersion ? normalizeVersionHtml(latestVersion.content) : null);
+        setLastVersionPublished(Boolean(latestVersion?.isPublished));
         lastAutoSavedHtmlRef.current = normalizedHtml;
         lastAutoSavedTitleRef.current = normalizedTitle;
 
@@ -223,7 +242,8 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
       isAutoSavingRef.current = true;
       setAutoSaveStatus('saving');
       try {
-        await docsApi.update(token, docId, { title, content: html });
+        // The cloud icon shows progress, so the page-wide loading overlay stays out of the way.
+        await docsApi.update(token, docId, { title, content: html }, { background: true });
         lastAutoSavedHtmlRef.current = normalizedHtml;
         lastAutoSavedTitleRef.current = normalizedTitle;
         setAutoSaveStatus('saved');
@@ -263,26 +283,39 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     }
   }, [pageSize]);
 
-  /** Saves a version of the current content. Resolves false when saving failed. */
+  /**
+   * Saves a version of the current content (published when asked). The server decides whether
+   * anything changed, so a commit made in another tab is reported as 'unchanged', not an error.
+   */
   const saveVersion = useCallback(
-    async (previewText?: string): Promise<boolean> => {
-      if (!docId) return false;
+    async (previewText?: string, options: { published?: boolean } = {}): Promise<VersionSaveResult> => {
+      if (!docId) return 'failed';
+      const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
       try {
-        const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
-        const normalizedHtml = normalizeVersionHtml(html);
-        if (normalizedHtml === lastSavedVersionHtmlRef.current) {
-          return true;
-        }
-
         const preview = buildVersionPreview(html, previewText);
-        const { version } = await versionsApi.save(token, docId, html, preview);
-        lastSavedVersionHtmlRef.current = normalizedHtml;
-        setSavedVersions((prev) => [version, ...prev].slice(0, 20));
-        return true;
+        const { version, promoted } = await versionsApi.save(token, docId, html, preview, options);
+        setLastVersionHtml(normalizeVersionHtml(html));
+        setLastVersionPublished(version.isPublished);
+        setSavedVersions((prev) => {
+          if (promoted) return prev.map((item) => (item.id === version.id ? { ...item, isPublished: true } : item));
+          let unpublished = 0;
+          return [version, ...prev].filter((item) => {
+            if (item.isPublished) return true;
+            unpublished += 1;
+            return unpublished <= MAX_UNPUBLISHED_VERSIONS;
+          });
+        });
+        return promoted ? 'promoted' : 'saved';
       } catch (error: unknown) {
+        if (error instanceof ApiError && error.code === 'NO_CHANGES') {
+          setLastVersionHtml(normalizeVersionHtml(html));
+          // Publishing is only refused when the latest version is already published.
+          if (options.published) setLastVersionPublished(true);
+          return 'unchanged';
+        }
         console.error('Failed to save version.', error);
         setSaveError(`Version not saved: ${describeSaveError(error)}`);
-        return false;
+        return 'failed';
       }
     },
     [token, docId, currentText, currentRuns],
@@ -309,13 +342,19 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
         setSavedDocuments(docs);
         setSavedVersions(
           allVersions
-            .map((version) => ({ id: version.id, preview: version.preview, savedAt: version.savedAt }))
+            .map((version) => ({
+              id: version.id,
+              preview: version.preview,
+              savedAt: version.savedAt,
+              isPublished: version.isPublished,
+            }))
             .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()),
         );
         setCurrentRuns(restoredRuns);
         editorRef.current?.setRuns(restoredRuns);
 
-        lastSavedVersionHtmlRef.current = normalizedHtml;
+        // A restore leaves the newest version as it is, so committing the restored content
+        // (a rollback) counts as a change unless the restored version was the newest one.
         lastAutoSavedHtmlRef.current = normalizedHtml;
         lastAutoSavedTitleRef.current = normalizedTitle;
         setSaveError('');
@@ -807,31 +846,65 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
       return false;
     }
     const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+    const normalizedHtml = normalizeVersionHtml(html);
+    // Autosave already stored exactly this, so skip the round trip unless a save is in flight.
+    const alreadySaved = !isAutoSavingRef.current
+      && normalizedHtml === lastAutoSavedHtmlRef.current
+      && normalizedTitle === lastAutoSavedTitleRef.current;
+    if (alreadySaved) return true;
     try {
-      await docsApi.update(token, docId, { title, content: html });
+      await docsApi.update(token, docId, { title, content: html }, { background: true });
     } catch (error: unknown) {
       console.error('Save failed.', error);
       setAutoSaveStatus('error');
       setSaveError(`Not saved: ${describeSaveError(error)}`);
       return false;
     }
-    lastAutoSavedHtmlRef.current = normalizeVersionHtml(html);
+    lastAutoSavedHtmlRef.current = normalizedHtml;
     lastAutoSavedTitleRef.current = normalizedTitle;
     setAutoSaveStatus('saved');
     setSaveError('');
     // Refreshing the sidebar is best effort; the save itself already succeeded.
-    void docsApi.list(token).then(({ docs }) => setSavedDocuments(docs)).catch(() => {});
+    void docsApi.list(token, { background: true }).then(({ docs }) => setSavedDocuments(docs)).catch(() => {});
     return true;
   }, [token, docId, title, currentText, currentRuns]);
 
+  /** True when the editor content differs from the newest version (or there is none yet). */
+  const hasUncommittedChanges = useMemo(() => {
+    const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+    return normalizeVersionHtml(html) !== lastVersionHtml;
+  }, [currentRuns, currentText, lastVersionHtml]);
+
+  /** Runs one Commit or Publish at a time, with the buttons showing it in progress. */
+  const runVersionAction = useCallback(async (action: 'commit' | 'publish', work: () => Promise<void>) => {
+    if (versionActionRef.current) return;
+    versionActionRef.current = action;
+    setVersionAction(action);
+    try {
+      await work();
+    } finally {
+      versionActionRef.current = null;
+      setVersionAction(null);
+    }
+  }, []);
+
   const handleSaveDocument = useCallback(async () => {
+    if (versionActionRef.current) return;
+    if (!hasUncommittedChanges) {
+      showSaveNotice(NO_CHANGES_MESSAGE);
+      return;
+    }
     const trimmed = saveMessage.trim();
-    // On failure the commit popup stays open and no version is saved for unsaved content.
-    if (!(await saveDocumentNow())) return;
-    if (!(await saveVersion(trimmed.length > 0 ? trimmed : undefined))) return;
-    setShowSavePopup(false);
-    setSaveMessage('');
-  }, [saveMessage, saveVersion, saveDocumentNow]);
+    await runVersionAction('commit', async () => {
+      // On failure the commit popup stays open and no version is saved for unsaved content.
+      if (!(await saveDocumentNow())) return;
+      const result = await saveVersion(trimmed.length > 0 ? trimmed : undefined);
+      if (result === 'failed') return;
+      setShowSavePopup(false);
+      setSaveMessage('');
+      showSaveNotice(result === 'unchanged' ? NO_CHANGES_MESSAGE : 'Committed.');
+    });
+  }, [hasUncommittedChanges, saveMessage, runVersionAction, saveVersion, saveDocumentNow]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -847,10 +920,25 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, [handleSaveDocument]);
 
   const handlePublishDocument = useCallback(async () => {
-    if (!(await saveDocumentNow())) return;
-    if (!(await saveVersion())) return;
-    window.alert('Document published successfully.');
-  }, [saveVersion, saveDocumentNow]);
+    if (versionActionRef.current) return;
+    if (!hasUncommittedChanges && lastVersionPublished) {
+      showSaveNotice(ALREADY_PUBLISHED_MESSAGE);
+      return;
+    }
+    await runVersionAction('publish', async () => {
+      if (!(await saveDocumentNow())) return;
+      const result = await saveVersion(undefined, { published: true });
+      if (result === 'saved') showSaveNotice('Published.');
+      else if (result === 'promoted') showSaveNotice('Published the latest commit.');
+      else if (result === 'unchanged') showSaveNotice(ALREADY_PUBLISHED_MESSAGE);
+    });
+  }, [hasUncommittedChanges, lastVersionPublished, runVersionAction, saveVersion, saveDocumentNow]);
+
+  useEffect(() => {
+    if (!saveNotice) return;
+    const timeoutId = window.setTimeout(() => setSaveNotice(''), SAVE_NOTICE_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [saveNotice]);
 
   const docText = currentText;
   const renderedHtml = useMemo(
@@ -1073,9 +1161,14 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                     <button
                       type="button"
                       onClick={() => setShowSavePopup((prev) => !prev)}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+                      disabled={versionAction !== null}
+                      aria-busy={versionAction === 'commit'}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Commit
+                      {versionAction === 'commit' && (
+                        <span className="material-icons animate-spin" style={{ fontSize: '0.9rem' }}>autorenew</span>
+                      )}
+                      {versionAction === 'commit' ? 'Committing…' : 'Commit'}
                     </button>
                     {showSavePopup && (
                       <div className="absolute right-0 top-9 z-50 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
@@ -1084,6 +1177,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                         </label>
                         <textarea
                           value={saveMessage}
+                          disabled={versionAction !== null}
                           onChange={(e) => setSaveMessage(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1097,6 +1191,9 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                           autoFocus
                         />
                         {saveError && <p className="mb-2 text-[11px] leading-4 text-red-600">{saveError}</p>}
+                        {!saveError && !hasUncommittedChanges && (
+                          <p className="mb-2 text-[11px] leading-4 text-slate-500">{NO_CHANGES_MESSAGE}</p>
+                        )}
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -1108,9 +1205,14 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                           <button
                             type="button"
                             onClick={() => void handleSaveDocument()}
-                            className="rounded bg-cyan-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-cyan-700"
+                            disabled={versionAction !== null || !hasUncommittedChanges}
+                            title={hasUncommittedChanges ? undefined : NO_CHANGES_MESSAGE}
+                            className="inline-flex items-center gap-1 rounded bg-cyan-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            Commit
+                            {versionAction === 'commit' && (
+                              <span className="material-icons animate-spin" style={{ fontSize: '0.8rem' }}>autorenew</span>
+                            )}
+                            {versionAction === 'commit' ? 'Committing…' : 'Commit'}
                           </button>
                         </div>
                       </div>
@@ -1119,9 +1221,14 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                   <button
                     type="button"
                     onClick={() => void handlePublishDocument()}
-                    className="rounded-md bg-cyan-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-cyan-700"
+                    disabled={versionAction !== null}
+                    aria-busy={versionAction === 'publish'}
+                    className="inline-flex items-center gap-1 rounded-md bg-cyan-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Publish
+                    {versionAction === 'publish' && (
+                      <span className="material-icons animate-spin" style={{ fontSize: '0.9rem' }}>autorenew</span>
+                    )}
+                    {versionAction === 'publish' ? 'Publishing…' : 'Publish'}
                   </button>
                 </div>
                 {saveError && (
@@ -1136,6 +1243,23 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                       onClick={() => setSaveError('')}
                       aria-label="Dismiss"
                       className="shrink-0 rounded text-red-400 hover:text-red-600"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>close</span>
+                    </button>
+                  </div>
+                )}
+                {saveNotice && !saveError && (
+                  <div
+                    role="status"
+                    className="mb-1 flex items-start gap-2 rounded-lg bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-700"
+                  >
+                    <span className="material-icons shrink-0" style={{ fontSize: '0.95rem' }}>info</span>
+                    <span className="min-w-0 flex-1">{saveNotice}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSaveNotice('')}
+                      aria-label="Dismiss"
+                      className="shrink-0 rounded text-cyan-400 hover:text-cyan-700"
                     >
                       <span className="material-icons" style={{ fontSize: '0.95rem' }}>close</span>
                     </button>
@@ -1588,7 +1712,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                   {workspaceModal.descendantCount > 0
                     ? ` and its ${workspaceModal.descendantCount} sub-document${workspaceModal.descendantCount === 1 ? '' : 's'}`
                     : ''}
-                  ? {workspaceModal.descendantCount > 0 ? 'Their' : 'Its'} comments and saved versions are deleted too. This can&apos;t be undone.
+                  ? {workspaceModal.descendantCount > 0 ? 'Their' : 'Its'} comments and unpublished versions are deleted too; published versions are kept as a backup. This can&apos;t be undone.
                 </p>
                 {workspaceModal.error && <p className="mt-2 text-xs text-red-600">{workspaceModal.error}</p>}
                 <div className="mt-4 flex justify-end gap-2">

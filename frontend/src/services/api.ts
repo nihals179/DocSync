@@ -142,7 +142,9 @@ export type EditorBootstrapResponse = {
     sortOrder?: number;
     preview: string;
   };
-  versions: Array<{ id: string; preview: string; savedAt: string }>;
+  versions: Array<{ id: string; preview: string; savedAt: string; isPublished: boolean }>;
+  /** Newest retained version, which the editor compares against to detect uncommitted changes. */
+  latestVersion: { content: string; isPublished: boolean } | null;
   docs: Array<{
     id: string;
     title: string;
@@ -292,7 +294,22 @@ type FetchOptions = RequestInit & {
   token?: string;
   includeCsrf?: boolean;
   authScope?: 'workspace' | 'admin';
+  /** Leaves the request out of the global loading overlay, for saves the page tracks itself. */
+  background?: boolean;
 };
+
+/** A failed API call, with the HTTP status and the server's machine-readable code if any. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
 
 const CSRF_STORAGE_KEY = 'docsync.csrfToken';
 const TENANT_CONTEXT_STORAGE_KEY = 'docsync.tenantContextId';
@@ -404,7 +421,7 @@ async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): 
   }
 
   const run = async (): Promise<T> => {
-  const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', ...rest } = options;
+  const { token, headers: extraHeaders, includeCsrf = false, authScope = 'workspace', background = false, ...rest } = options;
   const csrfCookieName = authScope === 'admin' ? 'docsync_admin_csrf' : 'docsync_csrf';
   const csrfToken = includeCsrf ? getCookie(csrfCookieName) || getStoredCsrfToken() : '';
   const extraHeaderRecord = (extraHeaders as Record<string, string>) || {};
@@ -422,7 +439,7 @@ async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): 
     ...extraHeaderRecord,
   };
 
-  beginApiRequest();
+  if (!background) beginApiRequest();
   try {
     const res = await fetch(`${BASE}${path}`, {
       ...rest,
@@ -432,11 +449,12 @@ async function apiFetch<T = unknown>(path: string, options: FetchOptions = {}): 
     const data: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       if (res.status === 401) unauthorizedHandler?.();
-      throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+      const { error, code } = data as { error?: string; code?: string };
+      throw new ApiError(error ?? `HTTP ${res.status}`, res.status, code);
     }
     return data as T;
   } finally {
-    endApiRequest();
+    if (!background) endApiRequest();
   }
   };
 
@@ -708,20 +726,25 @@ export const docsApi = {
         }),
       },
     ),
-  list: (token: string) =>
+  list: (token: string, options: { background?: boolean } = {}) =>
     apiFetch<{ docs: Array<{ id: string; title: string; preview: string; updatedAt: string; createdAt: string; parentId?: string | null; workspaceId?: string | null; sortOrder?: number }> }>(
       '/api/docs',
-      { token },
+      { token, background: options.background },
     ),
   get: (token: string, id: string) =>
     apiFetch<{ doc: { id: string; title: string; content: string } }>(
       `/api/docs/${id}`,
       { token },
     ),
-  update: (token: string, id: string, patch: { title?: string; content?: string; workspaceId?: string | null }) =>
+  update: (
+    token: string,
+    id: string,
+    patch: { title?: string; content?: string; workspaceId?: string | null },
+    options: { background?: boolean } = {},
+  ) =>
     apiFetch<{ doc: { id: string; title: string; content: string } }>(
       `/api/docs/${id}`,
-      { method: 'PUT', token, body: JSON.stringify(patch) },
+      { method: 'PUT', token, body: JSON.stringify(patch), background: options.background },
     ),
   /** Re-parents a document (with its subtree) and places it at `index` among its new siblings. */
   move: (token: string, id: string, target: { parentId: string | null; index: number; workspaceId?: string | null }) =>
@@ -729,9 +752,12 @@ export const docsApi = {
       `/api/docs/${id}/move`,
       { method: 'POST', token, body: JSON.stringify(target) },
     ),
-  /** Deletes a document with its whole subtree, including their comments and versions. */
+  /**
+   * Deletes a document with its whole subtree, including their comments and unpublished
+   * versions. Published versions are kept on the server as a backup.
+   */
   delete: (token: string, id: string) =>
-    apiFetch<{ message: string; deletedCount: number }>(`/api/docs/${id}`, { method: 'DELETE', token }),
+    apiFetch<{ message: string; deletedCount: number; preservedVersionCount: number }>(`/api/docs/${id}`, { method: 'DELETE', token }),
 };
 
 export const editorApi = {
@@ -756,7 +782,7 @@ export const commentsApi = {
 
 export const versionsApi = {
   list: (token: string, docId: string) =>
-    apiFetch<{ versions: Array<{ id: string; preview: string; savedAt: string }> }>(
+    apiFetch<{ versions: Array<{ id: string; preview: string; savedAt: string; isPublished: boolean }> }>(
       `/api/docs/${docId}/versions`,
       { token },
     ),
@@ -789,13 +815,24 @@ export const versionsApi = {
         docTitle: string;
         preview: string;
         savedAt: string;
+        isPublished: boolean;
       }>;
     }>(url, { token });
   },
-  save: (token: string, docId: string, content: string, preview?: string) =>
-    apiFetch<{ version: { id: string; preview: string; savedAt: string } }>(
+  /**
+   * Commits (or, with `published`, publishes) a snapshot of the content. Fails with an
+   * ApiError whose code is NO_CHANGES when the content matches the latest version; publishing
+   * unchanged content instead marks that version as published and returns `promoted: true`.
+   */
+  save: (token: string, docId: string, content: string, preview?: string, options: { published?: boolean } = {}) =>
+    apiFetch<{ version: { id: string; preview: string; savedAt: string; isPublished: boolean }; promoted?: boolean }>(
       `/api/docs/${docId}/versions`,
-      { method: 'POST', token, body: JSON.stringify({ content, preview }) },
+      {
+        method: 'POST',
+        token,
+        body: JSON.stringify({ content, preview, ...(options.published ? { published: true } : {}) }),
+        background: true,
+      },
     ),
   restore: (token: string, docId: string, versionId: string) =>
     apiFetch<{ doc: { content: string } }>(

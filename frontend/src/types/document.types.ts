@@ -4,6 +4,7 @@ export type SavedVersion = {
   id: string;
   preview: string;
   savedAt: string;
+  isPublished?: boolean;
 };
 
 export type SavedDocument = {

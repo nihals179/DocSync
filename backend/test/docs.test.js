@@ -100,6 +100,7 @@ const prisma = {
       state.versions = state.versions.filter((v) => !matches(v, where));
       return {};
     },
+    count: async ({ where }) => state.versions.filter((v) => matches(v, where)).length,
   },
   workspace: {
     findFirst: async ({ where }) => state.workspaces.find((w) => w.id === where.id
@@ -137,6 +138,14 @@ const prisma = {
     } else if (sql.includes('SET "parentId"')) {
       const [parentId, id] = values;
       state.docs.get(id).parentId = parentId;
+    } else if (sql.includes('UPDATE versions')) {
+      const [ids] = values;
+      for (const v of state.versions) {
+        const doc = state.docs.get(v.docId);
+        if (!v.isPublished || !doc || !ids.includes(doc.id)) continue;
+        v.docTitle = doc.title;
+        v.tenantId = v.tenantId ?? doc.tenantId;
+      }
     } else if (sql.includes('SET "workspaceId"')) {
       const [workspaceId, ids] = values;
       ids.forEach((id) => { state.docs.get(id).workspaceId = workspaceId; });
@@ -447,18 +456,33 @@ test('moves do not use the edit quota or change updatedAt, and are audited', asy
   assert.equal(state.audit.at(-1).action, 'document.move');
 });
 
-test('DELETE removes the document, its subtree and their comments and versions only', async () => {
+test('DELETE removes the document, its subtree and their comments and unpublished versions only', async () => {
   addDoc({ id: 'a', sortOrder: 1 });
-  addDoc({ id: 'child', parentId: 'a', sortOrder: 1 });
+  addDoc({ id: 'child', parentId: 'a', sortOrder: 1, title: 'Renamed child' });
   addDoc({ id: 'grandchild', parentId: 'child', sortOrder: 1 });
-  addDoc({ id: 'sibling', sortOrder: 2 });
+  addDoc({ id: 'sibling', sortOrder: 2, title: 'Sibling' });
   state.comments = [{ id: 'c1', docId: 'child' }, { id: 'c2', docId: 'sibling' }];
-  state.versions = [{ id: 'v1', docId: 'grandchild' }, { id: 'v2', docId: 'sibling' }];
+  state.versions = [
+    { id: 'v1', docId: 'grandchild', isPublished: false },
+    { id: 'v2', docId: 'sibling', isPublished: false },
+    // Published before the document was renamed, and before versions recorded a tenant.
+    { id: 'v3', docId: 'child', isPublished: true, docTitle: 'Old title', tenantId: null },
+    { id: 'v4', docId: 'sibling', isPublished: true, docTitle: 'Sibling (old)', tenantId: 'tenant-1' },
+  ];
 
   const res = await request(app).delete('/api/docs/a');
   assert.equal(res.status, 200);
   assert.equal(res.body.deletedCount, 3);
+  assert.equal(res.body.preservedVersionCount, 1);
   assert.deepEqual(docs().map((d) => d.id), ['sibling']);
   assert.deepEqual(state.comments.map((c) => c.id), ['c2']);
-  assert.deepEqual(state.versions.map((v) => v.id), ['v2']);
+  // The published version outlives its document as a backup, under the document's latest
+  // title and its tenant.
+  assert.deepEqual(state.versions.map((v) => v.id), ['v2', 'v3', 'v4']);
+  const backup = state.versions.find((v) => v.id === 'v3');
+  assert.equal(backup.docTitle, 'Renamed child');
+  assert.equal(backup.tenantId, 'tenant-1');
+  // Backups of documents outside the deleted subtree are left alone.
+  assert.equal(state.versions.find((v) => v.id === 'v4').docTitle, 'Sibling (old)');
+  assert.equal(state.audit.at(-1).metadata.preservedVersionCount, 1);
 });
