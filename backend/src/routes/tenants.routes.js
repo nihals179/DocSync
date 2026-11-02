@@ -149,7 +149,8 @@ router.get('/current/members', requireAuth, resolveTenantContext, requirePermiss
       status: 'active',
     },
   });
-  const userIds = [...new Set(memberships.map((membership) => membership.userId))];
+  // Invited members without an account yet have no userId.
+  const userIds = [...new Set(memberships.map((membership) => membership.userId).filter(Boolean))];
   const users = userIds.length
     ? await prisma.user.findMany({
       where: { id: { in: userIds } },
@@ -304,43 +305,34 @@ router.post('/invites/accept', async (req, res) => {
     return res.status(400).json({ error: 'Invite has expired.' });
   }
 
-  await prisma.tenantsInvite.update({
-    where: { id: invite.id },
-    data: {
-      status: 'accepted',
-      acceptedAt: new Date(),
-      updatedAt: new Date(),
-    },
-  });
-
-  // Find user by invited email
+  // Find user by invited email (none yet if the invitee has no account)
   const invitedUser = await prisma.user.findUnique({
     where: { email: invite.email },
   });
 
-  // Check if membership already exists by email
-  const existingMembership = await prisma.tenantMembership.findFirst({
-    where: {
-      tenantId: invite.tenantId,
-      email: invite.email,
-    },
-  });
-
-  if (existingMembership) {
-    // Update existing membership
-    await prisma.tenantMembership.update({
-      where: { id: existingMembership.id },
+  // Claiming the invite and writing the membership happen together: a concurrent accept of the
+  // same invite claims nothing, and a failed membership write leaves the invite pending.
+  const acceptInTransaction = () => prisma.$transaction(async (tx) => {
+    const claim = await tx.tenantsInvite.updateMany({
+      where: { id: invite.id, status: 'pending' },
       data: {
-        status: 'active',
-        billingAdmin: invite.billingAdmin,
-        userId: invitedUser?.id || null,
+        status: 'accepted',
+        acceptedAt: new Date(),
         updatedAt: new Date(),
       },
     });
-  } else {
-    // Create new membership with email (userId optional, will be filled when user registers)
-    await prisma.tenantMembership.create({
-      data: {
+    if (claim.count === 0) return false;
+
+    // userId stays null until the invitee registers; never clear an existing link.
+    await tx.tenantMembership.upsert({
+      where: { tenantId_email: { tenantId: invite.tenantId, email: invite.email } },
+      update: {
+        status: 'active',
+        billingAdmin: invite.billingAdmin,
+        ...(invitedUser ? { userId: invitedUser.id } : {}),
+        updatedAt: new Date(),
+      },
+      create: {
         id: uuidv4(),
         tenantId: invite.tenantId,
         userId: invitedUser?.id || null,
@@ -351,6 +343,21 @@ router.post('/invites/accept', async (req, res) => {
         updatedAt: new Date(),
       },
     });
+    return true;
+  });
+
+  let claimed;
+  try {
+    claimed = await acceptInTransaction();
+  } catch (error) {
+    // Unique violation: another accept for this email created the membership first.
+    // Retry once; the upsert then updates that row instead of inserting.
+    if (error?.code !== 'P2002') throw error;
+    claimed = await acceptInTransaction();
+  }
+
+  if (!claimed) {
+    return res.status(404).json({ error: 'Invite not found or already consumed.' });
   }
 
   if (invite.invitedByUserId) {
@@ -367,6 +374,7 @@ router.post('/invites/accept', async (req, res) => {
   res.json({
     message: 'Invite accepted successfully.',
     tenantId: invite.tenantId,
+    email: invite.email,
     invitedEmail: invite.email,
     invitedBy: invite.invitedByUser ? {
       id: invite.invitedByUser.id,
@@ -420,10 +428,12 @@ router.patch('/current/members/:membershipId', requireAuth, resolveTenantContext
     },
   });
 
-  const targetUser = await prisma.user.findUnique({
-    where: { id: updatedMembership.userId },
-    select: { id: true, email: true, name: true },
-  });
+  const targetUser = updatedMembership.userId
+    ? await prisma.user.findUnique({
+      where: { id: updatedMembership.userId },
+      select: { id: true, email: true, name: true },
+    })
+    : null;
   res.json({ member: mapMembershipRecord(updatedMembership, targetUser) });
 });
 
@@ -454,7 +464,10 @@ router.delete('/current/members/:membershipId', requireAuth, resolveTenantContex
     metadata: { membershipId: targetMembership.id, targetUserId: targetMembership.userId },
   });
 
-  const removedUser = await prisma.user.findUnique({ where: { id: targetMembership.userId } });
+  // Invited members without an account have no userId and no tenant context to reset.
+  const removedUser = targetMembership.userId
+    ? await prisma.user.findUnique({ where: { id: targetMembership.userId } })
+    : null;
   if (removedUser && removedUser.currentTenantId === req.tenant.id) {
     const fallback = await prisma.tenantMembership.findFirst({
       where: {

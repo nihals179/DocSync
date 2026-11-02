@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { tenantsApi } from '../services/api';
 import { useAuth } from '../features/auth/hooks/useAuth';
@@ -11,29 +11,29 @@ export default function AcceptInvitePage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [inviteInfo, setInviteInfo] = useState<{ email?: string; tenantId?: string } | null>(null);
+  // Invite tokens are single-use: send the accept once per token, even when StrictMode
+  // re-runs the effect or the session finishes restoring after the first render.
+  const acceptedTokenRef = useRef<string | null>(null);
+  const accessTokenRef = useRef(session?.accessToken);
+  useEffect(() => {
+    accessTokenRef.current = session?.accessToken;
+  }, [session?.accessToken]);
 
   // Accept invite immediately (no authentication required)
   useEffect(() => {
-    if (!token) {
+    if (!token || acceptedTokenRef.current === token) {
       return;
     }
+    acceptedTokenRef.current = token;
 
     const acceptInvite = async () => {
       try {
         setLoading(true);
-        let response;
+        const accessToken = accessTokenRef.current;
+        const response = accessToken
+          ? await tenantsApi.acceptInvite(accessToken, token)
+          : await tenantsApi.acceptInviteAnonymous(token);
 
-        if (session?.accessToken) {
-          // If logged in, use authenticated endpoint
-          console.log('User logged in, accepting invite with token:', token);
-          response = await tenantsApi.acceptInvite(session.accessToken, token);
-        } else {
-          // If not logged in, call unauthenticated endpoint
-          console.log('User not logged in, accepting invite anonymously with token:', token);
-          response = await tenantsApi.acceptInviteAnonymous(token);
-        }
-
-        console.log('Invite accepted successfully:', response);
         setInviteInfo({ email: response.email, tenantId: response.tenantId });
         setSuccess(true);
         setLoading(false);
@@ -46,7 +46,7 @@ export default function AcceptInvitePage() {
     };
 
     acceptInvite();
-  }, [token, session?.accessToken]);
+  }, [token]);
 
   // Show error state
   if (error) {
