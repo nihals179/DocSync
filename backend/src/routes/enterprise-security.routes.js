@@ -20,8 +20,155 @@ const {
   getPlan,
   upsertTenantBillingState,
   updateTenantSecurityState,
+  findTenantBySlug,
 } = require('../store');
 const { listAuditLogs, toAuditCsv, writeAuditLog } = require('../lib/audit');
+const { findUserByIdentifier } = require('../middleware/auth');
+
+async function getSecurityByDomain(email) {
+  const normalizedEmail = String(email || '').toLowerCase().trim();
+  if (!normalizedEmail || !normalizedEmail.includes('@')) return null;
+
+  let tenant = await findTenantByDomain(normalizedEmail);
+  if (!tenant) {
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { currentTenantId: true },
+    });
+    tenant = user?.currentTenantId
+      ? await prisma.tenant.findUnique({ where: { id: user.currentTenantId } })
+      : null;
+  }
+
+  if (!tenant) return null;
+
+  const security = await getTenantSecurityState(tenant.id);
+  return { tenant, security };
+}
+
+async function testOidcProviderConnectivity(provider) {
+  try {
+    if (!provider.issuerUrl) return { success: false, reason: 'Missing issuer URL' };
+
+    const issuerUrl = provider.issuerUrl.replace(/\/$/, '');
+
+    // Try multiple discovery endpoints for different OIDC providers
+    const discoveryUrls = [
+      issuerUrl.includes('.well-known/openid-configuration') ? issuerUrl : `${issuerUrl}/.well-known/openid-configuration`,
+      issuerUrl.includes('microsoftonline') && !issuerUrl.includes('.well-known/openid-configuration') ? `${issuerUrl}/v2.0/.well-known/openid-configuration` : null,
+      !issuerUrl.includes('.well-known') ? `${issuerUrl}/.well-known/oauth-authorization-server` : null,
+    ].filter(Boolean);
+
+    let configUrl = null;
+    let lastError = null;
+
+    for (const url of discoveryUrls) {
+      try {
+        const response = await fetch(url, { timeout: 5000 });
+        if (response.ok) {
+          config = await response.json();
+          configUrl = url;
+          break;
+        } else {
+          lastError = `HTTP ${response.status}`;
+        }
+      } catch (err) {
+        lastError = err.message;
+      }
+    }
+
+    if (!config) {
+      return {
+        success: false,
+        reason: `OIDC discovery failed: endpoint not accessible (${lastError || 'unknown error'})`,
+        issuerUrl,
+        suggestion: 'For Azure AD: https://login.microsoftonline.com/{tenantId}/v2.0. For Google: https://accounts.google.com. For Okta: https://your-domain.okta.com',
+        status: 404,
+      };
+    }
+
+    if (!config.token_endpoint) {
+      return { success: false, reason: 'Invalid OIDC configuration: no token endpoint found', configUrl };
+    }
+
+    return {
+      success: true,
+      reason: 'OIDC configuration valid and accessible',
+      configUrl,
+      issuerUrl,
+      endpoints: {
+        authorization: config.authorization_endpoint,
+        token: config.token_endpoint,
+        userinfo: config.userinfo_endpoint,
+        revocation: config.revocation_endpoint,
+      },
+      scopes: config.scopes_supported || ['openid', 'profile', 'email'],
+    };
+  } catch (error) {
+    return {
+      success: false,
+      reason: `Connection error: ${error.message}`,
+      error: error.message,
+      suggestion: 'Check network connectivity and firewall rules',
+    };
+  }
+}
+
+async function testSamlProviderConnectivity(provider) {
+  try {
+    if (!provider.ssoUrl) return { success: false, reason: 'Missing SAML SSO URL' };
+    if (!provider.certificate) return { success: false, reason: 'Missing SAML certificate' };
+
+    const response = await fetch(provider.ssoUrl, {
+      method: 'HEAD',
+      timeout: 5000,
+      redirect: 'follow',
+    });
+
+    if (!response.ok && response.status !== 405) {
+      return {
+        success: false,
+        reason: `SAML endpoint unreachable: ${response.status}`,
+        status: response.status,
+      };
+    }
+
+    return {
+      success: true,
+      reason: 'SAML endpoint accessible and certificate present',
+      endpoints: {
+        sso: provider.ssoUrl,
+        certificatePresent: true,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      reason: `Connection error: ${error.message}`,
+      error: error.message,
+    };
+  }
+}
+
+async function testSsoProviderAuthentication(provider) {
+  switch (provider.type?.toLowerCase()) {
+    case 'oidc':
+      return await testOidcProviderConnectivity(provider);
+
+    case 'saml':
+      return await testSamlProviderConnectivity(provider);
+
+    case 'ldap':
+      return {
+        success: true,
+        reason: 'LDAP configuration valid (runtime test requires credentials)',
+        note: 'Full LDAP test requires username/password',
+      };
+
+    default:
+      return { success: false, reason: `Unknown provider type: ${provider.type}` };
+  }
+}
 
 const router = express.Router();
 
@@ -32,10 +179,13 @@ router.get('/current/security', requirePermission('tenant.read'), async (req, re
   res.json({
     security: {
       requireMfa: security.requireMfa,
+      allowSignInWithoutSlug: security.allowSignInWithoutSlug,
       sessionDurationHours: security.sessionDurationHours,
       ipAllowlistEnabled: security.ipAllowlistEnabled,
       ipAllowlist: security.ipAllowlist,
       domainMappings: security.domainMappings,
+      slug: security.slug,
+      signInAddressUsesSso: security.signInAddressUsesSso,
       ssoProviders: security.ssoProviders.map(sanitizeProvider),
       updatedAt: security.updatedAt,
     },
@@ -138,6 +288,7 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
     billing,
     security: {
       requireMfa: security.requireMfa,
+      allowSignInWithoutSlug: security.allowSignInWithoutSlug,
       sessionDurationHours: security.sessionDurationHours,
       ipAllowlistEnabled: security.ipAllowlistEnabled,
       ipAllowlist: security.ipAllowlist,
@@ -152,6 +303,7 @@ router.post('/current/enterprise/environment', requirePermission('tenant.member.
 router.put('/current/security/policies', requirePermission('tenant.member.manage'), async (req, res) => {
   const {
     requireMfa,
+    allowSignInWithoutSlug,
     sessionDurationHours,
     ipAllowlistEnabled,
     ipAllowlist,
@@ -160,6 +312,7 @@ router.put('/current/security/policies', requirePermission('tenant.member.manage
   const security = await updateTenantSecurityState(req.tenant.id, (current) => ({
     ...current,
     requireMfa: typeof requireMfa === 'boolean' ? requireMfa : current.requireMfa,
+    allowSignInWithoutSlug: typeof allowSignInWithoutSlug === 'boolean' ? allowSignInWithoutSlug : current.allowSignInWithoutSlug,
     sessionDurationHours: sessionDurationHours == null
       ? current.sessionDurationHours
       : Math.min(24, Math.max(1, Number(sessionDurationHours) || current.sessionDurationHours)),
@@ -168,13 +321,13 @@ router.put('/current/security/policies', requirePermission('tenant.member.manage
       ? ipAllowlist.map((ip) => String(ip || '').trim()).filter(Boolean)
       : current.ipAllowlist,
   }));
-
   writeAuditLog({
     userId: req.user.id,
     tenantId: req.tenant.id,
     action: 'tenant.security.policies.update',
     metadata: {
       requireMfa: security.requireMfa,
+      allowSignInWithoutSlug: security.allowSignInWithoutSlug,
       sessionDurationHours: security.sessionDurationHours,
       ipAllowlistEnabled: security.ipAllowlistEnabled,
       ipAllowlistCount: security.ipAllowlist.length,
@@ -188,6 +341,65 @@ router.put('/current/security/policies', requirePermission('tenant.member.manage
       ssoProviders: security.ssoProviders.map(sanitizeProvider),
     },
   });
+});
+
+// Organization sign-in address: <slug>.<base domain>. Chosen by the tenant admin.
+const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/;
+const RESERVED_TENANT_SLUGS = new Set(['www', 'app', 'api', 'admin', 'auth', 'mail', 'static', 'cdn', 'docs', 'support', 'status', 'help']);
+
+const SIGN_IN_PROVIDER_TYPES = new Set(['oidc', 'saml']);
+
+router.put('/current/security/slug', requirePermission('tenant.member.manage'), async (req, res) => {
+  const slug = String(req.body?.slug || '').toLowerCase().trim();
+  if (!TENANT_SLUG_PATTERN.test(slug) || RESERVED_TENANT_SLUGS.has(slug)) {
+    return res.status(400).json({
+      error: 'Use 3–63 lowercase letters, numbers or hyphens. Hyphens cannot start or end the name.',
+    });
+  }
+
+  // usesSso: false = No SSO (email and password at the address). Omit to keep the current mode.
+  const usesSso = typeof req.body?.usesSso === 'boolean' ? req.body.usesSso : null;
+  // Optional: which enabled OIDC or SAML provider the sign-in address uses. Omit to keep the current choice.
+  const providerId = usesSso !== false && req.body?.providerId ? String(req.body.providerId) : null;
+  const current = await getTenantSecurityState(req.tenant.id);
+  if (providerId && !current.ssoProviders.some((item) => item.id === providerId && item.enabled !== false && SIGN_IN_PROVIDER_TYPES.has(item.type))) {
+    return res.status(400).json({ error: 'Choose an enabled OIDC or SAML provider for the sign-in address.' });
+  }
+  const nextUsesSso = usesSso ?? current.signInAddressUsesSso;
+
+  const taken = await findTenantBySlug(slug);
+  if (taken && taken.tenant.id !== req.tenant.id) {
+    return res.status(409).json({ error: 'That organization address is already taken.' });
+  }
+
+  try {
+    const security = await updateTenantSecurityState(req.tenant.id, (state) => ({
+      ...state,
+      slug,
+      signInAddressUsesSso: nextUsesSso,
+      ssoProviders: !nextUsesSso
+        ? state.ssoProviders.map((item) => ({ ...item, signInAddress: false }))
+        : providerId
+          ? state.ssoProviders.map((item) => ({ ...item, signInAddress: item.id === providerId }))
+          : state.ssoProviders,
+    }));
+    writeAuditLog({
+      userId: req.user.id,
+      tenantId: req.tenant.id,
+      action: 'tenant.security.slug.update',
+      metadata: { slug, providerId, usesSso: nextUsesSso },
+    });
+    res.json({
+      slug: security.slug,
+      signInAddressUsesSso: security.signInAddressUsesSso,
+      ssoProviders: security.ssoProviders.map(sanitizeProvider),
+    });
+  } catch (error) {
+    if (error?.code === 'P2002') {
+      return res.status(409).json({ error: 'That organization address is already taken.' });
+    }
+    throw error;
+  }
 });
 
 router.put('/current/security/domains', requirePermission('tenant.member.manage'), async (req, res) => {
@@ -286,40 +498,137 @@ router.delete('/current/security/sso/providers/:providerId', requirePermission('
   res.json({ message: 'SSO provider removed.' });
 });
 
+function validateSsoProviderConfig(provider) {
+  if (!provider) return { valid: false, reason: 'Provider not configured' };
+
+  if (!provider.enabled) return { valid: false, reason: 'Provider is disabled' };
+
+  const baseValidation = {
+    valid: Boolean(provider.issuerUrl),
+    reason: provider.issuerUrl ? null : 'Missing issuer URL',
+  };
+
+  if (!baseValidation.valid) return baseValidation;
+
+  switch (provider.type?.toLowerCase()) {
+    case 'oidc':
+      return {
+        valid: Boolean(provider.clientId && provider.clientSecret),
+        reason: !provider.clientId ? 'Missing OAuth client ID' : !provider.clientSecret ? 'Missing OAuth client secret' : null,
+        config: { issuerUrl: provider.issuerUrl, clientId: provider.clientId },
+      };
+
+    case 'saml':
+      return {
+        valid: Boolean(provider.ssoUrl && provider.certificate),
+        reason: !provider.ssoUrl ? 'Missing SAML SSO URL' : !provider.certificate ? 'Missing SAML certificate' : null,
+        config: { issuerUrl: provider.issuerUrl, ssoUrl: provider.ssoUrl, hasCertificate: true },
+      };
+
+    case 'ldap':
+      return {
+        valid: Boolean(provider.ldapServerUrl),
+        reason: provider.ldapServerUrl ? null : 'Missing LDAP server URL',
+        config: { ldapServerUrl: provider.ldapServerUrl },
+      };
+
+    default:
+      return { valid: false, reason: `Unknown provider type: ${provider.type}` };
+  }
+}
+
 router.post('/sso/simulate-login', requirePermission('tenant.read'), async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email is required.' });
 
-  const tenant = await findTenantByDomain(email);
-  if (!tenant) {
+  const result = await getSecurityByDomain(email);
+  if (!result) {
     return res.status(404).json({ error: 'No tenant domain mapping found for this email.' });
   }
 
-  const security = await getTenantSecurityState(tenant.id);
+  const { tenant, security } = result;
   const provider = security.ssoProviders.find((item) => item.enabled);
+
   if (!provider) {
     return res.status(400).json({ error: 'No active SSO provider configured for tenant.' });
+  }
+
+  const validation = validateSsoProviderConfig(provider);
+  if (!validation.valid) {
+    return res.status(400).json({
+      error: `SSO provider configuration incomplete: ${validation.reason}`,
+      provider: { id: provider.id, type: provider.type, name: provider.name },
+    });
+  }
+
+  // Test real OIDC authentication connectivity
+  const authTest = await testSsoProviderAuthentication(provider);
+  if (!authTest.success) {
+    return res.status(400).json({
+      error: `OIDC authentication test failed: ${authTest.reason}`,
+      provider: { id: provider.id, type: provider.type, name: provider.name },
+      details: authTest,
+    });
   }
 
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true, email: true, name: true },
   });
+
   const mappedMembership = user
     ? await prisma.tenantMembership.findFirst({
-      where: {
-        userId: user.id,
-        tenantId: tenant.id,
-      },
+      where: { userId: user.id, tenantId: tenant.id },
       select: { status: true },
     })
     : null;
 
+  // Every workspace this user belongs to, each with its own active SSO provider, in the same shape as the summary line.
+  const allMemberships = user
+    ? await prisma.tenantMembership.findMany({
+      where: { userId: user.id },
+      select: { status: true, tenant: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'asc' },
+    })
+    : [];
+  const memberships = await Promise.all(allMemberships.map(async (membershipRow) => {
+    const tenantSecurity = await getTenantSecurityState(membershipRow.tenant.id);
+    const activeProvider = tenantSecurity.ssoProviders.find((item) => item.enabled !== false);
+    return {
+      tenant: { id: membershipRow.tenant.id, name: membershipRow.tenant.name },
+      provider: activeProvider ? { name: activeProvider.name, type: activeProvider.type } : null,
+      membershipStatus: membershipRow.status,
+    };
+  }));
+
   res.json({
     tenant: { id: tenant.id, name: tenant.name },
     provider: sanitizeProvider(provider),
+    providerValidation: {
+      valid: true,
+      type: provider.type,
+      config: validation.config,
+      configStatus: 'valid',
+    },
+    authenticationTest: {
+      success: authTest.success,
+      status: 'ready',
+      message: authTest.reason,
+      ...(authTest.endpoints && { endpoints: authTest.endpoints }),
+      ...(authTest.scopes && { scopes: authTest.scopes }),
+    },
+    ssoFlow: {
+      type: provider.type,
+      step1: `Redirect user to authorization endpoint with client_id=${provider.clientId}&scope=openid%20profile%20email`,
+      step2: 'User authenticates with provider and consents',
+      step3: 'Provider redirects back with authorization code',
+      step4: `Exchange code at token endpoint for access_token`,
+      step5: `Use access_token to fetch user info from userinfo endpoint`,
+      step6: `Map user to DocSync account by email or create new account`,
+    },
     user: user ? { id: user.id, email: user.email, name: user.name } : null,
     membershipStatus: mappedMembership?.status || null,
+    memberships,
   });
 });
 

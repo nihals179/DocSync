@@ -3,6 +3,7 @@ const { prisma } = require('../db/client');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb, mapDbPlanToCatalogRecord } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
 const { get } = require('../app');
+const { security } = require('../openapi');
 
 const nowIso = () => runtimeNowIso();
 const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
@@ -198,8 +199,7 @@ function mapDbTenantToRecord(row) {
 		name: row.name,
 		ownerUserId: row.ownerUserId,
 		createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
-		updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-		...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
+		updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt
 	};
 }
 
@@ -328,10 +328,34 @@ function normalizeIp(value) {
 	return String(value || '').trim();
 }
 
-function ensureTenantSecurityState(tenant) {
-	if (!tenant.security) {
-		tenant.security = {
+function normalizeTenantSecurityState(policy) {
+	const normalized = {
+		requireMfa: typeof policy?.requireMfa === 'boolean' ? policy.requireMfa : false,
+		allowSignInWithoutSlug: typeof policy?.allowSignInWithoutSlug === 'boolean' ? policy.allowSignInWithoutSlug : true,
+		signInAddressUsesSso: typeof policy?.signInAddressUsesSso === 'boolean' ? policy.signInAddressUsesSso : true,
+		sessionDurationHours: Math.min(24, Math.max(1, Number(policy?.sessionDurationHours || 8))),
+		ipAllowlistEnabled: typeof policy?.ipAllowlistEnabled === 'boolean' ? policy.ipAllowlistEnabled : false,
+		ipAllowlist: (Array.isArray(policy?.ipAllowlist) ? policy.ipAllowlist : [])
+			.map(normalizeIp)
+			.filter(Boolean),
+		domainMappings: (Array.isArray(policy?.domainMappings) ? policy.domainMappings : [])
+			.map(normalizeDomain)
+			.filter(Boolean),
+		ssoProviders: Array.isArray(policy?.ssoProviders) ? policy.ssoProviders : [],
+		slug: typeof policy?.slug === 'string' && policy.slug ? policy.slug : null,
+		updatedAt: policy?.updatedAt || nowIso(),
+	};
+
+	if (!normalized.updatedAt) normalized.updatedAt = nowIso();
+	return normalized;
+}
+
+async function getTenantSecurityState(tenantId) {
+	if (!isDatabaseConfigured()) {
+		return {
 			requireMfa: false,
+			allowSignInWithoutSlug: true,
+			signInAddressUsesSso: true,
 			sessionDurationHours: 8,
 			ipAllowlistEnabled: false,
 			ipAllowlist: [],
@@ -341,52 +365,79 @@ function ensureTenantSecurityState(tenant) {
 		};
 	}
 
-	if (typeof tenant.security.requireMfa !== 'boolean') tenant.security.requireMfa = false;
-	if (typeof tenant.security.ipAllowlistEnabled !== 'boolean') tenant.security.ipAllowlistEnabled = false;
-	if (!Array.isArray(tenant.security.ipAllowlist)) tenant.security.ipAllowlist = [];
-	if (!Array.isArray(tenant.security.domainMappings)) tenant.security.domainMappings = [];
-	if (!Array.isArray(tenant.security.ssoProviders)) tenant.security.ssoProviders = [];
+	let policy = await prisma.tenantSecurityPolicy.findUnique({
+		where: { tenantId },
+	});
 
-	tenant.security.sessionDurationHours = Math.min(
-		24,
-		Math.max(1, Number(tenant.security.sessionDurationHours || 8)),
-	);
+	if (!policy) {
+		policy = await prisma.tenantSecurityPolicy.create({
+			data: {
+				tenantId,
+				requireMfa: false,
+				allowSignInWithoutSlug: true,
+				signInAddressUsesSso: true,
+				sessionDurationHours: 8,
+				ipAllowlistEnabled: false,
+				ipAllowlist: [],
+				domainMappings: [],
+				ssoProviders: null,
+			},
+		});
+	}
 
-	tenant.security.ipAllowlist = tenant.security.ipAllowlist
-		.map(normalizeIp)
-		.filter(Boolean);
-	tenant.security.domainMappings = tenant.security.domainMappings
-		.map(normalizeDomain)
-		.filter(Boolean);
-
-	if (!tenant.security.updatedAt) tenant.security.updatedAt = nowIso();
-	return tenant.security;
-}
-
-async function getTenantSecurityState(tenantId) {
-	const tenant = await resolveTenantById(tenantId);
-	if (!tenant) return null;
-	return ensureTenantSecurityState(tenant);
+	const ssoProviders = policy.ssoProviders ? (Array.isArray(policy.ssoProviders) ? policy.ssoProviders : []) : [];
+	return normalizeTenantSecurityState({
+		...policy,
+		ssoProviders,
+	});
 }
 
 async function updateTenantSecurityState(tenantId, updater) {
-	const tenant = await resolveTenantById(tenantId);
-	if (!tenant) return null;
-	const current = ensureTenantSecurityState(tenant);
+	if (!isDatabaseConfigured()) return null;
+
+	let current = await getTenantSecurityState(tenantId);
 	const next = typeof updater === 'function' ? updater({ ...current }) : current;
 	if (!next) return current;
 
-	tenant.security = {
-		...current,
-		...next,
+	const merged = {
+		requireMfa: next.requireMfa,
+		allowSignInWithoutSlug: next.allowSignInWithoutSlug,
+		signInAddressUsesSso: next.signInAddressUsesSso,
+		sessionDurationHours: next.sessionDurationHours,
+		ipAllowlistEnabled: next.ipAllowlistEnabled,
+		ipAllowlist: next.ipAllowlist,
+		domainMappings: next.domainMappings,
+		ssoProviders: next.ssoProviders && next.ssoProviders.length > 0 ? next.ssoProviders : null,
+		slug: next.slug !== undefined ? next.slug : current.slug,
 		updatedAt: nowIso(),
 	};
-	ensureTenantSecurityState(tenant);
-	await prisma.tenant.update({
-		where: { id: tenantId },
-		data: { security: tenant.security },
+
+	const updated = await prisma.tenantSecurityPolicy.upsert({
+		where: { tenantId },
+		create: {
+			tenantId,
+			...merged,
+		},
+		update: merged,
 	});
-	return tenant.security;
+
+	const ssoProviders = updated.ssoProviders ? (Array.isArray(updated.ssoProviders) ? updated.ssoProviders : []) : [];
+	return normalizeTenantSecurityState({
+		...updated,
+		ssoProviders,
+	});
+}
+
+// Resolves an organization sign-in address (<slug>.<base domain>) to its tenant and security policy.
+async function findTenantBySlug(slug) {
+	const normalized = String(slug || '').toLowerCase().trim();
+	if (!normalized || !isDatabaseConfigured()) return null;
+
+	const policy = await prisma.tenantSecurityPolicy.findUnique({ where: { slug: normalized } });
+	if (!policy) return null;
+	const tenantRow = await prisma.tenant.findUnique({ where: { id: policy.tenantId } });
+	if (!tenantRow) return null;
+	return { tenant: mapDbTenantToRecord(tenantRow), security: normalizeTenantSecurityState(policy) };
 }
 
 async function findTenantByDomain(emailOrDomain) {
@@ -396,11 +447,13 @@ async function findTenantByDomain(emailOrDomain) {
 	if (!normalized) return null;
 
 	if (!isDatabaseConfigured()) return null;
-	const rows = await prisma.tenant.findMany();
-	for (const row of rows) {
-		const tenant = mapDbTenantToRecord(row);
-		const security = ensureTenantSecurityState(tenant);
-		if (security.domainMappings.includes(normalized)) return tenant;
+	const policies = await prisma.tenantSecurityPolicy.findMany();
+	for (const policy of policies) {
+		const security = normalizeTenantSecurityState(policy);
+		if (security.domainMappings.includes(normalized)) {
+			const tenantRow = await prisma.tenant.findUnique({ where: { id: policy.tenantId } });
+			if (tenantRow) return mapDbTenantToRecord(tenantRow);
+		}
 	}
 	return null;
 }
@@ -540,20 +593,11 @@ async function getTenantUsageMetrics(tenantId) {
 	}
 
 	const monthKey = monthKeyFromDate(new Date());
+	// tenant_usage_summary_v (prisma/sql/performance_views.sql) joins seats and storage without multiplying rows.
 	const results = await prisma.$queryRaw`
-		SELECT
-			tu."tenantId",
-			tu."monthKey",
-			tu."aiRequests",
-			tu."documentUpdates",
-			tu."updatedAt",
-			COUNT(DISTINCT tm.id)::int as "assignedSeats",
-			COALESCE(SUM(OCTET_LENGTH(d.content)), 0)::bigint AS "storageUsedBytes"
-		FROM tenant_usage tu
-		LEFT JOIN tenant_memberships tm ON tu."tenantId" = tm."tenantId" AND tm.status = 'active'
-		LEFT JOIN documents d ON tu."tenantId" = d."tenantId"
-		WHERE tu."tenantId" = ${tenantId} AND tu."monthKey" = ${monthKey}
-		GROUP BY tu."tenantId", tu."monthKey", tu."aiRequests", tu."documentUpdates", tu."updatedAt"
+		SELECT "tenantId", "monthKey", "aiRequests", "documentUpdates", "updatedAt", "assignedSeats", "storageUsedBytes"
+		FROM tenant_usage_summary_v
+		WHERE "tenantId" = ${tenantId} AND "monthKey" = ${monthKey}
 	`;
 
 	if (!results || results.length === 0) {
@@ -711,8 +755,8 @@ async function canAssignResources(tenantId, additionalSeats = 1, additionalColla
 async function calculateTenantStorageBytes(tenantId) {
 	try {
 		const rows = await prisma.$queryRaw`
-			SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0)::bigint AS total
-			FROM documents
+			SELECT "storageUsedBytes" AS total
+			FROM tenant_storage_v
 			WHERE "tenantId" = ${tenantId}
 		`;
 		const total = Array.isArray(rows) && rows[0] ? rows[0].total : 0;
@@ -1036,6 +1080,7 @@ async function ensureDefaultTenantForUser(user) {
 			userId: user.id,
 			email: String(user.email || '').toLowerCase().trim(),
 			billingAdmin: true,
+			role: 'owner',
 			status: 'active',
 			createdAt: now,
 			updatedAt: now,
@@ -1049,11 +1094,9 @@ async function ensureDefaultTenantForUser(user) {
 		createdAt: now.toISOString(),
 		updatedAt: now.toISOString(),
 	};
-	ensureTenantSecurityState(tenant);
-	await prisma.tenant.update({
-		where: { id: tenantId },
-		data: { security: tenant.security },
-	});
+
+	// Create security policy for new tenant
+	await getTenantSecurityState(tenantId);
 
 	await ensureTenantBillingState(tenantId);
 
@@ -1067,15 +1110,17 @@ async function ensureDefaultTenantForUser(user) {
 }
 
 async function syncCurrentTenantFromMembership(user) {
-	if (!user) return null;
-	if (!isDatabaseConfigured()) return null;
+	if (!user) {
+		return null;
+	}
+	if (!isDatabaseConfigured()) {
+		return null;
+	}
 
 	const normalizedEmail = String(user.email || '').toLowerCase().trim();
-	if (!normalizedEmail) return null;
-	
-	if(user.tenantMemberships){
-		return null
-	}	
+	if (!normalizedEmail) {
+		return null;
+	}
 
 	const activeMemberships = await prisma.tenantMembership.findMany({
 		where: {
@@ -1084,9 +1129,11 @@ async function syncCurrentTenantFromMembership(user) {
 					OR: [
 						{ userId: user.id },
 						{ email: normalizedEmail },
+					
 					],
 				},
 				{ status: 'active' },
+				{ tenantId : user.currentTenantId },
 			],
 		},
 		orderBy: {
@@ -1118,7 +1165,6 @@ async function syncCurrentTenantFromMembership(user) {
 			ownerUserId: row.ownerUserId,
 			createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
 			updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-			...(row.security && typeof row.security === 'object' && !Array.isArray(row.security) ? { security: row.security } : {}),
 		};
 	}
 
@@ -1132,7 +1178,7 @@ async function syncCurrentTenantFromMembership(user) {
 	}
 
 	await ensureTenantBillingState(tenant.id);
-	ensureTenantSecurityState(tenant);
+	await getTenantSecurityState(tenant.id);
 	user.currentTenantId = tenant.id;
 	await prisma.user.updateMany({
 		where: { email: normalizedEmail },
@@ -1213,11 +1259,7 @@ async function ensureTenantBootstrapForUser(user) {
 		if (!tenant) return null;
 
 		await ensureTenantBillingState(tenant.id);
-		const security = ensureTenantSecurityState(tenant);
-		await prisma.tenant.updateMany({
-			where: { id: tenant.id },
-			data: { security },
-		});
+		await getTenantSecurityState(tenant.id);
 
 		user.currentTenantId = tenant.id;
 		await prisma.user.updateMany({
@@ -1257,10 +1299,11 @@ async function ensureTenantBootstrapForUser(user) {
 			},
 		});
 
-		return tenant;
+		return user;
 	}
 
-	return  ensureDefaultTenantForUser(user) ;
+	await ensureDefaultTenantForUser(user);
+	return user;
 }
 
 module.exports = {
@@ -1273,6 +1316,7 @@ module.exports = {
 	ensureUserBillingState,
 	getTenantSecurityState,
 	findTenantByDomain,
+	findTenantBySlug,
 	updateTenantSecurityState,
 	refreshBillingStatus,
 	isBillingWriteBlocked,

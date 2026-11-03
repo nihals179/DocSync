@@ -1,6 +1,7 @@
 const express = require('express');
 
 const { writeAuditLog } = require('../lib/audit');
+const { getMembershipRole } = require('../lib/membership-role');
 const {
   getAuthScope,
   resolveCookieNames,
@@ -66,7 +67,7 @@ router.post('/refresh', authRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'Refresh session invalid or expired.' });
   }
 
-  const security = resolved.currentTenant?.security;
+  const security = resolved.currentTenant?.securityPolicy;
   const resolvedTenantId = resolved.currentTenantId;
 
 
@@ -85,7 +86,7 @@ router.post('/refresh', authRateLimit, async (req, res) => {
   const rotated = await rotateSession(session, resolved,req);
   writeSessionCookies(res, rotated.refreshToken, rotated.csrfToken, rotated.session.expiresAt, authScope);
   audit(req, 'session-refresh', 'success', resolved.id, { sessionId: rotated.session.id });
-  res.json(buildAuthResponse(resolved, rotated.session));
+  res.json(await buildAuthResponse(resolved, rotated.session));
 });
 
 router.post('/logout', requireAuth, async (req, res) => {
@@ -96,10 +97,10 @@ router.post('/logout', requireAuth, async (req, res) => {
   res.json({ message: 'Logged out successfully.' });
 });
 
-router.get('/me', requireAuth, (req, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   const user = ensureUserShape(req.user);
   if (!user) return res.status(404).json({ error: 'User not found.' });
-  res.json({ user: publicUser(user), session: req.authSession, csrfToken: req.authSession.csrfToken });
+  res.json({ user: publicUser(user, await getMembershipRole(user.id, user.currentTenantId)), session: req.authSession, csrfToken: req.authSession.csrfToken });
 });
 
 router.get('/allSessions', requireAuth, async (req, res) => {

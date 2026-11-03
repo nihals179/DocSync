@@ -68,21 +68,21 @@ function generateOpaqueToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function getCookieOptions(expiresAt) {
+function getCookieOptions(expiresAt, crossSite = false) {
   return {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: crossSite ? 'none' : 'lax',
+    secure: crossSite || process.env.NODE_ENV === 'production',
     path: '/',
     expires: new Date(expiresAt),
   };
 }
 
-function getCsrfCookieOptions(expiresAt) {
+function getCsrfCookieOptions(expiresAt, crossSite = false) {
   return {
     httpOnly: false,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: crossSite ? 'none' : 'lax',
+    secure: crossSite || process.env.NODE_ENV === 'production',
     path: '/',
     expires: new Date(expiresAt),
   };
@@ -180,7 +180,9 @@ async function resolveUserFromSession(sessionId) {
           currentTenantId: true,
           currentTenant: {
             select: {
-              security: true,
+              id: true,
+              name: true,
+              securityPolicy: true,
             },
           },
           tenantMemberships: {
@@ -205,7 +207,7 @@ async function resolveUserFromSession(sessionId) {
 }
 
 async function isIpAllowed(req, user) {
-  let security = user.currentTenant?.security || null;
+  let security = user.currentTenant?.securityPolicy || null;
   if (!security?.ipAllowlistEnabled || !security.ipAllowlist?.length) return true;
   const requestIp = getRequestIp(req);
   return security.ipAllowlist.includes(requestIp);

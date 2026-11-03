@@ -177,16 +177,20 @@ export type SsoProvider = {
   clientId: string | null;
   certificate: string | null;
   enabled: boolean;
+  signInAddress?: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
 export type TenantSecurityState = {
   requireMfa: boolean;
+  allowSignInWithoutSlug: boolean;
+  signInAddressUsesSso?: boolean;
   sessionDurationHours: number;
   ipAllowlistEnabled: boolean;
   ipAllowlist: string[];
   domainMappings: string[];
+  slug?: string | null;
   ssoProviders: SsoProvider[];
   updatedAt: string;
 };
@@ -613,13 +617,14 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email }),
     }),
-  login: async (email: string, password: string, remember: boolean, authScope: 'workspace' | 'admin' = 'workspace') =>
+  login: async (email: string, password: string, remember: boolean, authScope: 'workspace' | 'admin' = 'workspace', organizationSlug?: string) =>
     withPasswordEncryptionRetry(async () => apiFetch<AuthSuccess | TwoFactorPending>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({
         email,
         passwordEncrypted: await encryptPasswordForTransport(password),
         remember,
+        ...(organizationSlug ? { organizationSlug } : {}),
       }),
       authScope,
     })).then((result) => {
@@ -1014,6 +1019,7 @@ export const tenantsApi = {
     token: string,
     payload: {
       requireMfa?: boolean;
+      allowSignInWithoutSlug?: boolean;
       sessionDurationHours?: number;
       ipAllowlistEnabled?: boolean;
       ipAllowlist?: string[];
@@ -1023,6 +1029,22 @@ export const tenantsApi = {
       method: 'PUT',
       token,
       body: JSON.stringify(payload),
+    }),
+  renameTenant: (token: string, name: string) =>
+    apiFetch<{ tenant: { id: string; name: string; updatedAt: string } }>('/api/tenants/current/name', {
+      method: 'PUT',
+      token,
+      body: JSON.stringify({ name }),
+    }),
+  updateSecuritySlug: (token: string, slug: string, providerId?: string, usesSso?: boolean) =>
+    apiFetch<{ slug: string; signInAddressUsesSso: boolean; ssoProviders: SsoProvider[] }>('/api/tenants/current/security/slug', {
+      method: 'PUT',
+      token,
+      body: JSON.stringify({
+        slug,
+        ...(providerId ? { providerId } : {}),
+        ...(usesSso === undefined ? {} : { usesSso }),
+      }),
     }),
   updateSecurityDomains: (token: string, domains: string[]) =>
     apiFetch<{ domains: string[]; updatedAt: string }>('/api/tenants/current/security/domains', {
@@ -1078,6 +1100,11 @@ export const tenantsApi = {
       provider: SsoProvider;
       user: { id: string; email: string; name: string } | null;
       membershipStatus: string | null;
+      memberships: {
+        tenant: { id: string; name: string };
+        provider: { name: string; type: string } | null;
+        membershipStatus: string;
+      }[];
     }>('/api/tenants/sso/simulate-login', {
       method: 'POST',
       token,
@@ -1164,4 +1191,12 @@ export const billingApi = {
         lastError: string | null;
       }>;
     }>('/api/billing/webhooks/jobs', { token }),
+};
+
+export const api = {
+  get: async <T = unknown>(path: string, options?: FetchOptions) => ({ data: await apiFetch<T>(path, { ...options, method: 'GET' }) }),
+  post: async <T = unknown>(path: string, data?: unknown, options?: FetchOptions) => ({ data: await apiFetch<T>(path, { ...options, method: 'POST', body: JSON.stringify(data) }) }),
+  put: async <T = unknown>(path: string, data?: unknown, options?: FetchOptions) => ({ data: await apiFetch<T>(path, { ...options, method: 'PUT', body: JSON.stringify(data) }) }),
+  patch: async <T = unknown>(path: string, data?: unknown, options?: FetchOptions) => ({ data: await apiFetch<T>(path, { ...options, method: 'PATCH', body: JSON.stringify(data) }) }),
+  delete: async <T = unknown>(path: string, options?: FetchOptions) => ({ data: await apiFetch<T>(path, { ...options, method: 'DELETE' }) }),
 };

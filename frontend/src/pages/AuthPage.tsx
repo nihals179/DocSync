@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { authApi, type AuthSuccess } from '../services/api';
 
@@ -88,6 +88,9 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [pendingTwoFactorToken, setPendingTwoFactorToken] = useState('');
   const [loginErrors, setLoginErrors] = useState<Record<string, string>>({});
+  const [ssoLoading, setSsoLoading] = useState<'google' | 'microsoft' | null>(null);
+  const [searchParams] = useSearchParams();
+  const ssoError = searchParams.get('sso_error');
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [signupName, setSignupName] = useState('');
@@ -136,6 +139,12 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
   function resetMessages() {
     setGlobalError('');
     setGlobalMessage('');
+  }
+
+  // Full-page navigation: the backend sets the SSO transaction cookie and redirects to the provider.
+  function handleSocialLogin(provider: 'google' | 'microsoft') {
+    setSsoLoading(provider);
+    window.location.href = `/api/auth/sso/login/${provider}`;
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -438,6 +447,38 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
               >
                 {loginLoading ? 'Signing in...' : 'Sign In'}
               </button>
+
+              {ssoError && <p className="text-center text-sm text-red-600">{ssoError}</p>}
+              <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-slate-400">
+                <span className="h-px flex-1 bg-slate-200" />
+                or continue with
+                <span className="h-px flex-1 bg-slate-200" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleSocialLogin('google')}
+                  disabled={ssoLoading !== null}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+                    <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.3-1.6 3.8-5.5 3.8-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.8 3.3 14.6 2.3 12 2.3 6.7 2.3 2.4 6.6 2.4 12s4.3 9.7 9.6 9.7c5.5 0 9.2-3.9 9.2-9.4 0-.6-.1-1.1-.2-1.6H12z"/>
+                  </svg>
+                  {ssoLoading === 'google' ? 'Redirecting...' : 'Google'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSocialLogin('microsoft')}
+                  disabled={ssoLoading !== null}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
+                >
+                  <svg viewBox="0 0 23 23" className="h-4 w-4" aria-hidden="true">
+                    <path fill="#F25022" d="M1 1h10v10H1z"/><path fill="#7FBA00" d="M12 1h10v10H12z"/>
+                    <path fill="#00A4EF" d="M1 12h10v10H1z"/><path fill="#FFB900" d="M12 12h10v10H12z"/>
+                  </svg>
+                  {ssoLoading === 'microsoft' ? 'Redirecting...' : 'Microsoft'}
+                </button>
+              </div>
 
               <p className="text-center text-sm text-slate-500">
                 Don't have an account?{' '}

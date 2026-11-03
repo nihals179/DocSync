@@ -17,8 +17,13 @@ import {
   type TenantSummary,
   type SsoProvider,
 } from '../services/api';
+import { organizationSignInUrl } from '../utils/tenantHost';
 
 type MemberDrafts = Record<string, { billingAdmin: boolean }>;
+
+// Checkbox rows in the Access Policies card. accent-* tints the native box to the panel's cyan.
+const policyRowClass = 'flex cursor-pointer items-center gap-3 rounded-none border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700 transition hover:border-cyan-200 hover:bg-cyan-50/50';
+const policyCheckboxClass = 'h-4 w-4 shrink-0 cursor-pointer accent-cyan-600';
 
 type AdminView = 'dashboard' | 'members' | 'invites' | 'documents' | 'workspaces' | 'versions' | 'usage' | 'licenses' | 'billing' | 'audit' | 'enterpriseSecurity' | 'fileRepository';
 
@@ -154,13 +159,17 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
   const [security, setSecurity] = useState<TenantSecurityState | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
   const [requireMfa, setRequireMfa] = useState(false);
+  const [allowSignInWithoutSlug, setAllowSignInWithoutSlug] = useState(true);
   const [sessionDurationHours, setSessionDurationHours] = useState(8);
   const [ipAllowlistEnabled, setIpAllowlistEnabled] = useState(false);
   const [ipAllowlistText, setIpAllowlistText] = useState('');
   const [domainText, setDomainText] = useState('');
+  const [slugText, setSlugText] = useState('');
+  const [signInChoice, setSignInChoice] = useState('');
+  const [tenantNameText, setTenantNameText] = useState('');
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(EMPTY_PROVIDER);
   const [simulateEmail, setSimulateEmail] = useState('');
-  const [simulateResult, setSimulateResult] = useState('');
+  const [simulateDetails, setSimulateDetails] = useState<Awaited<ReturnType<typeof tenantsApi.simulateSsoLogin>> | null>(null);
 
   const [billingLoading, setBillingLoading] = useState(false);
   const [billingError, setBillingError] = useState('');
@@ -257,6 +266,25 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
     () => tenants.find((org) => org.id === currentTenantId) ?? null,
     [currentTenantId, tenants],
   );
+
+  const isTenantOwner = Boolean(membership && activeTenant && membership.userId === activeTenant.ownerUserId);
+
+  // Providers an organization's sign-in address can use: enabled OIDC or SAML.
+  const signInOptions = (security?.ssoProviders ?? []).filter(
+    (provider) => provider.enabled && (provider.type === 'oidc' || provider.type === 'saml'),
+  );
+  // Sentinel for the "No SSO" choice in the sign-in address dropdown (email and password at the address).
+  const NO_SSO_CHOICE = '__no_sso__';
+  const savedUsesSso = security?.signInAddressUsesSso !== false;
+  const selectedSignInChoice = signInChoice && (signInChoice === NO_SSO_CHOICE || signInOptions.some((provider) => provider.id === signInChoice))
+    ? signInChoice
+    : savedUsesSso
+      ? (signInOptions.find((provider) => provider.signInAddress)?.id ?? signInOptions[0]?.id ?? '')
+      : NO_SSO_CHOICE;
+
+  useEffect(() => {
+    setTenantNameText(activeTenant?.name ?? '');
+  }, [activeTenant?.id, activeTenant?.name]);
 
   const filteredMembers = useMemo(
     () =>
@@ -454,10 +482,12 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
       const { security: next } = await tenantsApi.getSecurity(token);
       setSecurity(next);
       setRequireMfa(next.requireMfa);
+      setAllowSignInWithoutSlug(next.allowSignInWithoutSlug);
       setSessionDurationHours(next.sessionDurationHours);
       setIpAllowlistEnabled(next.ipAllowlistEnabled);
       setIpAllowlistText(next.ipAllowlist.join('\n'));
       setDomainText(next.domainMappings.join('\n'));
+      setSlugText(next.slug ?? '');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load enterprise security settings.');
     } finally {
@@ -619,6 +649,7 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
         .filter(Boolean);
       const { security: next } = await tenantsApi.updateSecurityPolicies(token, {
         requireMfa,
+        allowSignInWithoutSlug,
         sessionDurationHours,
         ipAllowlistEnabled,
         ipAllowlist: ips,
@@ -627,6 +658,38 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
       setMessage('Security policies saved.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save security policies.');
+    }
+  }
+
+  async function saveOrganizationName() {
+    setMessage('');
+    setError('');
+    try {
+      const { tenant: renamed } = await tenantsApi.renameTenant(token, tenantNameText.trim());
+      setTenants((prev) => prev.map((org) => (org.id === renamed.id ? { ...org, name: renamed.name, updatedAt: renamed.updatedAt } : org)));
+      setTenantNameText(renamed.name);
+      setMessage('Organization name saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the organization name.');
+    }
+  }
+
+  async function saveOrganizationSlug() {
+    setMessage('');
+    setError('');
+    try {
+      const usesSso = selectedSignInChoice !== NO_SSO_CHOICE;
+      const { slug, ssoProviders, signInAddressUsesSso } = await tenantsApi.updateSecuritySlug(
+        token,
+        slugText.trim().toLowerCase(),
+        usesSso ? selectedSignInChoice || undefined : undefined,
+        usesSso,
+      );
+      setSecurity((prev) => (prev ? { ...prev, slug, ssoProviders, signInAddressUsesSso } : prev));
+      setSlugText(slug);
+      setMessage('Organization sign-in address saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the sign-in address.');
     }
   }
 
@@ -686,12 +749,10 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
   async function runSecuritySimulation() {
     setMessage('');
     setError('');
-    setSimulateResult('');
+    setSimulateDetails(null);
     try {
       const result = await tenantsApi.simulateSsoLogin(token, simulateEmail.trim().toLowerCase());
-      setSimulateResult(
-        `Tenant: ${result.tenant.name} | Provider: ${result.provider.name} (${result.provider.type}) | Membership: ${result.membershipStatus || 'none'}`,
-      );
+      setSimulateDetails(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to run domain routing simulation.');
     }
@@ -775,9 +836,19 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
           </div>
         )}
         {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-none bg-red-50 px-4 py-3 text-sm text-red-700">
-            <span className="material-icons shrink-0" style={{ fontSize: '1rem' }}>error_outline</span>
-            {error}
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4" role="dialog" aria-modal="true" aria-labelledby="admin-error-title">
+            <div className="w-full max-w-sm rounded-none border border-slate-200 bg-white p-5 shadow-xl">
+              <div className="flex items-center gap-2 text-red-700">
+                <span className="material-icons" style={{ fontSize: '1.2rem' }}>error_outline</span>
+                <p id="admin-error-title" className="text-sm font-bold">Something went wrong</p>
+              </div>
+              <p className="mt-3 text-sm text-slate-700">{error}</p>
+              <div className="mt-5 flex justify-end">
+                <button type="button" onClick={() => setError('')} className="rounded-none bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
+                  OK
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -837,7 +908,7 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
             </article>
           </div>
 
-          <section className="h-full overflow-hidden rounded-none border-l border-cyan-200 bg-slate-50 lg:col-span-10">
+          <section className="min-h-[calc(100vh-73px)] rounded-none border-l border-cyan-200 bg-slate-50 lg:col-span-10">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
               <div>
                 <h2 className="text-lg font-black text-slate-900">{activeViewMeta.title}</h2>
@@ -870,6 +941,31 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                           {membership?.billingAdmin ? 'Billing Admin' : 'Standard Access'}
                         </span>
                       </div>
+
+                      {isTenantOwner && (
+                        <div className="mt-4">
+                          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Organization Name</p>
+                          <p className="mt-1 text-sm text-slate-600">Shown to members and on the organization's sign-in page. Use 2–80 characters.</p>
+                          <div className="mt-3 flex gap-2">
+                            <input
+                              type="text"
+                              value={tenantNameText}
+                              maxLength={80}
+                              onChange={(event) => setTenantNameText(event.target.value)}
+                              placeholder="Organization name"
+                              className="flex-1 rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void saveOrganizationName()}
+                              disabled={tenantNameText.trim().length < 2 || tenantNameText.trim() === activeTenant?.name}
+                              className="rounded-none border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700 disabled:opacity-60"
+                            >
+                              Save name
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </section>
 
                     <section className="grid grid-cols-2 gap-3">
@@ -1500,10 +1596,18 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                     <section className="rounded-none border border-slate-200 bg-white p-5">
                       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Access Policies</p>
                       <div className="mt-4 space-y-4">
-                        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                          <input type="checkbox" checked={requireMfa} onChange={(event) => setRequireMfa(event.target.checked)} />
-                          Require MFA for all tenant users
+                        <label className={policyRowClass}>
+                          <input type="checkbox" className={policyCheckboxClass} checked={requireMfa} onChange={(event) => setRequireMfa(event.target.checked)} />
+                          <span>Require MFA for all tenant users</span>
                         </label>
+
+                        <label className={policyRowClass}>
+                          <input type="checkbox" className={policyCheckboxClass} checked={allowSignInWithoutSlug} onChange={(event) => setAllowSignInWithoutSlug(event.target.checked)} />
+                          <span>Allow sign-in without the organization address</span>
+                        </label>
+                        {!allowSignInWithoutSlug && (
+                          <p className="text-xs text-slate-500">Members must sign in at the organization's address. Password sign-in on the main site is refused.</p>
+                        )}
 
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">Session duration (hours)</p>
@@ -1517,9 +1621,9 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                           />
                         </div>
 
-                        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                          <input type="checkbox" checked={ipAllowlistEnabled} onChange={(event) => setIpAllowlistEnabled(event.target.checked)} />
-                          Enable IP allowlist
+                        <label className={policyRowClass}>
+                          <input type="checkbox" className={policyCheckboxClass} checked={ipAllowlistEnabled} onChange={(event) => setIpAllowlistEnabled(event.target.checked)} />
+                          <span>Enable IP allowlist</span>
                         </label>
 
                         <div>
@@ -1539,8 +1643,44 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                     </section>
 
                     <section className="rounded-none border border-slate-200 bg-white p-5">
+                      <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Organization Sign-in Address</p>
+                      <p className="mt-2 text-sm text-slate-600">Members sign in at this address with the SSO provider you choose, or with email and password under No SSO. Use 3–63 letters, numbers or hyphens.</p>
+                      {signInOptions.length === 0 ? (
+                        <p className="mt-2 text-xs text-slate-500">Add an enabled OIDC or SAML provider under SSO Providers, or choose No SSO.</p>
+                      ) : null}
+                      <div className="mt-3 flex gap-2">
+                        <input
+                          type="text"
+                          value={slugText}
+                          onChange={(event) => setSlugText(event.target.value)}
+                          placeholder="acme"
+                          className="flex-1 rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                        />
+                        <select
+                          value={selectedSignInChoice}
+                          onChange={(event) => setSignInChoice(event.target.value)}
+                          aria-label="Sign-in method for this address"
+                          className="rounded-none border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                        >
+                          {signInOptions.map((provider) => (
+                            <option key={provider.id} value={provider.id}>{provider.name} ({provider.type.toUpperCase()})</option>
+                          ))}
+                          <option value={NO_SSO_CHOICE}>No SSO (email and password)</option>
+                        </select>
+                        <button type="button" onClick={() => void saveOrganizationSlug()} disabled={!slugText.trim() || !selectedSignInChoice} className="rounded-none border border-cyan-200 px-4 py-2 text-sm font-bold text-cyan-700 disabled:opacity-60">
+                          Save address
+                        </button>
+                      </div>
+                      {security?.slug && (
+                        <p className="mt-3 text-sm text-slate-600">
+                          Sign-in address: <span className="font-mono">{organizationSignInUrl(security.slug)}</span>
+                        </p>
+                      )}
+                    </section>
+
+                    <section className="rounded-none border border-slate-200 bg-white p-5">
                       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Domain Mapping</p>
-                      <p className="mt-2 text-sm text-slate-600">Users registering with mapped domains can be attached to this tenant.</p>
+                      <p className="mt-2 text-sm text-slate-600">Only members with these email domains can sign in at the organization's address. A domain does not add users; invite them instead.</p>
                       <textarea
                         rows={4}
                         value={domainText}
@@ -1555,24 +1695,73 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                     <section className="rounded-none border border-slate-200 bg-white p-5">
                       <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">SSO Providers</p>
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
-                        <input placeholder="Provider name" value={providerDraft.name} onChange={(event) => setProviderDraft((prev) => ({ ...prev, name: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
                         <select value={providerDraft.type} onChange={(event) => setProviderDraft((prev) => ({ ...prev, type: event.target.value as 'oidc' | 'saml' | 'ldap' }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500">
                           <option value="oidc">OIDC</option>
                           <option value="saml">SAML</option>
                           <option value="ldap">LDAP</option>
                         </select>
-                        <input placeholder="Issuer URL (OIDC)" value={providerDraft.issuerUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, issuerUrl: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
-                        <input placeholder="SSO URL (SAML)" value={providerDraft.ssoUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, ssoUrl: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
-                        <input placeholder="Client ID" value={providerDraft.clientId} onChange={(event) => setProviderDraft((prev) => ({ ...prev, clientId: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
-                        <input placeholder="Client Secret" value={providerDraft.clientSecret} onChange={(event) => setProviderDraft((prev) => ({ ...prev, clientSecret: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+                        <input placeholder={providerDraft.type === 'ldap' ? 'LDAP Server URL' : providerDraft.type === 'saml' ? 'EntraID (Entity ID)' : 'Issuer URL'} value={providerDraft.issuerUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, issuerUrl: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+                        {(providerDraft.type === 'saml' || providerDraft.type === 'ldap') && (
+                          <input placeholder={providerDraft.type === 'saml' ? 'Sign-On URL' : 'SSO URL'} value={providerDraft.ssoUrl} onChange={(event) => setProviderDraft((prev) => ({ ...prev, ssoUrl: event.target.value }))} className={`rounded-none border px-3 py-2 text-sm outline-none focus:border-cyan-500 ${providerDraft.type === 'saml' ? 'border-slate-200' : 'border-slate-100 bg-slate-50 text-slate-400'}`} disabled={providerDraft.type === 'ldap'} />
+                        )}
+                        {providerDraft.type === 'oidc' && (
+                          <>
+                            <input placeholder="Application ID (e.g., 46dfceb2-eff0-4541-bc2b-8305e7d5b676)" value={providerDraft.clientId} onChange={(event) => setProviderDraft((prev) => ({ ...prev, clientId: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+                            <input placeholder="Client Value (SECRET VALUE, not Secret ID)" value={providerDraft.clientSecret} onChange={(event) => setProviderDraft((prev) => ({ ...prev, clientSecret: event.target.value }))} className="rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500" />
+                          </>
+                        )}
+                        {providerDraft.type === 'saml' && (
+                          <div className="inline-flex items-center gap-1.5 text-xs text-slate-500 md:col-span-2">
+                            <span className="material-icons" style={{ fontSize: '0.9rem' }}>info</span>
+                            SAML uses certificate instead of Client ID/Secret
+                          </div>
+                        )}
+                        {providerDraft.type === 'ldap' && (
+                          <div className="inline-flex items-center gap-1.5 text-xs text-slate-500 md:col-span-2">
+                            <span className="material-icons" style={{ fontSize: '0.9rem' }}>info</span>
+                            LDAP connects directly to your directory server
+                          </div>
+                        )}
                       </div>
-                      <textarea
-                        rows={3}
-                        placeholder="SAML certificate (optional)"
-                        value={providerDraft.certificate}
-                        onChange={(event) => setProviderDraft((prev) => ({ ...prev, certificate: event.target.value }))}
-                        className="mt-3 w-full rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
-                      />
+                      {providerDraft.type === 'saml' && (
+                        <div className="mt-3 space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">SAML Certificate (required for SAML)</p>
+                          <div className="flex gap-2">
+                            <label className="flex-1 rounded-none border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 cursor-pointer hover:bg-slate-100">
+                              <span className="inline-flex items-center gap-1.5"><span className="material-icons" style={{ fontSize: '1rem' }}>upload_file</span>Upload .pem or .crt file</span>
+                              <input
+                                type="file"
+                                accept=".pem,.crt,.cer,.txt"
+                                className="hidden"
+                                onChange={async (event) => {
+                                  const file = event.target.files?.[0];
+                                  if (file) {
+                                    const text = await file.text();
+                                    setProviderDraft((prev) => ({ ...prev, certificate: text }));
+                                  }
+                                }}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setProviderDraft((prev) => ({ ...prev, certificate: '' }))}
+                              className="rounded-none border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 hover:bg-slate-100"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          <textarea
+                            rows={3}
+                            placeholder="Or paste certificate text here (BEGIN CERTIFICATE to END CERTIFICATE)"
+                            value={providerDraft.certificate}
+                            onChange={(event) => setProviderDraft((prev) => ({ ...prev, certificate: event.target.value }))}
+                            className="w-full rounded-none border border-slate-200 px-3 py-2 text-sm outline-none focus:border-cyan-500"
+                          />
+                          {providerDraft.certificate && (
+                            <p className="inline-flex items-center gap-1.5 text-xs text-green-600"><span className="material-icons" style={{ fontSize: '0.9rem' }}>check_circle</span>Certificate loaded ({providerDraft.certificate.length} characters)</p>
+                          )}
+                        </div>
+                      )}
                       <button type="button" onClick={() => void addSecurityProvider()} className="mt-3 rounded-none bg-cyan-600 px-4 py-2 text-sm font-bold text-white">
                         Add provider
                       </button>
@@ -1615,7 +1804,17 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                           Simulate login mapping
                         </button>
                       </div>
-                      {simulateResult ? <p className="mt-3 text-sm text-slate-700">{simulateResult}</p> : null}
+                      {simulateDetails ? (
+                        <div className="mt-3 max-h-96 space-y-1 overflow-auto rounded-none border border-slate-200 bg-slate-50 p-3">
+                          {simulateDetails.memberships.length === 0 ? (
+                            <p className="text-sm text-slate-500">No memberships for this email.</p>
+                          ) : simulateDetails.memberships.map((row) => (
+                            <p key={row.tenant.id} className="text-sm text-slate-700">
+                              {`Tenant: ${row.tenant.name} | Provider: ${row.provider ? `${row.provider.name} (${row.provider.type})` : 'none'} | Membership: ${row.membershipStatus}`}
+                            </p>
+                          ))}
+                        </div>
+                      ) : null}
                     </section>
                   </div>
                 )}

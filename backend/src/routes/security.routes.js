@@ -7,6 +7,7 @@ const { generateTOTP: _generateTOTP } = require('@otplib/uri');
 const QRCode = require('qrcode');
 
 const { prisma } = require('../db/client');
+const { getMembershipRole } = require('../lib/membership-role');
 const { writeAuditLog, listAuditLogs } = require('../lib/audit');
 const { getPasswordEncryptionPublicKey } = require('../lib/password-crypto');
 const {
@@ -107,7 +108,7 @@ router.post('/login/2fa', loginRateLimit, async (req, res) => {
   const { refreshToken, csrfToken, session } = await createSession(user, req, Boolean(pending.remember));
   writeSessionCookies(res, refreshToken, csrfToken, session.expiresAt, authScope);
   audit(req, 'login-2fa', 'success', user.id, { sessionId: session.id });
-  res.json(buildAuthResponse(user, session));
+  res.json(await buildAuthResponse(user, session));
 });
 
 router.get('/public-key', authRateLimit, (req, res) => {
@@ -120,18 +121,18 @@ router.get('/audit-logs', requireAuth, async (req, res) => {
 });
 
 router.get('/security', requireAuth, async (req, res) => {
-  const user = ensureUserShape(await getUserById(req.user.id));
+   const user = ensureUserShape(req.user);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const activeSessions = await countActiveSessionsForUser(user.id);
   res.json({
-    user: publicUser(user),
+    user: publicUser(user, await getMembershipRole(user.id, user.currentTenantId)),
     activeSessions,
   });
 });
 
 router.post('/2fa/setup', requireAuth, async (req, res) => {
   const authConfig = await getAuthConfig();
-  const user = ensureUserShape(await getUserById(req.user.id));
+  const user = ensureUserShape(req.user);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   const secret = authenticator.generateSecret();
@@ -149,7 +150,7 @@ router.post('/2fa/enable', requireAuth, async (req, res) => {
   const code = String(req.body?.code || '');
   if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
 
-  const user = ensureUserShape(await getUserById(req.user.id));
+   const user = ensureUserShape(req.user);
   if (!user || !user.twoFactorTempSecret) {
     return res.status(400).json({ error: 'Two-factor setup has not been started.' });
   }
@@ -169,14 +170,14 @@ router.post('/2fa/enable', requireAuth, async (req, res) => {
     },
   });
   audit(req, '2fa-enable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication enabled.', user: publicUser(ensureUserShape(updatedUser)) });
+  res.json({ message: 'Two-factor authentication enabled.', user: publicUser(ensureUserShape(updatedUser), await getMembershipRole(updatedUser.id, updatedUser.currentTenantId)) });
 });
 
 router.post('/2fa/disable', requireAuth, async (req, res) => {
   const code = String(req.body?.code || '');
   if (!code) return res.status(400).json({ error: 'Authentication code is required.' });
 
-  const user = ensureUserShape(await getUserById(req.user.id));
+   const user = ensureUserShape(req.user);
   if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
     return res.status(400).json({ error: 'Two-factor authentication is not enabled.' });
   }
@@ -196,7 +197,7 @@ router.post('/2fa/disable', requireAuth, async (req, res) => {
     },
   });
   audit(req, '2fa-disable', 'success', user.id);
-  res.json({ message: 'Two-factor authentication disabled.', user: publicUser(ensureUserShape(updatedUser)) });
+  res.json({ message: 'Two-factor authentication disabled.', user: publicUser(ensureUserShape(updatedUser), await getMembershipRole(updatedUser.id, updatedUser.currentTenantId)) });
 });
 
 module.exports = router;

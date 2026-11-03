@@ -8,99 +8,100 @@ datasource db {
 }
 
 model PlanCatalog {
-  id                String   @id
-  name              String
-  priceMonthlyCents Int
-  displayPrice      String
-  featureBasicEditor             Boolean  @default(false)
-  featureAiAssistant             Boolean  @default(false)
-  featureGrammarChecker          Boolean  @default(false)
-  featurePrioritySupport         Boolean  @default(false)
-  featureCommunitySupport        Boolean  @default(false)
-  featureSsoSaml                 Boolean  @default(false)
-  featureCustomRolesRbac         Boolean  @default(false)
-  featureAuditLogs               Boolean  @default(false)
-  featureSlaDedicatedSupport     Boolean  @default(false)
-  featureOnPremiseOption         Boolean  @default(false)
-  featureSelfHostedDeployment    Boolean  @default(false)
-  featurePrivateNetworkOnly      Boolean  @default(false)
-  featureCustomComplianceControls Boolean @default(false)
-  featureDedicatedSuccessTeam    Boolean  @default(false)
-  limitSeats                     Int     @default(0)
-  limitStorageBytes              BigInt  @default(0)
-  limitAiRequestsPerMonth        Int     @default(0)
-  limitCollaborators             Int     @default(0)
-  limitDocuments                 Int?
-  limitDocumentUpdatesPerMonth   Int?
-  limitVersionHistoryDays        Int?
-  limitGrammarAccessDays         Int?
-  limitAiAccessDays              Int?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  tenantBillings    tenantBilling[]
+  id                              String          @id
+  name                            String
+  priceMonthlyCents               Int
+  displayPrice                    String
+  featureBasicEditor              Boolean         @default(false)
+  featureAiAssistant              Boolean         @default(false)
+  featureGrammarChecker           Boolean         @default(false)
+  featurePrioritySupport          Boolean         @default(false)
+  featureCommunitySupport         Boolean         @default(false)
+  featureSsoSaml                  Boolean         @default(false)
+  featureCustomRolesRbac          Boolean         @default(false)
+  featureAuditLogs                Boolean         @default(false)
+  featureSlaDedicatedSupport      Boolean         @default(false)
+  featureOnPremiseOption          Boolean         @default(false)
+  featureSelfHostedDeployment     Boolean         @default(false)
+  featurePrivateNetworkOnly       Boolean         @default(false)
+  featureCustomComplianceControls Boolean         @default(false)
+  featureDedicatedSuccessTeam     Boolean         @default(false)
+  limitSeats                      Int             @default(0)
+  limitStorageBytes               BigInt          @default(0)
+  limitAiRequestsPerMonth         Int             @default(0)
+  limitCollaborators              Int             @default(0)
+  limitDocuments                  Int?
+  limitDocumentUpdatesPerMonth    Int?
+  limitVersionHistoryDays         Int?
+  limitGrammarAccessDays          Int?
+  limitAiAccessDays               Int?
+  createdAt                       DateTime        @default(now())
+  updatedAt                       DateTime        @updatedAt
+  tenantBillings                  tenantBilling[]
 
   @@map("plan_catalog")
 }
 
 model User {
-  id                    String   @id
-  name                  String
-  email                 String   @unique
-  passwordHash          String
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  accountType           String   @default("individual")
-  isSubscribed          Boolean  @default(false)
-  emailVerified         Boolean  @default(false)
-  failedLoginAttempts   Int      @default(0)
-  lockoutUntil          DateTime?
-  lastLoginAt           DateTime?
-  role                  String   @default("user")
-  twoFactorEnabled      Boolean  @default(false)
-  twoFactorSecret       String?
-  twoFactorTempSecret   String?
-  currentTenantId       String?
-  currentTenant         Tenant?            @relation("UserCurrentTenant", fields: [currentTenantId], references: [id])
-  tenantMemberships    tenantMembership[] @relation("UserMemberships")
-  userBilling           UserBilling?
-  userUsage             UserUsage[]
-  authSessions          AuthSession[]
-  invitesSent           tenantsInvite[]    @relation("InvitedByUser")
-  invitesAccepted       tenantsInvite[]    @relation("AcceptedByUser")
+  id                  String             @id
+  name                String
+  email               String             @unique
+  passwordHash        String
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  accountType         String             @default("individual")
+  isSubscribed        Boolean            @default(false)
+  emailVerified       Boolean            @default(false)
+  failedLoginAttempts Int                @default(0)
+  lockoutUntil        DateTime?
+  lastLoginAt         DateTime?
+  role                String             @default("user")
+  twoFactorEnabled    Boolean            @default(false)
+  twoFactorSecret     String?
+  twoFactorTempSecret String?
+  currentTenantId     String?
+  currentTenant       Tenant?            @relation("UserCurrentTenant", fields: [currentTenantId], references: [id])
+  tenantMemberships   tenantMembership[] @relation("UserMemberships")
+  userBilling         UserBilling?
+  userUsage           UserUsage[]
+  authSessions        AuthSession[]
+  invitesSent         tenantsInvite[]    @relation("InvitedByUser")
+  invitesAccepted     tenantsInvite[]    @relation("AcceptedByUser")
+  auditLogs           AuditLog[]         @relation("AuditLogs")
 
   @@map("users")
 }
 
 model Tenant {
-  id          String   @id
-  name        String
-  ownerUserId String
-  ownerEmail  String?
-  security    Json?
-  memberships tenantMembership[]
-  currentUsers User[] @relation("UserCurrentTenant")
-  billing      tenantBilling?
-  usage        TenantsUsage[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String                @id
+  name           String
+  ownerUserId    String
+  ownerEmail     String?
+  memberships    tenantMembership[]
+  currentUsers   User[]                @relation("UserCurrentTenant")
+  billing        tenantBilling?
+  usage          TenantsUsage[]
+  securityPolicy TenantSecurityPolicy?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
 
   @@map("tenants")
 }
 
 model tenantBilling {
-  tenantId          String   @id
-  planId            String
-  status            String
-  purchasedSeats    Int
-  trialEndsAt       DateTime?
-  trialUsed         Boolean  @default(false)
-  subscriptionId    String?
-  customerId        String?
+  tenantId           String      @id
+  planId             String
+  status             String
+  purchasedSeats     Int
+  trialEndsAt        DateTime?
+  trialUsed          Boolean     @default(false)
+  subscriptionId     String?
+  customerId         String?
   currentPeriodEndAt DateTime?
-  graceEndsAt       DateTime?
-  updatedAt         DateTime @updatedAt
-  tenant            Tenant   @relation(fields: [tenantId], references: [id])
-  planCatalog       PlanCatalog @relation(fields: [planId], references: [id])
+  graceEndsAt        DateTime?
+  updatedAt          DateTime    @updatedAt
+  tenant             Tenant      @relation(fields: [tenantId], references: [id])
+  planCatalog        PlanCatalog @relation(fields: [planId], references: [id])
 
   @@index([planId])
   @@map("tenant_billing")
@@ -112,6 +113,8 @@ model tenantMembership {
   userId       String?
   email        String?
   billingAdmin Boolean  @default(false)
+  // Role within this workspace: owner | admin | user
+  role         String   @default("user")
   status       String
   tenant       Tenant   @relation(fields: [tenantId], references: [id])
   user         User?    @relation("UserMemberships", fields: [userId], references: [id])
@@ -121,25 +124,26 @@ model tenantMembership {
   @@unique([tenantId, userId])
   @@unique([tenantId, email])
   @@index([email])
+  @@index([userId])
   @@map("tenant_memberships")
 }
 
 model Profile {
-  id                             String   @id
-  role                           String   @unique
-  canAccessAdminBoard            Boolean  @default(false)
-  canReviewSecurityAudit         Boolean  @default(false)
-  canManageGlobalSettings        Boolean  @default(false)
-  canManageMembers               Boolean  @default(false)
-  canManageMemberBillingAdmin    Boolean  @default(false)
-  canManageTenantBilling         Boolean  @default(false)
-  canManageWorkspacesDocuments   Boolean  @default(false)
-  canReadTenantResources         Boolean  @default(false)
-  canUseAiGrammarByPlan          Boolean  @default(false)
-  canManageBillingSettings       Boolean  @default(false)
-  canViewInvoicesSubscription    Boolean  @default(false)
-  createdAt                      DateTime @default(now())
-  updatedAt                      DateTime @updatedAt
+  id                           String   @id
+  role                         String   @unique
+  canAccessAdminBoard          Boolean  @default(false)
+  canReviewSecurityAudit       Boolean  @default(false)
+  canManageGlobalSettings      Boolean  @default(false)
+  canManageMembers             Boolean  @default(false)
+  canManageMemberBillingAdmin  Boolean  @default(false)
+  canManageTenantBilling       Boolean  @default(false)
+  canManageWorkspacesDocuments Boolean  @default(false)
+  canReadTenantResources       Boolean  @default(false)
+  canUseAiGrammarByPlan        Boolean  @default(false)
+  canManageBillingSettings     Boolean  @default(false)
+  canViewInvoicesSubscription  Boolean  @default(false)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   @@map("profiles")
 }
@@ -157,18 +161,18 @@ model Template {
 }
 
 model tenantsInvite {
-  id              String   @id
-  token           String   @unique
+  id              String    @id
+  token           String    @unique
   tenantId        String
   email           String
-  billingAdmin    Boolean  @default(false)
+  billingAdmin    Boolean   @default(false)
   status          String
   invitedByUserId String?
-  invitedByUser   User?    @relation("InvitedByUser", fields: [invitedByUserId], references: [id], onDelete: SetNull)
-  acceptedByUser  User?    @relation("AcceptedByUser", fields: [email], references: [email], onDelete: Cascade)
+  invitedByUser   User?     @relation("InvitedByUser", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  acceptedByUser  User?     @relation("AcceptedByUser", fields: [email], references: [email], onDelete: Cascade)
   inviteLink      String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   expiresAt       DateTime
   acceptedAt      DateTime?
 
@@ -176,54 +180,55 @@ model tenantsInvite {
 }
 
 model AuthSession {
-  id               String   @id
+  id               String    @id
   userId           String
   refreshTokenHash String
   csrfToken        String
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
   lastUsedAt       DateTime
   expiresAt        DateTime
   revokedAt        DateTime?
-  remember         Boolean  @default(false)
+  remember         Boolean   @default(false)
   userAgent        String
   ipAddress        String
-  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenantId         String?
 
+  @@index([userId])
   @@map("auth_sessions")
 }
 
 model Invoice {
-  id             String   @id
-  tenantId       String?
-  provider       String
-  invoiceNumber  String?
-  amountCents    Int
-  currency       String
-  status         String
-  issuedAt       DateTime
-  dueAt          DateTime?
-  paidAt         DateTime?
-  metadata       Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String    @id
+  tenantId      String?
+  provider      String
+  invoiceNumber String?
+  amountCents   Int
+  currency      String
+  status        String
+  issuedAt      DateTime
+  dueAt         DateTime?
+  paidAt        DateTime?
+  metadata      Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@map("invoices")
 }
 
 model UserBilling {
-  userId             String   @id
-  email              String?  @unique
+  userId             String    @id
+  email              String?   @unique
   planId             String
   status             String
   trialEndsAt        DateTime?
-  trialUsed          Boolean  @default(false)
+  trialUsed          Boolean   @default(false)
   subscriptionId     String?
   customerId         String?
   currentPeriodEndAt DateTime?
   graceEndsAt        DateTime?
-  updatedAt          DateTime @updatedAt
-  user               User     @relation(fields: [userId], references: [id])
+  updatedAt          DateTime  @updatedAt
+  user               User      @relation(fields: [userId], references: [id])
 
   @@map("user_billing")
 }
@@ -241,7 +246,6 @@ model TenantsUsage {
   @@map("tenant_usage")
 }
 
-
 model UserUsage {
   userId          String
   monthKey        String
@@ -249,7 +253,7 @@ model UserUsage {
   documentUpdates Int      @default(0)
   updatedAt       DateTime @updatedAt
   user            User     @relation(fields: [userId], references: [id])
-  tenantId        String? 
+  tenantId        String?
 
   @@id([userId, monthKey])
   @@map("user_usage")
@@ -303,32 +307,36 @@ model AppConfig {
 }
 
 model AuditLog {
-  id             String   @id
-  userId         String?
-  tenantId        String?
-  action         String
-  status         String
-  ipAddress      String?
-  userAgent      String?
-  metadata       Json?
-  createdAt      DateTime @default(now())
+  id        String   @id
+  userId    String?
+  tenantId  String?
+  action    String
+  status    String   @default("success")
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation("AuditLogs", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([tenantId])
+  @@index([action])
+  @@index([createdAt])
   @@map("audit_logs")
 }
 
 model Document {
-  id             String   @id
-  userId         String
-  tenantId       String?
-  workspaceId    String?
+  id          String   @id
+  userId      String
+  tenantId    String?
+  workspaceId String?
   parentId       String?
   sortOrder      Int      @default(0)
-  title          String
-  content        String
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  title       String
+  content     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Deleting a parent goes through the API, which removes the whole subtree with its
   // comments and unpublished versions; the database refuses deletes that would orphan children.
@@ -374,15 +382,15 @@ model Version {
 }
 
 model Todo {
-  id             String   @id
-  workspaceId    String?
-  tenantId       String?
-  userId         String
-  title          String
-  completed      Boolean  @default(false)
-  dueAt          DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id          String    @id
+  workspaceId String?
+  tenantId    String?
+  userId      String
+  title       String
+  completed   Boolean   @default(false)
+  dueAt       DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([workspaceId])
   @@index([tenantId])
@@ -390,15 +398,43 @@ model Todo {
 }
 
 model Workspace {
-  id             String   @id
-  name           String
-  ownerId        String
-  memberIds      Json?
-  tenantId        String
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id        String   @id
+  name      String
+  ownerId   String
+  memberIds Json?
+  tenantId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([ownerId])
   @@index([tenantId])
   @@map("workspaces")
+}
+
+model TenantSecurityPolicy {
+  id       String  @id @default(cuid())
+  tenantId String  @unique
+  // Organization sign-in address: <slug>.<base domain>. Unique across tenants.
+  slug     String? @unique
+
+  // Access Control
+  requireMfa             Boolean  @default(false)
+  // When false, members must sign in at the organization's address; password login on the main site is refused.
+  allowSignInWithoutSlug Boolean  @default(true)
+  // When false, the organization sign-in address uses email and password instead of an SSO provider.
+  signInAddressUsesSso   Boolean  @default(true)
+  sessionDurationHours   Int      @default(8)
+  ipAllowlistEnabled     Boolean  @default(false)
+  ipAllowlist            String[] @default([])
+
+  domainMappings String[] @default([])
+
+  ssoProviders Json? // Array of { id, name, type, issuerUrl, clientId, clientSecret, ssoUrl, certificate, ldapServerUrl, ldapBaseDn, enabled, createdAt, updatedAt }
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_security_policies")
 }

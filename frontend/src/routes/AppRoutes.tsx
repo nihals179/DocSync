@@ -2,9 +2,14 @@ import { lazy, useCallback } from 'react';
 import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../features/auth/hooks/useAuth';
+import { getOrgSlugFromHost } from '../utils/tenantHost';
 import { docsApi } from '../services/api';
 
 const AuthPage = lazy(() => import('../pages/AuthPage'));
+const OrgLoginPage = lazy(() => import('../pages/OrgLoginPage'));
+const SsoCallbackPage = lazy(() => import('../pages/SsoCallbackPage'));
+const SamlCallbackPage = lazy(() => import('../pages/SamlCallbackPage'));
+const SamlAuthorizePage = lazy(() => import('../pages/SamlAuthorizePage'));
 const LandingPage = lazy(() => import('../pages/LandingPage'));
 const AdminLoginPage = lazy(() => import('../pages/AdminLoginPage'));
 const TenantAdminPage = lazy(() => import('../pages/TenantAdminPage'));
@@ -71,6 +76,9 @@ export function AppRoutes() {
     navigate('/settings');
   }, [navigate]);
 
+  // On an organization's address (acme.docsync.com) the root and sign-in pages are that workspace's login.
+  const orgSlug = getOrgSlugFromHost();
+
   return (
     <Routes>
       <Route
@@ -78,6 +86,8 @@ export function AppRoutes() {
         element={
           session ? (
             <Navigate to="/workspace" replace />
+          ) : orgSlug ? (
+            <Navigate to="/auth" replace />
           ) : (
             <LandingPage
               onGetStarted={() => navigate('/auth')}
@@ -102,7 +112,21 @@ export function AppRoutes() {
       />
       <Route
         path="/auth"
-        element={session ? <Navigate to="/workspace" replace /> : <AuthPage onAuthSuccess={handleAuthSuccess} />}
+        element={
+          session ? <Navigate to="/workspace" replace /> : orgSlug ? <OrgLoginPage slug={orgSlug} onAuthSuccess={handleAuthSuccess} /> : <AuthPage onAuthSuccess={handleAuthSuccess} />
+        }
+      />
+      <Route
+        path="/auth/callback"
+        element={<SsoCallbackPage />}
+      />
+      <Route
+        path="/auth/saml/authorize"
+        element={<SamlAuthorizePage />}
+      />
+      <Route
+        path="/auth/saml/success"
+        element={<SamlCallbackPage />}
       />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />

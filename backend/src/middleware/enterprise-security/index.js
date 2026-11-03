@@ -8,6 +8,7 @@ function sanitizeProvider(provider) {
     clientId: provider.clientId || null,
     certificate: provider.certificate || null,
     enabled: provider.enabled !== false,
+    signInAddress: provider.signInAddress === true,
     createdAt: provider.createdAt,
     updatedAt: provider.updatedAt,
   };

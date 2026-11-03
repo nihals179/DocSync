@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../../db/client');
+const { getMembershipRole } = require('../../lib/membership-role');
 const { nowIso, isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../lib/runtime-utils');
 const {
   getTenantSecurityState,
@@ -174,7 +175,7 @@ function createAuthRouteHelpers({
   };
 }
 
-function publicUser(user) {
+function publicUser(user, tenantRole) {
   const current = ensureUserShape(user);
   return {
     id: current.id,
@@ -183,7 +184,7 @@ function publicUser(user) {
     accountType: current.accountType,
     emailVerified: current.emailVerified,
     twoFactorEnabled: current.twoFactorEnabled,
-    role: current.role || 'user',
+    role: tenantRole || 'user',
     currentTenantId: current.currentTenantId || null,
   };
 }
@@ -405,7 +406,9 @@ async function findSessionByRefreshToken(refreshToken) {
           currentTenantId: true,
           currentTenant: {
             select: {
-              security: true,
+              id: true,
+              name: true,
+              securityPolicy: true,
             },
           },
         },
@@ -459,18 +462,18 @@ async function countActiveSessionsForUser(userId) {
   });
 }
 
-function writeSessionCookies(res, refreshToken, csrfToken, expiresAt, scope = 'workspace') {
+function writeSessionCookies(res, refreshToken, csrfToken, expiresAt, scope = 'workspace', crossSite = false) {
   const cookieNames = resolveCookieNames(scope);
-  res.cookie(cookieNames.refreshCookie, refreshToken, getCookieOptions(expiresAt));
-  res.cookie(cookieNames.csrfCookie, csrfToken, getCsrfCookieOptions(expiresAt));
+  res.cookie(cookieNames.refreshCookie, refreshToken, getCookieOptions(expiresAt, crossSite));
+  res.cookie(cookieNames.csrfCookie, csrfToken, getCsrfCookieOptions(expiresAt, crossSite));
 }
 
-function buildAuthResponse(user, session) {
+async function buildAuthResponse(user, session) {
   const { token, expiresAt } = signAccessToken(user, session.id);
   return {
     accessToken: token,
     accessTokenExpiresAt: expiresAt,
-    user: publicUser(user),
+    user: publicUser(user, await getMembershipRole(user.id, user.currentTenantId)),
     csrfToken: session.csrfToken,
     session: {
       id: session.id,

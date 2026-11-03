@@ -28,22 +28,33 @@ const app = express();
 
 const allowedOrigins = new Set([
 	'http://localhost:5173',
+	'https://localhost:5173',
 	'http://localhost:5174',
 	'http://127.0.0.1:5173',
 	'http://127.0.0.1:5174',
 	'http://localhost:4173',
 	'http://127.0.0.1:4173',
 	'http://localhost:4000',
+	'https://login.microsoftonline.com'
 ]);
 
 if (process.env.FRONTEND_URL) {
 	allowedOrigins.add(process.env.FRONTEND_URL);
 }
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const tenantOriginPatterns = [/^https?:\/\/[a-z0-9-]{3,63}\.localhost:5173$/];
+if (process.env.TENANT_URL_TEMPLATE) {
+	const slugPattern = '[a-z0-9][a-z0-9-]{1,61}[a-z0-9]';
+	const source = escapeRegExp(process.env.TENANT_URL_TEMPLATE).replace('\\{slug\\}', slugPattern);
+	tenantOriginPatterns.push(new RegExp(`^${source}$`));
+}
+
 app.use(cors({
 	origin(origin, cb) {
-		if (!origin) return cb(null, true);
+		if (!origin || origin === 'null' || origin === '') return cb(null, true);
 		if (allowedOrigins.has(origin)) return cb(null, true);
+		if (tenantOriginPatterns.some((pattern) => pattern.test(origin))) return cb(null, true);
 		return cb(new Error(`CORS blocked for origin: ${origin}`));
 	},
 	credentials: true,

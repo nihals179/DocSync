@@ -77,9 +77,9 @@ async function importAuditLogs() {
 
 importAuditLogs()
   .catch((error) => {
-    console.error('Audit log import failed:', error.message || error);
+    console.error('Error processing audit logs:', error.message || error);
     process.exitCode = 1;
   })
   .finally(async () => {
-    await prisma.$disconnect();
+    if (prisma) await prisma.$disconnect();
   });

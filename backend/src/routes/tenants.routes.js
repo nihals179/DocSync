@@ -142,6 +142,29 @@ router.get('/current', requireAuth, resolveTenantContext, requirePermission('ten
   res.json({ tenant: req.tenant, membership: req.membership });
 });
 
+// Renames the active organization. Owner-only, since requirePermission('tenant.member.manage') only admits the owner.
+router.put('/current/name', requireAuth, resolveTenantContext, requirePermission('tenant.member.manage'), async (req, res) => {
+  const name = String(req.body?.name ?? '').replace(/\s+/g, ' ').trim();
+  if (name.length < 2 || name.length > 80) {
+    return res.status(400).json({ error: 'Organization name must be between 2 and 80 characters.' });
+  }
+
+  const previousName = req.tenant.name;
+  const tenant = await prisma.tenant.update({
+    where: { id: req.tenant.id },
+    data: { name },
+  });
+
+  writeAuditLog({
+    userId: req.user.id,
+    tenantId: req.tenant.id,
+    action: 'tenant.rename',
+    metadata: { previousName, name },
+  });
+
+  res.json({ tenant: { id: tenant.id, name: tenant.name, updatedAt: tenant.updatedAt } });
+});
+
 router.get('/current/members', requireAuth, resolveTenantContext, requirePermission('tenant.read'), async (req, res) => {
   const memberships = await prisma.tenantMembership.findMany({
     where: {

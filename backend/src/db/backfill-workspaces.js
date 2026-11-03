@@ -32,6 +32,7 @@ async function ensureDefaultTenantForUser(user) {
       userId: user.id,
       email: String(user.email || '').toLowerCase(),
       billingAdmin: true,
+      role: 'owner',
       status: 'active',
       createdAt: now,
       updatedAt: now,
