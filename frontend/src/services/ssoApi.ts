@@ -50,12 +50,6 @@ export interface SsoLoginSimulation {
 }
 
 class SsoApiService {
-  async getAuthorizationUrl(email: string, provider?: 'google' | 'microsoft'): Promise<AuthorizationUrlResponse> {
-    const providerParam = provider ? `&provider=${provider}` : '';
-    const response = await api.get<AuthorizationUrlResponse>(`/api/auth/sso/authorize?email=${encodeURIComponent(email)}${providerParam}`);
-    return response.data as AuthorizationUrlResponse;
-  }
-
   async getSamlAuthorizationUrl(email: string): Promise<AuthorizationUrlResponse> {
     const response = await api.get<AuthorizationUrlResponse>(`/api/auth/saml/authorize?email=${encodeURIComponent(email)}`);
     return response.data as AuthorizationUrlResponse;

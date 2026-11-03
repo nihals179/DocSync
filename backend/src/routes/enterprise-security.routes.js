@@ -60,6 +60,7 @@ async function testOidcProviderConnectivity(provider) {
     ].filter(Boolean);
 
     let configUrl = null;
+    let config = null;
     let lastError = null;
 
     for (const url of discoveryUrls) {

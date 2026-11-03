@@ -2,6 +2,183 @@
 
 This guide helps customer IT teams configure enterprise access controls in DocSync.
 
+## Login Modes
+
+DocSync has two separate SSO flows. Configure them independently.
+
+### Individual-user login
+
+Individual users sign in with DocSync's platform Google or Microsoft application:
+
+```text
+GET /api/auth/sso/login/google
+GET /api/auth/sso/login/microsoft
+```
+
+This flow creates or finds a personal DocSync account. It does not select a tenant
+from the user's email domain and does not create a tenant membership.
+
+### Tenant SSO login
+
+Tenant members sign in through the tenant's organization address:
+
+```text
+GET /api/auth/sso/org/{tenantSlug}/login
+```
+
+For example:
+
+```text
+https://acme.example.com/api/auth/sso/org/acme/login
+```
+
+This flow uses the provider configured by that tenant's administrator. The user must
+already have an active tenant membership; SSO login does not invite or add users.
+
+The browser callback for both OIDC flows is completed by:
+
+```text
+POST /api/auth/sso/exchange-code
+```
+
+## Platform Google and Microsoft Configuration
+
+These settings are for individual-user login. Add them to the backend environment,
+never to frontend source code or a committed frontend `.env` file:
+
+```env
+FRONTEND_URL=https://app.example.com
+API_PUBLIC_URL=https://api.example.com
+
+GOOGLE_CLIENT_ID=replace-with-google-client-id
+GOOGLE_CLIENT_SECRET=replace-with-google-client-secret
+
+MICROSOFT_TENANT_ID=common
+MICROSOFT_CLIENT_ID=replace-with-microsoft-client-id
+MICROSOFT_CLIENT_SECRET=replace-with-microsoft-client-secret
+```
+
+`MICROSOFT_TENANT_ID=common` supports personal Microsoft accounts and work or
+school accounts. Use `organizations` for work or school accounts only, or a specific
+Entra tenant ID to restrict sign-in to one directory.
+
+Restart the backend after changing environment variables.
+
+### Google Cloud Console
+
+1. Create or select a project in Google Cloud Console.
+2. Open **APIs & Services → OAuth consent screen**.
+3. Configure the consent screen and request `openid`, `profile`, and `email` scopes.
+4. If the application is in testing mode, add each test user.
+5. Open **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+6. Select **Web application**.
+7. Register the frontend origin, for example:
+
+   ```text
+   https://app.example.com
+   ```
+
+8. Register this exact redirect URI:
+
+   ```text
+   https://app.example.com/auth/callback
+   ```
+
+9. Copy the client ID and secret to `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+### Microsoft Entra admin center
+
+1. Open **App registrations → New registration**.
+2. Select **Accounts in any organizational directory and personal Microsoft accounts**
+   when using `MICROSOFT_TENANT_ID=common`.
+3. Add a **Web** redirect URI:
+
+   ```text
+   https://app.example.com/auth/callback
+   ```
+
+4. Copy the **Application (client) ID** to `MICROSOFT_CLIENT_ID`.
+5. Create a client secret under **Certificates & secrets** and copy its value to
+   `MICROSOFT_CLIENT_SECRET`.
+6. Add delegated permissions for `openid`, `profile`, `email`, and `User.Read` as
+   required by the provider configuration.
+
+## Tenant OIDC Configuration
+
+Tenant administrators configure providers from the tenant Enterprise Security page.
+For an OIDC provider, enter:
+
+- Provider name
+- Issuer URL
+- Client ID
+- Client secret
+- Enabled status
+- Whether the provider is used by the tenant sign-in address
+
+Example Microsoft Entra provider:
+
+```json
+{
+  "type": "oidc",
+  "name": "Microsoft Entra ID",
+  "issuerUrl": "https://login.microsoftonline.com/<tenant-id>/v2.0",
+  "clientId": "tenant-client-id",
+  "clientSecret": "tenant-client-secret",
+  "enabled": true,
+  "signInAddress": true
+}
+```
+
+Example Google Workspace provider:
+
+```json
+{
+  "type": "oidc",
+  "name": "Google Workspace",
+  "issuerUrl": "https://accounts.google.com",
+  "clientId": "tenant-client-id",
+  "clientSecret": "tenant-client-secret",
+  "enabled": true,
+  "signInAddress": true
+}
+```
+
+Register the tenant callback URL in that tenant's identity-provider application:
+
+```text
+https://{tenant-slug}.example.com/auth/callback
+```
+
+For example:
+
+```text
+https://acme.example.com/auth/callback
+```
+
+The redirect URI must match exactly. Do not use an unresolved placeholder such as
+`https://{slug}.localhost:5173/auth/callback` in a provider console.
+
+## Tenant URL Environment
+
+For local development with tenant subdomains:
+
+```env
+FRONTEND_URL=https://localhost:5173
+TENANT_URL_TEMPLATE=https://{slug}.localhost:5173
+API_PUBLIC_URL=http://localhost:4000
+```
+
+For production:
+
+```env
+FRONTEND_URL=https://app.example.com
+TENANT_URL_TEMPLATE=https://{slug}.example.com
+API_PUBLIC_URL=https://api.example.com
+```
+
+The frontend must have a valid certificate for local HTTPS, and DNS or proxy routing
+must resolve tenant subdomains to the frontend in production.
+
 ## Supported Protocols
 
 - OIDC
@@ -13,6 +190,9 @@ This guide helps customer IT teams configure enterprise access controls in DocSy
 - Organization owner or admin access in DocSync
 - Access to Enterprise Security page in DocSync
 - Identity provider administrator access
+
+For individual-user login, also create the platform Google and Microsoft applications
+before testing the login buttons.
 
 ## Step 1: Configure Domain Mapping
 

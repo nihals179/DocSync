@@ -492,6 +492,85 @@ const openapi = {
       }),
     },
 
+    '/api/auth/sso/login/{provider}': {
+      get: {
+        summary: 'Start individual-user Google or Microsoft OIDC login',
+        description: 'Starts a personal login using DocSync platform credentials. This flow never selects or creates a tenant membership. The browser is redirected to the selected identity provider.',
+        tags: ['Auth'],
+        security: [],
+        parameters: [{
+          name: 'provider',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', enum: ['google', 'microsoft'] },
+          description: 'Platform identity provider.',
+        }],
+        responses: {
+          302: { description: 'Redirects to the provider authorization endpoint.', headers: { Location: { schema: { type: 'string' } } } },
+        },
+      },
+    },
+
+    '/api/auth/sso/org/{slug}': {
+      get: op({
+        summary: 'Get tenant SSO login information',
+        description: 'Returns the branding and available login mode for a tenant organization sign-in address.',
+        tags: ['Auth'],
+        security: [],
+        parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
+        responseExample: {
+          name: 'Acme',
+          slug: 'acme',
+          ssoAvailable: true,
+          providerName: 'Microsoft Entra ID',
+          providerType: 'oidc',
+          passwordSignIn: false,
+        },
+        extraResponses: { 404: commonErrors[404] },
+      }),
+    },
+
+    '/api/auth/sso/org/{slug}/login': {
+      get: {
+        summary: 'Start tenant SSO login',
+        description: 'Starts the configured OIDC or SAML login for a tenant. The user must already be an active member of the tenant; this flow never creates membership.',
+        tags: ['Auth'],
+        security: [],
+        parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          302: { description: 'Redirects to the tenant identity provider or back to the tenant login page on failure.', headers: { Location: { schema: { type: 'string' } } } },
+        },
+      },
+    },
+
+    '/api/auth/sso/exchange-code': {
+      post: op({
+        summary: 'Exchange an OIDC authorization code for a session',
+        description: 'Used by the frontend callback page after either an individual platform login or a tenant login. The server validates the transaction state and creates the appropriate personal or tenant session.',
+        tags: ['Auth'],
+        security: [],
+        requestExample: { code: 'authorization-code', state: 'oidc-state' },
+        requestSchema: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' },
+            state: { type: 'string' },
+          },
+          required: ['code', 'state'],
+        },
+        responseExample: {
+          accessToken: 'eyJhbGciOi...access',
+          user: { id: 'usr_123', email: 'ava@example.com', currentTenantId: 'ten_123' },
+          session: { id: 'ses_123', expiresAt: '2026-11-03T19:00:00.000Z' },
+        },
+        extraResponses: {
+          400: commonErrors[400],
+          403: commonErrors[403],
+          500: jsonResponse({ error: 'SSO authentication failed. Please try again.' }, 'Server Error', 500),
+        },
+      }),
+    },
+
     '/api/auth/verify-email': {
       post: op({
         summary: 'Verify email address',

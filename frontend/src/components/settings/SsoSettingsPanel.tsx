@@ -6,12 +6,41 @@ interface SsoSettingsPanelProps {
   token: string;
 }
 
-function SsoSettingsPanel({ token }: SsoSettingsPanelProps) {
+const emptyProviderForm = {
+  name: '',
+  type: 'oidc' as 'oidc' | 'saml' | 'ldap',
+  issuerUrl: '',
+  clientId: '',
+  clientSecret: '',
+  ssoUrl: '',
+  entityId: '',
+  certificate: '',
+};
 
+function SsoSettingsPanel({ token }: SsoSettingsPanelProps) {
   const [config, setConfig] = useState<SsoSecurityConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showNewProviderForm, setShowNewProviderForm] = useState(false);
+  const [formData, setFormData] = useState(emptyProviderForm);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    ssoApi.getSecurityConfig(token)
+      .then((security) => {
+        if (!cancelled) setConfig(security);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load SSO configuration');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   const handleAddProvider = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +70,7 @@ function SsoSettingsPanel({ token }: SsoSettingsPanelProps) {
         };
       });
 
-      setFormData({ name: '', type: 'oidc', issuerUrl: '', clientId: '', clientSecret: '', ssoUrl: '', entityId: '', certificate: '' });
+      setFormData({ ...emptyProviderForm });
       setShowNewProviderForm(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create provider');
