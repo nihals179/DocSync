@@ -138,7 +138,12 @@ async function getLoginClient(config, redirectUri) {
   const cacheKey = `login:${config.key}:${config.issuerUrl}:${config.clientId}`;
   let issuer = oidcClientCache.get(cacheKey);
   if (!issuer) {
-    issuer = await Issuer.discover(config.issuerUrl);
+    try {
+      issuer = await Issuer.discover(config.issuerUrl);
+    } catch (error) {
+      const reason = error?.message || 'discovery request failed';
+      throw new Error(`${config.name} OIDC discovery failed for ${config.issuerUrl}: ${reason}`);
+    }
     oidcClientCache.set(cacheKey, issuer);
   }
   return new issuer.Client({
