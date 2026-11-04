@@ -141,7 +141,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       pathname.startsWith('/verify-email') ||
       pathname.startsWith('/reset-password');
     const uiAuthState = readUiAuthState();
-    if (uiAuthState !== true) {
+    // sessionStorage is per tab, so a new tab has no flag; the sign-in cookie is shared by all tabs.
+    const hasLoginCookie = document.cookie.split('; ').some((c) => c.startsWith('docsync_csrf='));
+    if (uiAuthState !== true && !hasLoginCookie) {
       setSession(null);
       setAuthReady(true);
       startupRefreshPromiseRef.current = null;

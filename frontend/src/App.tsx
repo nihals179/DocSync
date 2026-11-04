@@ -40,7 +40,7 @@ function AppContent() {
           <AppLoadingScreen title="Loading DocSync" subtitle="Preparing your workspace and editor modules..." />
         )}
       >
-        <AppRoutes />
+        {authReady && <AppRoutes />}
       </Suspense>
       {!authReady && (
         <AppLoadingScreen
