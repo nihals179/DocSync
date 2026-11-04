@@ -145,10 +145,10 @@ export type EditorBootstrapResponse = {
   versions: Array<{ id: string; preview: string; savedAt: string; isPublished: boolean }>;
   /** Newest retained version, which the editor compares against to detect uncommitted changes. */
   latestVersion: { content: string; isPublished: boolean } | null;
+  /** The same summaries GET /api/docs returns, without content. */
   docs: Array<{
     id: string;
     title: string;
-    content: string;
     userId: string;
     tenantId: string;
     createdAt: string;
