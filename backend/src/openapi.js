@@ -1333,13 +1333,30 @@ const openapi = {
     '/api/editor/{docId}/bootstrap': {
       get: op({
         summary: 'Bootstrap editor data for a document',
+        description: 'Returns the document, its versions within the plan\'s history retention (newest first), the newest of those versions\' content as latestVersion (null when there is none), the sidebar list and the workspaces the user can see. docs holds the same summaries GET /api/docs returns, without content.',
         tags: ['Editor'],
         parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
         responseExample: {
-          doc: { id: 'doc_1', title: 'Project Plan', content: 'Initial draft', preview: 'Initial draft' },
-          versions: [{ id: 'ver_1', preview: 'Initial draft', savedAt: '2026-10-19T11:00:00.000Z' }],
-          docs: [{ id: 'doc_1', title: 'Project Plan' }],
-          workspaces: [{ id: 'ws_123', name: 'Workspace', ownerId: 'usr_123' }],
+          doc: documentExample,
+          versions: [
+            { id: 'ver_2', preview: 'Added timeline', savedAt: '2026-10-30T10:05:00.000Z', isPublished: true },
+            { id: 'ver_1', preview: 'Initial draft', savedAt: '2026-10-30T10:01:00.000Z', isPublished: false },
+          ],
+          latestVersion: { content: '<p>Initial draft</p>', isPublished: true },
+          docs: [documentSummaryExample],
+          workspaces: [{
+            id: 'ws_123',
+            name: 'Workspace',
+            ownerId: 'usr_123',
+            memberIds: ['usr_123'],
+            createdAt: '2026-10-19T11:00:00.000Z',
+            updatedAt: '2026-10-30T10:05:00.000Z',
+          }],
+        },
+        extraResponses: {
+          401: commonErrors[401],
+          403: commonErrors[403],
+          404: jsonResponse({ error: 'Document not found.' }, 'Not Found', 404),
         },
       }),
     },

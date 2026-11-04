@@ -4,30 +4,11 @@ const { prisma } = require('../db/client');
 const { ensureWorkspaceForUserProvisioned, getVersionHistoryRetentionDays } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
+const { formatDoc, listDocSummaries, toIso } = require('../middleware/docs');
 const { filterVersionsByRetention } = require('../middleware/versions');
 const { isWorkspaceVisibleToUser, sortWorkspacesForUser } = require('../middleware/workspaces');
 
 const router = express.Router();
-
-function mapDocPreview(content) {
-  return String(content || '').replace(/<[^>]+>/g, '').slice(0, 100);
-}
-
-function mapDoc(row) {
-  return {
-    id: row.id,
-    title: row.title,
-    content: row.content,
-    userId: row.userId,
-    tenantId: row.tenantId,
-    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
-    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-    parentId: row.parentId ?? null,
-    workspaceId: row.workspaceId ?? null,
-    sortOrder: row.sortOrder ?? 0,
-    preview: mapDocPreview(row.content),
-  };
-}
 
 function mapWorkspace(row) {
   return {
@@ -36,11 +17,17 @@ function mapWorkspace(row) {
     ownerId: row.ownerId,
     memberIds: Array.isArray(row.memberIds) ? row.memberIds : [],
     tenantId: row.tenantId,
-    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
-    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
   };
 }
 
+/**
+ * GET /api/editor/:docId/bootstrap
+ * Everything the editor needs to open a document: the document, its retained versions,
+ * the newest version's content, the sidebar list (the same summaries GET /api/docs
+ * returns, without content) and the workspaces the user can see.
+ */
 router.get(
   '/:docId/bootstrap',
   requireAuth,
@@ -52,12 +39,9 @@ router.get(
     const docId = String(req.params.docId || '').trim();
     if (!docId) return res.status(400).json({ error: 'Document id is required.' });
 
-    const [docRow, docsRows, versionRows] = await Promise.all([
+    const [docRow, docs, versionRows] = await Promise.all([
       prisma.document.findFirst({ where: { id: docId, tenantId: req.tenant.id } }),
-      prisma.document.findMany({
-        where: { tenantId: req.tenant.id },
-        orderBy: { updatedAt: 'desc' },
-      }),
+      listDocSummaries(req.tenant.id),
       prisma.version.findMany({
         where: { docId },
         orderBy: { savedAt: 'desc' },
@@ -87,16 +71,16 @@ router.get(
 
     const [latest] = retainedVersions;
     const response = {
-      doc: mapDoc(docRow),
+      doc: formatDoc(docRow),
       versions: retainedVersions.map((item) => ({
         id: item.id,
         preview: item.title || String(item.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 90),
-        savedAt: item.savedAt instanceof Date ? item.savedAt.toISOString() : item.savedAt,
+        savedAt: toIso(item.savedAt),
         isPublished: Boolean(item.isPublished),
       })),
       // What the editor compares against to tell whether there is anything to commit.
       latestVersion: latest ? { content: latest.content, isPublished: Boolean(latest.isPublished) } : null,
-      docs: docsRows.map(mapDoc),
+      docs,
       workspaces: sortWorkspacesForUser(
         workspaceRows.map(mapWorkspace).filter((workspace) => isWorkspaceVisibleToUser(workspace, req.user.id)),
         req.user.id,
