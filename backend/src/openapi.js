@@ -280,9 +280,11 @@ const documentExample = {
   createdAt: '2026-10-30T10:00:00.000Z',
   updatedAt: '2026-10-30T10:05:00.000Z',
   preview: 'Initial draft',
+  // The version the content is based on (set by commit, publish and restore); null without versions.
+  baseVersionId: 'ver_2',
 };
 
-const { content: _documentContent, ...documentSummaryExample } = documentExample;
+const { content: _documentContent, baseVersionId: _baseVersionId, ...documentSummaryExample } = documentExample;
 
 const documentIdParam = { name: 'id', in: 'path', required: true, schema: { type: 'string' } };
 
@@ -1333,7 +1335,7 @@ const openapi = {
     '/api/editor/{docId}/bootstrap': {
       get: op({
         summary: 'Bootstrap editor data for a document',
-        description: 'Returns the document, its versions within the plan\'s history retention (newest first), the newest of those versions\' content as latestVersion (null when there is none), the sidebar list and the workspaces the user can see. docs holds the same summaries GET /api/docs returns, without content.',
+        description: 'Returns the document, its versions within the plan\'s history retention (newest first), the newest of those versions\' content as latestVersion (null when there is none), the version the document is on as currentVersion (its baseVersionId, or the newest version if that one is gone; `content` is included only when it is not the newest version, null when there are no versions), the sidebar list and the workspaces the user can see. docs holds the same summaries GET /api/docs returns, without content.',
         tags: ['Editor'],
         parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
         responseExample: {
@@ -1343,6 +1345,7 @@ const openapi = {
             { id: 'ver_1', preview: 'Initial draft', savedAt: '2026-10-30T10:01:00.000Z', isPublished: false },
           ],
           latestVersion: { content: '<p>Initial draft</p>', isPublished: true },
+          currentVersion: { id: 'ver_2' },
           docs: [documentSummaryExample],
           workspaces: [{
             id: 'ws_123',
@@ -1402,17 +1405,25 @@ const openapi = {
     '/api/docs/{docId}/comments': {
       get: op({
         summary: 'List document comments',
+        description: 'Every comment on the document. `versionId` is the version the document was on when the comment was written, or null for a comment written before the first commit. `currentVersionId` is the version the document is on now: its `baseVersionId`, set by commit, publish and restore, falling back to the newest version if that one was deleted (null when there are none). Clients show its comments first and group the rest by version.',
         tags: ['Comments'],
         parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
-        responseExample: { comments: [{ id: 'com_1', text: 'Looks good', userId: 'usr_123', userName: 'Ava', createdAt: '2026-10-19T11:00:00.000Z' }] },
+        responseExample: {
+          comments: [
+            { id: 'com_1', text: 'Tighten the intro', userId: 'usr_456', userName: 'Ben', versionId: 'ver_1', createdAt: '2026-10-18T09:00:00.000Z', updatedAt: '2026-10-18T09:00:00.000Z' },
+            { id: 'com_2', text: 'Looks good', userId: 'usr_123', userName: 'Ava', versionId: 'ver_2', createdAt: '2026-10-19T11:00:00.000Z', updatedAt: '2026-10-19T11:00:00.000Z' },
+          ],
+          currentVersionId: 'ver_2',
+        },
       }),
       post: op({
         summary: 'Create a comment',
+        description: 'The comment is pinned to the version the document is on (`currentVersionId` above, returned as `versionId`). With no versions yet it is null, and the first commit of the document adopts the comment.',
         tags: ['Comments'],
         parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }, tenantHeader],
         requestExample: { text: 'Looks good' },
         requestSchema: commentSchema,
-        responseExample: { comment: { id: 'com_1', text: 'Looks good', userId: 'usr_123', userName: 'Ava', createdAt: '2026-10-19T11:00:00.000Z' } },
+        responseExample: { comment: { id: 'com_2', text: 'Looks good', userId: 'usr_123', userName: 'Ava', versionId: 'ver_2', createdAt: '2026-10-19T11:00:00.000Z', updatedAt: '2026-10-19T11:00:00.000Z' } },
         responseStatus: 201,
         responseDescription: 'Created',
       }),

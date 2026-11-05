@@ -57,7 +57,7 @@ function formatDocSummary(doc, previewSource = doc.content) {
 }
 
 function formatDoc(doc) {
-  return { ...formatDocSummary(doc), content: doc.content };
+  return { ...formatDocSummary(doc), content: doc.content, baseVersionId: doc.baseVersionId ?? null };
 }
 
 /**

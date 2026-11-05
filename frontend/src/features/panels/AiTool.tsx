@@ -11,22 +11,26 @@ const INITIAL: Message = {
 const AiTool: React.FC<{ token: string }> = ({ token }) => {
   const [messages, setMessages] = useState<Message[]>([INITIAL]);
   const [input, setInput] = useState('');
+  const [thinking, setThinking] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, thinking]);
 
   const send = async () => {
     const t = input.trim();
-    if (!t) return;
+    if (!t || thinking) return;
     setMessages((prev) => [...prev, { role: 'user', text: t }]);
     setInput('');
+    setThinking(true);
     try {
-      const { response } = await aiApi.chat(token, t);
+      const { response } = await aiApi.chat(token, t, undefined, { background: true });
       setMessages((prev) => [...prev, { role: 'ai', text: response }]);
     } catch {
       setMessages((prev) => [...prev, { role: 'ai', text: 'Failed to get a response. Please try again.' }]);
+    } finally {
+      setThinking(false);
     }
   };
 
@@ -56,6 +60,11 @@ const AiTool: React.FC<{ token: string }> = ({ token }) => {
             </div>
           </div>
         ))}
+        {thinking && (
+          <div className="flex justify-start">
+            <div className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-500">Thinking…</div>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 

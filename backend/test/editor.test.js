@@ -166,3 +166,50 @@ test('latestVersion is null when there are no versions', async () => {
   assert.deepEqual(res.body.versions, []);
   assert.equal(res.body.latestVersion, null);
 });
+
+const addThree = () => {
+  addVersion({ id: 'v1', docId: 'doc-1', content: '<p>one</p>', savedAt: new Date(Date.now() - 3 * 86400000) });
+  addVersion({ id: 'v2', docId: 'doc-1', content: '<p>two</p>', savedAt: new Date(Date.now() - 2 * 86400000) });
+  addVersion({ id: 'v3', docId: 'doc-1', content: '<p>three</p>', savedAt: new Date(Date.now() - 86400000) });
+};
+
+test('currentVersion is the restored base version, with its content', async () => {
+  seed();
+  addThree();
+  state.docs.find((d) => d.id === 'doc-1').baseVersionId = 'v1';
+  const res = await request(app).get('/api/editor/doc-1/bootstrap');
+  assert.deepEqual(res.body.currentVersion, { id: 'v1', content: '<p>one</p>' });
+  assert.equal(res.body.doc.baseVersionId, 'v1');
+});
+
+test('currentVersion leaves out the content when it is the newest version', async () => {
+  seed();
+  addThree();
+  state.docs.find((d) => d.id === 'doc-1').baseVersionId = 'v3';
+  const res = await request(app).get('/api/editor/doc-1/bootstrap');
+  assert.deepEqual(res.body.currentVersion, { id: 'v3' });
+});
+
+test('currentVersion falls back to the newest version when the base is gone', async () => {
+  seed();
+  addThree();
+  state.docs.find((d) => d.id === 'doc-1').baseVersionId = 'deleted';
+  const res = await request(app).get('/api/editor/doc-1/bootstrap');
+  assert.deepEqual(res.body.currentVersion, { id: 'v3' });
+});
+
+test('currentVersion is null when there are no versions', async () => {
+  seed();
+  const res = await request(app).get('/api/editor/doc-2/bootstrap');
+  assert.equal(res.body.currentVersion, null);
+});
+
+test('currentVersion ignores a base version outside the history window', async () => {
+  seed();
+  addVersion({ id: 'aged', docId: 'doc-1', content: '<p>aged</p>', savedAt: new Date(Date.now() - 40 * 86400000) });
+  addVersion({ id: 'recent', docId: 'doc-1', content: '<p>recent</p>', savedAt: new Date(Date.now() - 86400000) });
+  state.docs.find((d) => d.id === 'doc-1').baseVersionId = 'aged';
+  state.retentionDays = 30;
+  const res = await request(app).get('/api/editor/doc-1/bootstrap');
+  assert.deepEqual(res.body.currentVersion, { id: 'recent' });
+});

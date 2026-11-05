@@ -5,7 +5,7 @@ const { ensureWorkspaceForUserProvisioned, getVersionHistoryRetentionDays } = re
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { formatDoc, listDocSummaries, toIso } = require('../middleware/docs');
-const { filterVersionsByRetention } = require('../middleware/versions');
+const { filterVersionsByRetention, pickCurrentVersionId } = require('../middleware/versions');
 const { isWorkspaceVisibleToUser, sortWorkspacesForUser } = require('../middleware/workspaces');
 
 const router = express.Router();
@@ -25,7 +25,8 @@ function mapWorkspace(row) {
 /**
  * GET /api/editor/:docId/bootstrap
  * Everything the editor needs to open a document: the document, its retained versions,
- * the newest version's content, the sidebar list (the same summaries GET /api/docs
+ * the newest version's content, the version the document is on (currentVersion, with its
+ * content only when that isn't the newest version), the sidebar list (the same summaries GET /api/docs
  * returns, without content) and the workspaces the user can see.
  */
 router.get(
@@ -70,6 +71,10 @@ router.get(
     const retainedVersions = filterVersionsByRetention(versionRows, retentionDays);
 
     const [latest] = retainedVersions;
+    // The same rule comments use, so the editor and the Comments panel agree on "This version".
+    // Retained versions only, so the current one is always in the Saved Versions list.
+    const currentVersionId = pickCurrentVersionId(docRow.baseVersionId, retainedVersions);
+    const currentRow = retainedVersions.find((item) => item.id === currentVersionId);
     const response = {
       doc: formatDoc(docRow),
       versions: retainedVersions.map((item) => ({
@@ -80,6 +85,10 @@ router.get(
       })),
       // What the editor compares against to tell whether there is anything to commit.
       latestVersion: latest ? { content: latest.content, isPublished: Boolean(latest.isPublished) } : null,
+      // What a restore would discard edits against; content is left out when it is latestVersion's.
+      currentVersion: currentRow
+        ? { id: currentRow.id, ...(currentRow.id === latest?.id ? {} : { content: currentRow.content }) }
+        : null,
       docs,
       workspaces: sortWorkspacesForUser(
         workspaceRows.map(mapWorkspace).filter((workspace) => isWorkspaceVisibleToUser(workspace, req.user.id)),

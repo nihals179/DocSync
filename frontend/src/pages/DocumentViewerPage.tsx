@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import ThemeListbox from '../components/common/ThemeListbox';
+import RestoreVersionDialog from '../components/common/RestoreVersionDialog';
 import { docsApi, versionsApi, workspaceApi } from '../services/api';
 import { buildDocumentTree } from '../utils/documentTree';
 import { getInitialWorkspaceSelectionId, persistWorkspaceSelectionId } from '../utils/workspaceSelection';
@@ -31,6 +32,8 @@ function DocumentViewerPage({ token, docId, userName }: { token: string; docId: 
   const [versionError, setVersionError] = useState('');
   const [versionMessage, setVersionMessage] = useState('');
   const [switchingVersionId, setSwitchingVersionId] = useState<string | null>(null);
+  // The version waiting for the user to confirm the restore.
+  const [restoreConfirm, setRestoreConfirm] = useState<{ versionId: string; savedAt: string } | null>(null);
   const viewerMenuRef = useRef<HTMLDivElement | null>(null);
   const [isViewerWorkspacePanelCollapsed, setIsViewerWorkspacePanelCollapsed] = useState<boolean>(() => {
     try {
@@ -488,7 +491,7 @@ function DocumentViewerPage({ token, docId, userName }: { token: string; docId: 
                         <button
                           type="button"
                           disabled={switchingVersionId === version.id}
-                          onClick={() => void handleSwitchVersion(version.id)}
+                          onClick={() => setRestoreConfirm({ versionId: version.id, savedAt: version.savedAt })}
                           className="rounded-md border border-cyan-300 px-2.5 py-1 text-xs font-semibold text-cyan-700 transition-colors hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {switchingVersionId === version.id ? 'Switching...' : 'Switch Version'}
@@ -502,6 +505,17 @@ function DocumentViewerPage({ token, docId, userName }: { token: string; docId: 
           </aside>
         </div>
       </main>
+      {restoreConfirm && (
+        <RestoreVersionDialog
+          savedAt={restoreConfirm.savedAt}
+          onCancel={() => setRestoreConfirm(null)}
+          onConfirm={() => {
+            const { versionId } = restoreConfirm;
+            setRestoreConfirm(null);
+            void handleSwitchVersion(versionId);
+          }}
+        />
+      )}
     </div>
   );
 }
