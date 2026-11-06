@@ -9,10 +9,14 @@ type SavedVersionItem = {
 
 type SavedDocumentsProps = {
   versions: SavedVersionItem[];
+  /** The version being restored; its row shows progress and the others are disabled. */
+  restoringVersionId?: string | null;
+  /** The version the document is on, marked "Current". */
+  currentVersionId?: string | null;
   onSwitchVersion?: (versionId: string) => void;
 };
 
-const SavedDocuments: React.FC<SavedDocumentsProps> = ({ versions, onSwitchVersion }) => (
+const SavedDocuments: React.FC<SavedDocumentsProps> = ({ versions, restoringVersionId = null, currentVersionId = null, onSwitchVersion }) => (
   <section className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200/80 bg-white/80 p-4">
     <h3 className="mb-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-600">
       Saved Versions
@@ -28,10 +32,19 @@ const SavedDocuments: React.FC<SavedDocumentsProps> = ({ versions, onSwitchVersi
           {versions.map((version) => (
             <li
               key={version.id}
-              onDoubleClick={() => onSwitchVersion?.(version.id)}
-              className="w-full cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-cyan-200"
+              onDoubleClick={() => { if (!restoringVersionId) onSwitchVersion?.(version.id); }}
+              aria-busy={restoringVersionId === version.id}
+              className={`w-full rounded-md border bg-white px-3 py-2 text-left transition-colors ${
+                restoringVersionId === version.id ? 'border-cyan-300' : 'border-slate-200 hover:border-cyan-200'
+              } ${restoringVersionId ? 'cursor-wait' : 'cursor-pointer'}`}
               title="Double-click to switch to this version"
             >
+              {version.id === currentVersionId && (
+                <span className="mr-1 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                  <span className="material-icons" style={{ fontSize: '0.75rem' }}>check_circle</span>
+                  Current
+                </span>
+              )}
               {version.isPublished && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-cyan-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-700">
                   <span className="material-icons" style={{ fontSize: '0.75rem' }}>public</span>
@@ -40,6 +53,9 @@ const SavedDocuments: React.FC<SavedDocumentsProps> = ({ versions, onSwitchVersi
               )}
               <p className="mt-1 line-clamp-2 text-xs text-slate-700">{version.preview || 'No preview available.'}</p>
               <p className="mt-1 text-[11px] text-slate-500">Saved {new Date(version.savedAt).toLocaleString()}</p>
+              {restoringVersionId === version.id && (
+                <p className="mt-1 text-[11px] font-medium text-cyan-700">Restoring…</p>
+              )}
             </li>
           ))}
         </ul>

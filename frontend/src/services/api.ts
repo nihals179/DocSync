@@ -141,14 +141,21 @@ export type EditorBootstrapResponse = {
     workspaceId?: string | null;
     sortOrder?: number;
     preview: string;
+    /** The version the content is based on (set by commit, publish and restore). */
+    baseVersionId?: string | null;
   };
   versions: Array<{ id: string; preview: string; savedAt: string; isPublished: boolean }>;
+  /**
+   * The version the document is on (its base version, else the newest). `content` is only
+   * sent when it isn't latestVersion's; null when there are no versions.
+   */
+  currentVersion: { id: string; content?: string } | null;
   /** Newest retained version, which the editor compares against to detect uncommitted changes. */
   latestVersion: { content: string; isPublished: boolean } | null;
+  /** The same summaries GET /api/docs returns, without content. */
   docs: Array<{
     id: string;
     title: string;
-    content: string;
     userId: string;
     tenantId: string;
     createdAt: string;
@@ -736,10 +743,10 @@ export const docsApi = {
       '/api/docs',
       { token, background: options.background },
     ),
-  get: (token: string, id: string) =>
-    apiFetch<{ doc: { id: string; title: string; content: string } }>(
+  get: (token: string, id: string, options: { background?: boolean } = {}) =>
+    apiFetch<{ doc: { id: string; title: string; content: string; baseVersionId?: string | null } }>(
       `/api/docs/${id}`,
-      { token },
+      { token, background: options.background },
     ),
   update: (
     token: string,
@@ -770,19 +777,30 @@ export const editorApi = {
     apiFetch<EditorBootstrapResponse>(`/api/editor/${docId}/bootstrap`, { token }),
 };
 
+/** A comment, pinned to the version it was written on (null: written before the first commit). */
+export type DocComment = {
+  id: string;
+  text: string;
+  userId: string;
+  userName?: string;
+  versionId: string | null;
+  createdAt: string;
+};
+
 export const commentsApi = {
-  list: (token: string, docId: string) =>
-    apiFetch<{ comments: Array<{ id: string; text: string; userId: string; userName?: string; createdAt: string }> }>(
+  /** `currentVersionId` is the document's newest version, or null when it has none. */
+  list: (token: string, docId: string, options: { background?: boolean } = {}) =>
+    apiFetch<{ comments: DocComment[]; currentVersionId: string | null }>(
       `/api/docs/${docId}/comments`,
-      { token },
+      { token, background: options.background },
     ),
-  add: (token: string, docId: string, text: string) =>
-    apiFetch<{ comment: { id: string; text: string; userId: string; userName?: string; createdAt: string } }>(
+  add: (token: string, docId: string, text: string, options: { background?: boolean } = {}) =>
+    apiFetch<{ comment: DocComment }>(
       `/api/docs/${docId}/comments`,
-      { method: 'POST', token, body: JSON.stringify({ text }) },
+      { method: 'POST', token, body: JSON.stringify({ text }), background: options.background },
     ),
-  delete: (token: string, docId: string, commentId: string) =>
-    apiFetch(`/api/docs/${docId}/comments/${commentId}`, { method: 'DELETE', token }),
+  delete: (token: string, docId: string, commentId: string, options: { background?: boolean } = {}) =>
+    apiFetch(`/api/docs/${docId}/comments/${commentId}`, { method: 'DELETE', token, background: options.background }),
 };
 
 export const versionsApi = {
@@ -800,6 +818,7 @@ export const versionsApi = {
       q?: string;
       limit?: number;
     },
+    options: { background?: boolean } = {},
   ) => {
     const params = new URLSearchParams();
     if (filters?.workspaceId) params.set('workspaceId', filters.workspaceId);
@@ -822,7 +841,7 @@ export const versionsApi = {
         savedAt: string;
         isPublished: boolean;
       }>;
-    }>(url, { token });
+    }>(url, { token, background: options.background });
   },
   /**
    * Commits (or, with `published`, publishes) a snapshot of the content. Fails with an
@@ -839,50 +858,52 @@ export const versionsApi = {
         background: true,
       },
     ),
-  restore: (token: string, docId: string, versionId: string) =>
+  restore: (token: string, docId: string, versionId: string, options: { background?: boolean } = {}) =>
     apiFetch<{ doc: { content: string } }>(
       `/api/docs/${docId}/versions/${versionId}/restore`,
-      { method: 'POST', token },
+      { method: 'POST', token, background: options.background },
     ),
   delete: (token: string, docId: string, versionId: string) =>
     apiFetch(`/api/docs/${docId}/versions/${versionId}`, { method: 'DELETE', token }),
 };
 
 export const todosApi = {
-  list: (token: string, docId: string) =>
+  list: (token: string, docId: string, options: { background?: boolean } = {}) =>
     apiFetch<{ todos: Array<{ id: string; text: string; done: boolean }> }>(
       `/api/docs/${docId}/todos`,
-      { token },
+      { token, background: options.background },
     ),
-  add: (token: string, docId: string, text: string) =>
+  add: (token: string, docId: string, text: string, options: { background?: boolean } = {}) =>
     apiFetch<{ todo: { id: string; text: string; done: boolean } }>(
       `/api/docs/${docId}/todos`,
-      { method: 'POST', token, body: JSON.stringify({ text }) },
+      { method: 'POST', token, body: JSON.stringify({ text }), background: options.background },
     ),
-  update: (token: string, docId: string, todoId: string, patch: { done?: boolean; text?: string }) =>
+  update: (token: string, docId: string, todoId: string, patch: { done?: boolean; text?: string }, options: { background?: boolean } = {}) =>
     apiFetch<{ todo: { id: string; text: string; done: boolean } }>(
       `/api/docs/${docId}/todos/${todoId}`,
-      { method: 'PUT', token, body: JSON.stringify(patch) },
+      { method: 'PUT', token, body: JSON.stringify(patch), background: options.background },
     ),
-  delete: (token: string, docId: string, todoId: string) =>
-    apiFetch(`/api/docs/${docId}/todos/${todoId}`, { method: 'DELETE', token }),
+  delete: (token: string, docId: string, todoId: string, options: { background?: boolean } = {}) =>
+    apiFetch(`/api/docs/${docId}/todos/${todoId}`, { method: 'DELETE', token, background: options.background }),
 };
 
 export const aiApi = {
-  chat: (token: string, message: string, context?: string) =>
+  chat: (token: string, message: string, context?: string, options: { background?: boolean } = {}) =>
     apiFetch<{ response: string }>('/api/ai/chat', {
       method: 'POST',
       token,
       body: JSON.stringify({ message, context }),
+      background: options.background,
     }),
 };
 
 export const grammarApi = {
-  check: (token: string, text: string) =>
+  check: (token: string, text: string, options: { background?: boolean } = {}) =>
     apiFetch<{ issues: Array<{ id: number; type: string; text: string; suggestion: string }> }>('/api/grammar/check', {
       method: 'POST',
       token,
       body: JSON.stringify({ text }),
+      background: options.background,
     }),
 };
 

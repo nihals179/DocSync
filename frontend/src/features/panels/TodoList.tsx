@@ -7,10 +7,12 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
   const [items, setItems] = useState<TodoItem[]>([]);
   const [input, setInput] = useState('');
   const [error, setError] = useState<string>('');
+  // The panel is remounted per document, so it starts out loading that document's list.
+  const [loadingList, setLoadingList] = useState(Boolean(docId));
 
   useEffect(() => {
     if (!docId) return;
-    todosApi.list(token, docId)
+    todosApi.list(token, docId, { background: true })
       .then(({ todos }) => {
         setItems(todos);
         setError('');
@@ -18,7 +20,8 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : 'Failed to load todos.';
         setError(message);
-      });
+      })
+      .finally(() => setLoadingList(false));
   }, [token, docId]);
 
   const add = async () => {
@@ -26,7 +29,7 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
     if (!t || !docId) return;
     setError('');
     try {
-      const { todo } = await todosApi.add(token, docId, t);
+      const { todo } = await todosApi.add(token, docId, t, { background: true });
       setItems((prev) => [...prev, todo]);
       setInput('');
     } catch (err: unknown) {
@@ -40,7 +43,7 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
     if (!item || !docId) return;
     setError('');
     try {
-      const { todo } = await todosApi.update(token, docId, id, { done: !item.done });
+      const { todo } = await todosApi.update(token, docId, id, { done: !item.done }, { background: true });
       setItems((prev) => prev.map((i) => (i.id === id ? todo : i)));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to update todo.';
@@ -52,7 +55,7 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
     if (!docId) return;
     setError('');
     try {
-      await todosApi.delete(token, docId, id);
+      await todosApi.delete(token, docId, id, { background: true });
       setItems((prev) => prev.filter((i) => i.id !== id));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to delete todo.';
@@ -84,7 +87,10 @@ const TodoList: React.FC<{ docId: string; token: string }> = ({ docId, token }) 
         <p className="mb-2 shrink-0 text-xs text-rose-600">{error}</p>
       ) : null}
       <ul className="flex-1 space-y-1.5 overflow-y-auto">
-        {items.length === 0 && (
+        {loadingList && items.length === 0 && (
+          <p className="text-xs text-slate-500">Loading to-dos…</p>
+        )}
+        {!loadingList && items.length === 0 && (
           <p className="text-xs text-slate-500">No tasks yet. Add one above.</p>
         )}
         {items.map((item) => (

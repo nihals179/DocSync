@@ -17,6 +17,8 @@ function resetState() {
     ['other', { id: 'other', tenantId: 'tenant-2', title: 'Elsewhere', content: '' }],
   ]);
   state.versions = [];
+  state.comments = [];
+  state.retentionDays = null;
   state.clock = Date.parse('2026-10-01T00:00:00Z');
 }
 
@@ -52,8 +54,27 @@ function matches(row, where = {}) {
 const newestFirst = (rows) => [...rows].sort((a, b) => b.savedAt - a.savedAt);
 
 const prisma = {
+  // Runs the callback on the same fake; a throw inside it rejects, as Prisma would.
+  $transaction: async (fn) => fn(prisma),
+  comment: {
+    updateMany: async ({ where, data }) => {
+      const rows = state.comments.filter((c) => matches(c, where));
+      rows.forEach((c) => Object.assign(c, data));
+      return { count: rows.length };
+    },
+  },
+  // setBaseVersion's UPDATE documents SET "baseVersionId" = $1 WHERE id = $2.
+  $executeRaw: async (_strings, versionId, docId) => {
+    state.docs.get(docId).baseVersionId = versionId;
+    return 1;
+  },
   document: {
     findUnique: async ({ where }) => state.docs.get(where.id) || null,
+    update: async ({ where, data }) => {
+      const doc = state.docs.get(where.id);
+      Object.assign(doc, data);
+      return { ...doc };
+    },
   },
   version: {
     findFirst: async ({ where }) => newestFirst(state.versions.filter((v) => matches(v, where)))[0] || null,
@@ -79,7 +100,7 @@ function stub(rel, exports) {
 }
 
 stub('db/client.js', { prisma });
-stub('store/index.js', { getVersionHistoryRetentionDays: async () => null });
+stub('store/index.js', { getVersionHistoryRetentionDays: async () => state.retentionDays });
 stub('middleware/auth/core.js', {
   requireAuth: (req, _res, next) => {
     req.user = { id: 'user-1' };
@@ -194,4 +215,73 @@ test('GET lists versions with their published flag', async () => {
     res.body.versions.map((v) => [v.id, v.isPublished]),
     [['v2', true], ['v1', false]],
   );
+});
+
+test('the first commit adopts comments written before it', async () => {
+  state.comments.push(
+    { id: 'c-draft', docId: 'doc-1', versionId: null },
+    { id: 'c-other-doc', docId: 'other', versionId: null },
+  );
+  const res = await save({ content: '<p>First</p>' });
+  assert.equal(res.status, 201);
+  assert.equal(state.comments[0].versionId, res.body.version.id);
+  assert.equal(state.comments[1].versionId, null, 'comments on another document are untouched');
+});
+
+test('later commits leave comments on the version they were written on', async () => {
+  addVersion({ id: 'v1', content: '<p>a</p>' });
+  state.comments.push(
+    { id: 'c1', docId: 'doc-1', versionId: 'v1' },
+    // Older than every version (matched by time in the migration), so it is not a draft.
+    { id: 'c-legacy', docId: 'doc-1', versionId: null },
+  );
+  const res = await save({ content: '<p>b</p>' });
+  assert.equal(res.status, 201);
+  assert.equal(state.comments[0].versionId, 'v1');
+  assert.equal(state.comments[1].versionId, null);
+});
+
+test('a commit puts the document on the new version', async () => {
+  addVersion({ id: 'v1', content: '<p>a</p>' });
+  state.docs.get('doc-1').baseVersionId = 'v1';
+  const res = await save({ content: '<p>b</p>' });
+  assert.equal(res.status, 201);
+  assert.equal(state.docs.get('doc-1').baseVersionId, res.body.version.id);
+});
+
+test('publishing unchanged content puts the document on the promoted version', async () => {
+  addVersion({ id: 'v1', content: '<p>a</p>' });
+  const res = await save({ content: '<p>a</p>', published: true });
+  assert.equal(res.body.promoted, true);
+  assert.equal(state.docs.get('doc-1').baseVersionId, 'v1');
+});
+
+test('restore copies the content and puts the document on the restored version', async () => {
+  addVersion({ id: 'v1', content: '<p>old</p>' });
+  addVersion({ id: 'v2', content: '<p>new</p>' });
+  state.docs.get('doc-1').baseVersionId = 'v2';
+  const res = await request(app).post('/api/docs/doc-1/versions/v1/restore');
+  assert.equal(res.status, 200);
+  assert.equal(state.docs.get('doc-1').content, '<p>old</p>');
+  assert.equal(state.docs.get('doc-1').baseVersionId, 'v1');
+});
+
+test('a failure inside the commit transaction is reported, not half-applied silently', async () => {
+  const original = prisma.$executeRaw;
+  prisma.$executeRaw = async () => { throw new Error('db down'); };
+  try {
+    const res = await save({ content: '<p>x</p>' });
+    assert.equal(res.status, 500);
+  } finally {
+    prisma.$executeRaw = original;
+  }
+});
+
+test('a commit adopts draft comments when every earlier version is outside the history window', async () => {
+  addVersion({ id: 'aged', content: '<p>a</p>', savedAt: new Date(Date.now() - 40 * 86400000) });
+  state.retentionDays = 30;
+  state.comments.push({ id: 'c-draft', docId: 'doc-1', versionId: null });
+  const res = await save({ content: '<p>b</p>' });
+  assert.equal(res.status, 201);
+  assert.equal(state.comments[0].versionId, res.body.version.id);
 });

@@ -337,6 +337,9 @@ model Document {
   content     String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  // The version the content is based on: set by commit, publish and restore. Comments treat
+  // it as the current version. No foreign key; if it is deleted, the newest version is used.
+  baseVersionId String?
 
   // Deleting a parent goes through the API, which removes the whole subtree with its
   // comments and unpublished versions; the database refuses deletes that would orphan children.
@@ -357,8 +360,13 @@ model Comment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   tenantId  String?  @map("tenantid")
+  // The version the comment was written on: the document's newest version at that moment.
+  // Null for a draft comment (no versions yet), which the first commit adopts. No foreign
+  // key, so pruning or deleting a version never deletes review comments.
+  versionId String?
 
   @@index([docId])
+  @@index([docId, versionId])
   @@map("comments")
 }
 

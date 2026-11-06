@@ -10,28 +10,15 @@ const {
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
-const { bytes } = require('../middleware/docs');
+const { bytes, formatDoc, listDocSummaries } = require('../middleware/docs');
 const { isWorkspaceVisibleToUser } = require('../middleware/workspaces');
 const { writeAuditLog } = require('../lib/audit');
 
 const router = express.Router();
 
 const MAX_TITLE_LENGTH = 255;
-const PREVIEW_LENGTH = 100;
-// Raw HTML spends most of its first characters on tags and inline styles, so the list
-// query reads this many characters of content to build a 100-character text preview.
-const PREVIEW_SOURCE_LENGTH = 4000;
 // Guards the recursive subtree query; real trees are far shallower.
 const MAX_TREE_DEPTH = 100;
-
-const HTML_ENTITIES = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-};
 
 /** An error with an HTTP status, thrown inside tree operations and turned into a response. */
 class DocRequestError extends Error {
@@ -39,48 +26,6 @@ class DocRequestError extends Error {
     super(message);
     this.status = status;
   }
-}
-
-function decodeHtmlEntities(text) {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
-    if (entity[0] === '#') {
-      const code = entity[1] === 'x' || entity[1] === 'X'
-        ? parseInt(entity.slice(2), 16)
-        : parseInt(entity.slice(1), 10);
-      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
-    }
-    return HTML_ENTITIES[entity.toLowerCase()] ?? match;
-  });
-}
-
-function buildPreview(content) {
-  // The list query reads a content prefix, which can end inside a long tag (table tokens
-  // carry kilobytes of attribute data); drop that unterminated tag before stripping tags.
-  const text = String(content || '').replace(/<[^>]*$/, '').replace(/<[^>]+>/g, ' ');
-  return decodeHtmlEntities(text).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_LENGTH);
-}
-
-function toIso(value) {
-  return value instanceof Date ? value.toISOString() : value;
-}
-
-function formatDocSummary(doc, previewSource = doc.content) {
-  return {
-    id: doc.id,
-    title: doc.title,
-    userId: doc.userId,
-    tenantId: doc.tenantId,
-    workspaceId: doc.workspaceId ?? null,
-    parentId: doc.parentId ?? null,
-    sortOrder: Number(doc.sortOrder ?? 0),
-    createdAt: toIso(doc.createdAt),
-    updatedAt: toIso(doc.updatedAt),
-    preview: buildPreview(previewSource),
-  };
-}
-
-function formatDoc(doc) {
-  return { ...formatDocSummary(doc), content: doc.content };
 }
 
 function sendDocRequestError(res, err) {
@@ -425,14 +370,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
  * Only a content prefix is read from the database to build each preview.
  */
 router.get('/', requireAuth, resolveTenantContext, requirePermission('document.read'), async (req, res) => {
-  const rows = await prisma.$queryRaw`
-    SELECT id, title, "userId", "tenantId", "workspaceId", "parentId", "sortOrder", "createdAt", "updatedAt",
-      LEFT(content, ${PREVIEW_SOURCE_LENGTH}::int) AS "previewSource"
-    FROM documents
-    WHERE "tenantId" = ${req.tenant.id}
-    ORDER BY "updatedAt" DESC
-  `;
-  const docs = rows.map((row) => formatDocSummary(row, row.previewSource));
+  const docs = await listDocSummaries(req.tenant.id);
 
   writeAuditLog({
     userId: req.user.id,

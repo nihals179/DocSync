@@ -5,6 +5,7 @@ import Header from '../components/layout/Header';
 import RichEditor from '../components/editor/RichEditor';
 import Toolbar from '../components/editor/toolbar/Toolbar';
 import ThemeListbox from '../components/common/ThemeListbox';
+import RestoreVersionDialog from '../components/common/RestoreVersionDialog';
 import type { CursorFormat, RichEditorHandle, Run } from '../components/editor';
 import { isPageSize, type PageSize } from '../components/editor/pageConfig';
 import { ApiError, docsApi, editorApi, versionsApi } from '../services/api';
@@ -47,6 +48,19 @@ const SAVE_NOTICE_MS = 4000;
 const MAX_UNPUBLISHED_VERSIONS = 20;
 
 type VersionSaveResult = 'saved' | 'promoted' | 'unchanged' | 'failed';
+type LoadState = 'loading' | 'ready' | 'error';
+/** A document's title and content as they stood when an autosave was scheduled. */
+type AutoSaveTarget = { docId: string; title: string; html: string };
+
+/** The HTML the editor saves for its current runs (or plain text when it has no runs). */
+function serializeEditorHtml(runs: Run[], text: string): string {
+  return runs.length > 0 ? canvasRunsToHtml(runs) : canvasTextToHtml(text);
+}
+
+/** HTML as the editor itself would save it, so stored HTML in another format compares equal. */
+function toEditorHtml(html: string): string {
+  return serializeEditorHtml(htmlToRuns(html), '');
+}
 
 /** Turns a failed request into a sentence for the editor's error bar. */
 function describeSaveError(error: unknown): string {
@@ -67,6 +81,14 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   const [currentText, setCurrentText] = useState('');
   const [currentRuns, setCurrentRuns] = useState<Run[]>([]);
   const [savedVersions, setSavedVersions] = useState<SavedVersion[]>([]);
+  // The version the Versions panel is restoring, if any.
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const restoringVersionIdRef = useRef<string | null>(null);
+  // A version picked from a comment, waiting for the user to confirm the restore.
+  const [restoreConfirm, setRestoreConfirm] = useState<{ versionId: string; savedAt: string } | null>(null);
+  // The version the document is on: the last one committed, published or restored. Its
+  // comments are the current ones.
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocument[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => getInitialWorkspaceSelectionId());
@@ -85,6 +107,9 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   const [saveNotice, setSaveNotice] = useState('');
   // Content of the newest version (null when there is none); what Commit compares against.
   const [lastVersionHtml, setLastVersionHtml] = useState<string | null>(null);
+  // The content of the version the document is on (normalized), to tell whether a restore
+  // would discard anything. Differs from lastVersionHtml after restoring an older version.
+  const [currentVersionHtml, setCurrentVersionHtml] = useState<string | null>(null);
   const [lastVersionPublished, setLastVersionPublished] = useState(false);
   const [versionAction, setVersionAction] = useState<'commit' | 'publish' | null>(null);
   // Guards against a second Commit/Publish (double click, held Ctrl+S) before React re-renders.
@@ -132,13 +157,26 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     tableBorderRadiusPx: 0,
   });
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  // What autosave last stored for the open document, in the editor's own HTML.
   const lastAutoSavedHtmlRef = useRef<string>('');
   const lastAutoSavedTitleRef = useRef<string>('');
-  const isAutoSavingRef = useRef(false);
-  // A change made while a save is in flight is saved once that save finishes.
-  const pendingAutoSaveRef = useRef(false);
-  const [autoSaveRetry, setAutoSaveRetry] = useState(0);
-  const isDocLoadedRef = useRef(false);
+  // Saves and edits are only allowed once the open document has loaded ('ready'); the ref
+  // is what callbacks read, so a switch to another document blocks them immediately.
+  const [loadState, setLoadState] = useState<LoadState>('loading');
+  const loadStateRef = useRef<LoadState>('loading');
+  const [loadError, setLoadError] = useState<{ notFound: boolean; message: string } | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const currentDocIdRef = useRef(docId);
+  // Autosaves are tracked per document: a save never waits on another document's save,
+  // and a change made while its document is saving is queued until that save finishes.
+  const savingDocIdsRef = useRef<Set<string>>(new Set());
+  const queuedSavesRef = useRef<Map<string, AutoSaveTarget>>(new Map());
+  // Changes not yet handed to a save; flushed when leaving the document.
+  const pendingSaveRef = useRef<AutoSaveTarget | null>(null);
+  // The autosave request in flight for each document, so a restore can wait for it.
+  const inFlightSavesRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  // A failed save of a document that is no longer open, shown until dismissed.
+  const [otherDocSaveError, setOtherDocSaveError] = useState('');
 
   function normalizeVersionHtml(html: string) {
     return String(html || '').trim();
@@ -165,19 +203,147 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
     navigate(`/editor/${docIdValue}`);
   }
 
+  /**
+   * Saves a document's title and content in the background. Results only touch the editor's
+   * state while that document is still open; a failure after leaving it is reported apart.
+   */
+  const runAutoSave = useCallback(async (target: AutoSaveTarget): Promise<void> => {
+    const isOpen = () => currentDocIdRef.current === target.docId;
+    const normalizedHtml = normalizeVersionHtml(target.html);
+    const normalizedTitle = target.title.trim();
+    if (pendingSaveRef.current === target) pendingSaveRef.current = null;
+
+    // The server rejects an empty title, and title and content save together, so
+    // nothing is sent until the document has a title again.
+    if (!normalizedTitle) {
+      if (isOpen()) {
+        setAutoSaveStatus('error');
+        setSaveError(`Not saved: ${EMPTY_TITLE_MESSAGE}`);
+      }
+      return;
+    }
+    if (savingDocIdsRef.current.has(target.docId)) {
+      queuedSavesRef.current.set(target.docId, target);
+      return;
+    }
+    if (isOpen() && normalizedHtml === lastAutoSavedHtmlRef.current && normalizedTitle === lastAutoSavedTitleRef.current) {
+      return;
+    }
+
+    savingDocIdsRef.current.add(target.docId);
+    if (isOpen()) setAutoSaveStatus('saving');
+    try {
+      // The cloud icon shows progress, so the page-wide loading overlay stays out of the way.
+      const request = docsApi.update(token, target.docId, { title: target.title, content: target.html }, { background: true });
+      inFlightSavesRef.current.set(target.docId, request);
+      await request;
+      if (isOpen()) {
+        lastAutoSavedHtmlRef.current = normalizedHtml;
+        lastAutoSavedTitleRef.current = normalizedTitle;
+        setAutoSaveStatus('saved');
+        setSaveError('');
+      }
+      setSavedDocuments((prev) => prev.map((doc) => (
+        doc.id === target.docId ? { ...doc, title: target.title, updatedAt: new Date().toISOString() } : doc
+      )));
+      // The preview comes from the server, so the sidebar search matches what GET /api/docs builds.
+      void docsApi.list(token, { background: true }).then(({ docs }) => setSavedDocuments(docs)).catch(() => {});
+    } catch (error: unknown) {
+      console.error('Autosave failed.', error);
+      if (isOpen()) {
+        setAutoSaveStatus('error');
+        setSaveError(`Not saved: ${describeSaveError(error)}`);
+      } else {
+        setOtherDocSaveError(`Changes to “${normalizedTitle}” weren’t saved: ${describeSaveError(error)}`);
+      }
+    } finally {
+      savingDocIdsRef.current.delete(target.docId);
+      inFlightSavesRef.current.delete(target.docId);
+      const queued = queuedSavesRef.current.get(target.docId);
+      if (queued) {
+        queuedSavesRef.current.delete(target.docId);
+        void runAutoSave(queued);
+      }
+    }
+  }, [token]);
+
+  const runAutoSaveRef = useRef(runAutoSave);
+  useEffect(() => {
+    runAutoSaveRef.current = runAutoSave;
+  }, [runAutoSave]);
+
+  // The access token is refreshed while the editor is open; loading reads it from a ref so a
+  // refresh doesn't reload the document and throw away what was typed since the last save.
+  const tokenRef = useRef(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
+  // Leaving a document (switching to another, or closing the editor) saves its changes at
+  // once instead of dropping them with the pending debounce.
+  useEffect(() => () => {
+    const pending = pendingSaveRef.current;
+    if (pending && pending.docId === docId) void runAutoSaveRef.current(pending);
+  }, [docId]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!pendingSaveRef.current && savingDocIdsRef.current.size === 0) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   useEffect(() => {
     if (!docId) return;
     let cancelled = false;
-    isDocLoadedRef.current = false;
+
+    // Clear the previous document first, so nothing of it can be saved into this one
+    // while this one loads.
+    currentDocIdRef.current = docId;
+    loadStateRef.current = 'loading';
+    setLoadState('loading');
+    setLoadError(null);
+    pendingSaveRef.current = null;
+    lastAutoSavedHtmlRef.current = '';
+    lastAutoSavedTitleRef.current = '';
+    setTitle('');
+    setCurrentText('');
+    setCurrentRuns([]);
+    editorRef.current?.setRuns([]);
+    // The loading overlay blocks the mouse; take focus off the canvas so keystrokes can't
+    // land in it either and then be replaced by the loaded content.
+    if (document.activeElement instanceof HTMLElement && editorShellRef.current?.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    setSavedVersions([]);
+    setRestoreConfirm(null);
+    // A restore still running belongs to the previous document; it checks and stops itself.
+    restoringVersionIdRef.current = null;
+    setRestoringVersionId(null);
+    setCurrentVersionId(null);
+    setCurrentVersionHtml(null);
+    setLastVersionHtml(null);
+    setLastVersionPublished(false);
+    setSaveError('');
+    setSaveNotice('');
+    setAutoSaveStatus('idle');
+    setShowSavePopup(false);
+    setSaveMessage('');
+    setHtmlEditMode(false);
 
     editorApi
-      .bootstrap(token, docId)
-      .then(({ doc, versions, latestVersion, docs, workspaces: available }) => {
+      .bootstrap(tokenRef.current, docId)
+      .then(({ doc, versions, latestVersion, currentVersion, docs, workspaces: available }) => {
         if (cancelled) return;
 
         setTitle(doc.title ?? '');
         setSavedDocuments(docs);
         setSavedVersions(versions);
+        // The server's rule (the base version, else the newest), the same one Comments use.
+        setCurrentVersionId(currentVersion?.id ?? null);
         setWorkspaces(available);
 
         const currentWorkspaceId = selectedWorkspaceIdRef.current;
@@ -186,43 +352,54 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
           setSelectedWorkspaceId(fallbackWorkspaceId);
         }
 
-        const normalizedHtml = normalizeVersionHtml(doc.content ?? '');
-        const normalizedTitle = String(doc.title || '').trim();
-        setLastVersionHtml(latestVersion ? normalizeVersionHtml(latestVersion.content) : null);
-        setLastVersionPublished(Boolean(latestVersion?.isPublished));
-        lastAutoSavedHtmlRef.current = normalizedHtml;
-        lastAutoSavedTitleRef.current = normalizedTitle;
-
+        // Compare against the content as the editor serializes it: documents stored in
+        // another HTML format (templates, the API) would otherwise look changed on open
+        // and be saved without an edit.
         const runs = htmlToRuns(doc.content ?? '');
+        setLastVersionHtml(latestVersion ? normalizeVersionHtml(toEditorHtml(latestVersion.content)) : null);
+        setLastVersionPublished(Boolean(latestVersion?.isPublished));
+        const currentContent = currentVersion ? (currentVersion.content ?? latestVersion?.content) : undefined;
+        setCurrentVersionHtml(currentContent === undefined ? null : normalizeVersionHtml(toEditorHtml(currentContent)));
+        lastAutoSavedHtmlRef.current = normalizeVersionHtml(serializeEditorHtml(runs, ''));
+        lastAutoSavedTitleRef.current = String(doc.title || '').trim();
+
         setCurrentRuns(runs);
         editorRef.current?.setRuns(runs);
-        isDocLoadedRef.current = true;
+        loadStateRef.current = 'ready';
+        setLoadState('ready');
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         console.error('Failed to bootstrap editor.', error);
+        loadStateRef.current = 'error';
+        setLoadState('error');
+        setLoadError({
+          notFound: error instanceof ApiError && error.status === 404,
+          message: describeSaveError(error),
+        });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [token, docId]);
+  }, [docId, reloadKey]);
 
   useEffect(() => {
-    if (!docId || !isDocLoadedRef.current) return;
+    // The ref, not the state: on the render that switches documents the state still says
+    // 'ready' for the previous one.
+    if (!docId || loadStateRef.current !== 'ready') return;
+    // A restore replaces the content; saving the old content meanwhile would undo it.
+    if (restoringVersionIdRef.current) return;
 
-    const timeoutId = window.setTimeout(async () => {
-      if (isAutoSavingRef.current) {
-        pendingAutoSaveRef.current = true;
-        return;
-      }
+    const html = serializeEditorHtml(currentRuns, currentText);
+    const unchanged = normalizeVersionHtml(html) === lastAutoSavedHtmlRef.current
+      && String(title || '').trim() === lastAutoSavedTitleRef.current;
+    const target: AutoSaveTarget = { docId, title, html };
+    pendingSaveRef.current = unchanged ? null : target;
 
-      const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
-      const normalizedHtml = normalizeVersionHtml(html);
-      const normalizedTitle = String(title || '').trim();
-
-      const unchanged = normalizedHtml === lastAutoSavedHtmlRef.current
-        && normalizedTitle === lastAutoSavedTitleRef.current;
+    const timeoutId = window.setTimeout(() => {
+      // A restore may have started after this was scheduled.
+      if (restoringVersionIdRef.current) return;
       if (unchanged) {
         // Back to what is already saved (e.g. the old title was typed again): nothing is
         // unsaved, so an earlier error no longer applies.
@@ -230,50 +407,11 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
         setAutoSaveStatus((status) => (status === 'error' ? 'saved' : status));
         return;
       }
-
-      // The server rejects an empty title, and title and content save together, so
-      // nothing is sent until the document has a title again.
-      if (!normalizedTitle) {
-        setAutoSaveStatus('error');
-        setSaveError(`Not saved: ${EMPTY_TITLE_MESSAGE}`);
-        return;
-      }
-
-      isAutoSavingRef.current = true;
-      setAutoSaveStatus('saving');
-      try {
-        // The cloud icon shows progress, so the page-wide loading overlay stays out of the way.
-        await docsApi.update(token, docId, { title, content: html }, { background: true });
-        lastAutoSavedHtmlRef.current = normalizedHtml;
-        lastAutoSavedTitleRef.current = normalizedTitle;
-        setAutoSaveStatus('saved');
-        setSaveError('');
-
-        setSavedDocuments((prev) => prev.map((doc) => {
-          if (doc.id !== docId) return doc;
-          const preview = String(html || '').replace(/<[^>]+>/g, '').slice(0, 100);
-          return {
-            ...doc,
-            title,
-            preview,
-            updatedAt: new Date().toISOString(),
-          };
-        }));
-      } catch (error: unknown) {
-        console.error('Autosave failed.', error);
-        setAutoSaveStatus('error');
-        setSaveError(`Not saved: ${describeSaveError(error)}`);
-      } finally {
-        isAutoSavingRef.current = false;
-        if (pendingAutoSaveRef.current) {
-          pendingAutoSaveRef.current = false;
-          setAutoSaveRetry((n) => n + 1);
-        }
-      }
+      void runAutoSave(target);
     }, 1500);
 
     return () => window.clearTimeout(timeoutId);
-  }, [token, docId, title, currentText, currentRuns, autoSaveRetry]);
+  }, [docId, title, currentText, currentRuns, loadState, restoringVersionId, runAutoSave]);
 
   useEffect(() => {
     try {
@@ -289,13 +427,15 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
    */
   const saveVersion = useCallback(
     async (previewText?: string, options: { published?: boolean } = {}): Promise<VersionSaveResult> => {
-      if (!docId) return 'failed';
-      const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+      if (!docId || loadStateRef.current !== 'ready' || restoringVersionIdRef.current) return 'failed';
+      const html = serializeEditorHtml(currentRuns, currentText);
       try {
         const preview = buildVersionPreview(html, previewText);
         const { version, promoted } = await versionsApi.save(token, docId, html, preview, options);
         setLastVersionHtml(normalizeVersionHtml(html));
         setLastVersionPublished(version.isPublished);
+        setCurrentVersionId(version.id);
+        setCurrentVersionHtml(normalizeVersionHtml(html));
         setSavedVersions((prev) => {
           if (promoted) return prev.map((item) => (item.id === version.id ? { ...item, isPublished: true } : item));
           let unpublished = 0;
@@ -323,22 +463,39 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
   const handleSwitchSavedVersion = useCallback(
     async (versionId: string) => {
-      if (!docId) return;
+      if (!docId || loadStateRef.current !== 'ready' || restoringVersionIdRef.current) return;
+      restoringVersionIdRef.current = versionId;
+      setRestoringVersionId(versionId);
+      // The restore replaces the content (the dialog said so): drop edits waiting to be saved,
+      // and let a save already on its way land first so it can't overwrite the restore.
+      pendingSaveRef.current = null;
+      queuedSavesRef.current.delete(docId);
+      const isStillOpen = () => currentDocIdRef.current === docId;
+      // Background requests: the Versions panel and the canvas show the progress, not the
+      // full-page overlay.
+      const background = { background: true };
       try {
-        await versionsApi.restore(token, docId, versionId);
+        await inFlightSavesRef.current.get(docId)?.catch(() => {});
+        if (!isStillOpen()) return;
+        await versionsApi.restore(token, docId, versionId, background);
+        if (!isStillOpen()) return;
         const [{ doc }, { versions: allVersions }, { docs }] = await Promise.all([
-          docsApi.get(token, docId),
-          versionsApi.listAll(token, { docId, limit: 500 }),
-          docsApi.list(token),
+          docsApi.get(token, docId, background),
+          versionsApi.listAll(token, { docId, limit: 500 }, background),
+          docsApi.list(token, background),
         ]);
+        // Another document was opened meanwhile: none of this belongs on it.
+        if (!isStillOpen()) return;
 
         const restoredContent = doc.content ?? '';
         const restoredTitle = doc.title ?? '';
         const restoredRuns = htmlToRuns(restoredContent);
-        const normalizedHtml = normalizeVersionHtml(restoredContent);
+        const normalizedHtml = normalizeVersionHtml(serializeEditorHtml(restoredRuns, ''));
         const normalizedTitle = String(restoredTitle || '').trim();
 
         setTitle(restoredTitle);
+        setCurrentVersionId(doc.baseVersionId ?? versionId);
+        setCurrentVersionHtml(normalizedHtml);
         setSavedDocuments(docs);
         setSavedVersions(
           allVersions
@@ -360,7 +517,13 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
         setSaveError('');
       } catch (error: unknown) {
         console.error('Failed to switch saved version.', error);
-        setSaveError(`Couldn’t restore that version: ${describeSaveError(error)}`);
+        if (isStillOpen()) setSaveError(`Couldn’t restore that version: ${describeSaveError(error)}`);
+      } finally {
+        // Only clear our own flag: after a document switch another restore may be running.
+        if (restoringVersionIdRef.current === versionId) {
+          restoringVersionIdRef.current = null;
+          setRestoringVersionId(null);
+        }
       }
     },
     [docId, token],
@@ -838,17 +1001,17 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
 
   /** Saves title and content right away (Commit, Publish). Resolves false when it failed. */
   const saveDocumentNow = useCallback(async (): Promise<boolean> => {
-    if (!docId) return false;
+    if (!docId || loadStateRef.current !== 'ready' || restoringVersionIdRef.current) return false;
     const normalizedTitle = String(title || '').trim();
     if (!normalizedTitle) {
       setAutoSaveStatus('error');
       setSaveError(`Not saved: ${EMPTY_TITLE_MESSAGE}`);
       return false;
     }
-    const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
+    const html = serializeEditorHtml(currentRuns, currentText);
     const normalizedHtml = normalizeVersionHtml(html);
     // Autosave already stored exactly this, so skip the round trip unless a save is in flight.
-    const alreadySaved = !isAutoSavingRef.current
+    const alreadySaved = !savingDocIdsRef.current.has(docId)
       && normalizedHtml === lastAutoSavedHtmlRef.current
       && normalizedTitle === lastAutoSavedTitleRef.current;
     if (alreadySaved) return true;
@@ -870,10 +1033,27 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, [token, docId, title, currentText, currentRuns]);
 
   /** True when the editor content differs from the newest version (or there is none yet). */
-  const hasUncommittedChanges = useMemo(() => {
-    const html = currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText);
-    return normalizeVersionHtml(html) !== lastVersionHtml;
-  }, [currentRuns, currentText, lastVersionHtml]);
+  const hasUncommittedChanges = useMemo(
+    () => normalizeVersionHtml(serializeEditorHtml(currentRuns, currentText)) !== lastVersionHtml,
+    [currentRuns, currentText, lastVersionHtml],
+  );
+
+  /**
+   * True when the content differs from the version the document is on, so restoring another
+   * version would discard something. Unlike hasUncommittedChanges, this is false right after a
+   * restore of an older version.
+   */
+  const hasChangesSinceCurrentVersion = useMemo(
+    () => normalizeVersionHtml(serializeEditorHtml(currentRuns, currentText)) !== currentVersionHtml,
+    [currentRuns, currentText, currentVersionHtml],
+  );
+
+  /** Asks before restoring: from a comment's version or from a Saved Versions row. */
+  const askToRestore = useCallback((versionId: string) => {
+    const version = savedVersions.find((item) => item.id === versionId);
+    if (version) setRestoreConfirm({ versionId, savedAt: version.savedAt });
+  }, [savedVersions]);
+  const closeRestoreConfirm = useCallback(() => setRestoreConfirm(null), []);
 
   /** Runs one Commit or Publish at a time, with the buttons showing it in progress. */
   const runVersionAction = useCallback(async (action: 'commit' | 'publish', work: () => Promise<void>) => {
@@ -889,7 +1069,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, []);
 
   const handleSaveDocument = useCallback(async () => {
-    if (versionActionRef.current) return;
+    if (versionActionRef.current || loadStateRef.current !== 'ready' || restoringVersionIdRef.current) return;
     if (!hasUncommittedChanges) {
       showSaveNotice(NO_CHANGES_MESSAGE);
       return;
@@ -920,7 +1100,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, [handleSaveDocument]);
 
   const handlePublishDocument = useCallback(async () => {
-    if (versionActionRef.current) return;
+    if (versionActionRef.current || loadStateRef.current !== 'ready' || restoringVersionIdRef.current) return;
     if (!hasUncommittedChanges && lastVersionPublished) {
       showSaveNotice(ALREADY_PUBLISHED_MESSAGE);
       return;
@@ -941,10 +1121,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
   }, [saveNotice]);
 
   const docText = currentText;
-  const renderedHtml = useMemo(
-    () => (currentRuns.length > 0 ? canvasRunsToHtml(currentRuns) : canvasTextToHtml(currentText)),
-    [currentRuns, currentText],
-  );
+  const renderedHtml = useMemo(() => serializeEditorHtml(currentRuns, currentText), [currentRuns, currentText]);
   const prettyRenderedHtml = useMemo(
     () => prettyPrintHtml(renderedHtml || '<p></p>'),
     [renderedHtml],
@@ -1120,7 +1297,8 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                     value={title}
                     onChange={(e) => handleTitleChange(e.target.value)}
                     maxLength={MAX_TITLE_LENGTH}
-                    placeholder="Untitled document"
+                    placeholder={loadState === 'ready' ? 'Untitled document' : ''}
+                    disabled={loadState !== 'ready' || restoringVersionId !== null}
                     className="w-full bg-transparent px-2 py-1 text-sm font-semibold text-slate-800 outline-none"
                   />
                   <span
@@ -1161,7 +1339,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                     <button
                       type="button"
                       onClick={() => setShowSavePopup((prev) => !prev)}
-                      disabled={versionAction !== null}
+                      disabled={versionAction !== null || loadState !== 'ready' || restoringVersionId !== null}
                       aria-busy={versionAction === 'commit'}
                       className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     >
@@ -1221,7 +1399,7 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                   <button
                     type="button"
                     onClick={() => void handlePublishDocument()}
-                    disabled={versionAction !== null}
+                    disabled={versionAction !== null || loadState !== 'ready' || restoringVersionId !== null}
                     aria-busy={versionAction === 'publish'}
                     className="inline-flex items-center gap-1 rounded-md bg-cyan-600 px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -1248,6 +1426,23 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                     </button>
                   </div>
                 )}
+                {otherDocSaveError && (
+                  <div
+                    role="alert"
+                    className="mb-1 flex items-start gap-2 rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600"
+                  >
+                    <span className="material-icons shrink-0" style={{ fontSize: '0.95rem' }}>error_outline</span>
+                    <span className="min-w-0 flex-1">{otherDocSaveError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setOtherDocSaveError('')}
+                      aria-label="Dismiss"
+                      className="shrink-0 rounded text-red-400 hover:text-red-600"
+                    >
+                      <span className="material-icons" style={{ fontSize: '0.95rem' }}>close</span>
+                    </button>
+                  </div>
+                )}
                 {saveNotice && !saveError && (
                   <div
                     role="status"
@@ -1267,23 +1462,70 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                 )}
                 </>
               )}
-              <Toolbar
-                editorRef={editorRef}
-                pageSize={pageSize}
-                onPageSizeChange={setPageSize}
-                isFullscreen={showFullscreenEditor}
-                onToggleFullscreen={() => setIsFullscreenEditor((p) => !p)}
-                cursorFormat={cursorFormat}
-              />
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <RichEditor
-                  ref={editorRef}
-                  onContentChange={handleEditorChange}
-                  onRunsChange={handleRunsChange}
-                  onCursorFormatChange={setCursorFormat}
-                  pageSize={pageSize}
-                />
-              </div>
+              {loadState === 'error' ? (
+                <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+                  <div role="alert" className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+                    <span className="material-icons mb-2 block text-3xl text-slate-300">
+                      {loadError?.notFound ? 'find_in_page' : 'cloud_off'}
+                    </span>
+                    <h2 className="text-base font-bold text-slate-800">
+                      {loadError?.notFound ? 'Document not found' : 'Couldn’t open this document'}
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {loadError?.notFound ? 'It may have been deleted, or the link is wrong.' : loadError?.message}
+                    </p>
+                    <div className="mt-4 flex justify-center gap-2">
+                      {!loadError?.notFound && (
+                        <button
+                          type="button"
+                          onClick={() => setReloadKey((key) => key + 1)}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                        >
+                          Try again
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => navigate('/workspace')}
+                        className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-700"
+                      >
+                        Back to workspace
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <Toolbar
+                    editorRef={editorRef}
+                    pageSize={pageSize}
+                    onPageSizeChange={setPageSize}
+                    isFullscreen={showFullscreenEditor}
+                    onToggleFullscreen={() => setIsFullscreenEditor((p) => !p)}
+                    cursorFormat={cursorFormat}
+                  />
+                  <div className="relative min-h-0 flex-1 overflow-hidden">
+                    <RichEditor
+                      ref={editorRef}
+                      onContentChange={handleEditorChange}
+                      onRunsChange={handleRunsChange}
+                      onCursorFormatChange={setCursorFormat}
+                      pageSize={pageSize}
+                    />
+                    {(loadState === 'loading' || restoringVersionId) && (
+                      // Covers the canvas so nothing can be typed until the document (or the
+                      // version being restored) has loaded.
+                      <div
+                        role="status"
+                        aria-label="Loading document"
+                        className="absolute inset-0 z-10 flex items-center justify-center bg-white/70"
+                      >
+                        <span className="material-icons animate-spin text-cyan-600" style={{ fontSize: '1.6rem' }}>autorenew</span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </main>
           {!showFullscreenEditor && (
@@ -1295,22 +1537,24 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
                 <Suspense fallback={<div className="text-xs text-slate-500">Loading panel...</div>}>
                   {activeTool === 'comments' && (
                     <Comments
+                      // A fresh panel per document, so one document's comments never show on another.
+                      key={docId}
                       docId={docId}
                       token={token}
-                      onCommentAdded={() => {
-                        void saveVersion();
-                      }}
+                      versions={savedVersions}
+                      currentVersionId={currentVersionId}
+                      onOpenVersion={askToRestore}
                     />
                   )}
                   {activeTool === 'versions' && (
                     <SavedDocuments
                       versions={savedVersions}
-                      onSwitchVersion={(versionId) => {
-                        void handleSwitchSavedVersion(versionId);
-                      }}
+                      restoringVersionId={restoringVersionId}
+                      currentVersionId={currentVersionId}
+                      onSwitchVersion={askToRestore}
                     />
                   )}
-                  {activeTool === 'todo' && <TodoList docId={docId} token={token} />}
+                  {activeTool === 'todo' && <TodoList key={docId} docId={docId} token={token} />}
                   {activeTool === 'grammar' && <GrammarChecker token={token} docText={docText} />}
                   {activeTool === 'ai' && <AiTool token={token} />}
                 </Suspense>
@@ -1652,6 +1896,21 @@ function EditorPage({ token, docId }: { token: string; docId: string }) {
             Delete
           </button>
         </div>
+      )}
+
+      {restoreConfirm && (
+        <RestoreVersionDialog
+          savedAt={restoreConfirm.savedAt}
+          warnUnsavedChanges={hasChangesSinceCurrentVersion}
+          onCancel={closeRestoreConfirm}
+          onConfirm={() => {
+            const { versionId } = restoreConfirm;
+            setRestoreConfirm(null);
+            // Show Saved Versions, so the restore's progress and the loaded version are visible.
+            setActiveTool('versions');
+            void handleSwitchSavedVersion(versionId);
+          }}
+        />
       )}
 
       {workspaceModal && (

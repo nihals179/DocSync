@@ -4,6 +4,8 @@ const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
+const { getCurrentVersionId } = require('../middleware/versions');
+const { getVersionHistoryRetentionDays } = require('../store');
 
 const router = express.Router({ mergeParams: true });
 
@@ -20,15 +22,38 @@ async function getDocForTenant(docId, tenantId, res) {
   return doc;
 }
 
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function formatComment(row, userName) {
+  return {
+    id: row.id,
+    text: row.text,
+    userId: row.userId,
+    userName: userName || 'Unknown user',
+    versionId: row.versionId ?? null,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
 /**
  * GET /api/docs/:docId/comments
+ * Every comment on the document. Each one carries the version it was written on (null when
+ * the document had no versions yet); currentVersionId is the version the document is on now,
+ * so the client can show that version's comments first and group the rest by version.
  */
 router.get('/', requireAuth, resolveTenantContext, requirePermission('document.comment.read'), async (req, res) => {
-  if (!await getDocForTenant(req.params.docId, req.tenant.id, res)) return;
-  const rows = await prisma.comment.findMany({
-    where: { docId: req.params.docId },
-    orderBy: { createdAt: 'asc' },
-  });
+  const doc = await getDocForTenant(req.params.docId, req.tenant.id, res);
+  if (!doc) return;
+  const [rows, currentVersionId] = await Promise.all([
+    prisma.comment.findMany({
+      where: { docId: req.params.docId },
+      orderBy: { createdAt: 'asc' },
+    }),
+    getVersionHistoryRetentionDays(req.tenant.id).then((days) => getCurrentVersionId(doc, days)),
+  ]);
 
   const userIds = [...new Set(rows.map((row) => row.userId))];
   const users = userIds.length
@@ -39,23 +64,21 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('document.c
     : [];
   const userNameById = new Map(users.map((user) => [user.id, user.name]));
 
-  const list = rows.map((row) => ({
-    id: row.id,
-    text: row.text,
-    userId: row.userId,
-    userName: userNameById.get(row.userId) || 'Unknown user',
-    createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
-    updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
-  }));
-  res.json({ comments: list });
+  res.json({
+    comments: rows.map((row) => formatComment(row, userNameById.get(row.userId))),
+    currentVersionId,
+  });
 });
 
 /**
  * POST /api/docs/:docId/comments
  * Body: { text }
+ * The comment is pinned to the version the document is on (see getCurrentVersionId). With no
+ * versions yet it is a draft comment, which the document's first commit adopts.
  */
 router.post('/', requireAuth, resolveTenantContext, requirePermission('document.comment.write'), async (req, res) => {
-  if (!await getDocForTenant(req.params.docId, req.tenant.id, res)) return;
+  const doc = await getDocForTenant(req.params.docId, req.tenant.id, res);
+  if (!doc) return;
   const { text } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text is required.' });
 
@@ -65,17 +88,10 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
       docId: req.params.docId,
       userId: req.user.id,
       text: text.trim(),
+      versionId: await getCurrentVersionId(doc, await getVersionHistoryRetentionDays(req.tenant.id)),
     },
   });
-  const comment = {
-    id: created.id,
-    text: created.text,
-    userId: created.userId,
-    userName: String(req.user?.name || 'Unknown user'),
-    createdAt: created.createdAt instanceof Date ? created.createdAt.toISOString() : created.createdAt,
-    updatedAt: created.updatedAt instanceof Date ? created.updatedAt.toISOString() : created.updatedAt,
-  };
-  res.status(201).json({ comment });
+  res.status(201).json({ comment: formatComment(created, String(req.user?.name || '')) });
 });
 
 /**

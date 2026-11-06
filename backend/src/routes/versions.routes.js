@@ -33,6 +33,14 @@ function formatVersion(item) {
   };
 }
 
+/**
+ * Records the version a document's content is based on. Raw SQL so that committing doesn't
+ * bump the document's updatedAt (Prisma's @updatedAt would), which orders the sidebar.
+ */
+async function setBaseVersion(docId, versionId, client = prisma) {
+  await client.$executeRaw`UPDATE documents SET "baseVersionId" = ${versionId} WHERE id = ${docId}`;
+}
+
 async function getDocForTenant(docId, tenantId, res) {
   const doc = await prisma.document.findUnique({ where: { id: docId } });
   if (!doc) {
@@ -163,22 +171,42 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('document.
       where: { id: latest.id },
       data: { isPublished: true, docTitle: doc.title },
     });
+    await setBaseVersion(doc.id, promoted.id);
     return res.json({ version: formatVersion(promoted), promoted: true });
   }
 
+  // Draft comments (no version) wait for the document's first commit, or for the first one after
+  // every earlier version aged out of the plan's history window.
+  const hadRetainedVersion = latest
+    ? filterVersionsByRetention([latest], await getVersionHistoryRetentionDays(req.tenant.id)).length > 0
+    : false;
+
   const derivedPreview = (preview ?? content.replace(/<[^>]+>/g, '').trim()).slice(0, 90);
-  const created = await prisma.version.create({
-    data: {
-      id: uuidv4(),
-      docId: doc.id,
-      userId: req.user.id,
-      tenantId: req.tenant.id,
-      title: derivedPreview,
-      content,
-      savedAt: new Date(),
-      isPublished: publish,
-      docTitle: publish ? doc.title : null,
-    },
+  // Together or not at all: the version, the document moving onto it, and (on the first
+  // commit) the draft comments it adopts.
+  const created = await prisma.$transaction(async (tx) => {
+    const row = await tx.version.create({
+      data: {
+        id: uuidv4(),
+        docId: doc.id,
+        userId: req.user.id,
+        tenantId: req.tenant.id,
+        title: derivedPreview,
+        content,
+        savedAt: new Date(),
+        isPublished: publish,
+        docTitle: publish ? doc.title : null,
+      },
+    });
+    await setBaseVersion(doc.id, row.id, tx);
+    // Comments written while there was no (visible) version belong to this commit.
+    if (!hadRetainedVersion) {
+      await tx.comment.updateMany({
+        where: { docId: doc.id, versionId: null },
+        data: { versionId: row.id },
+      });
+    }
+    return row;
   });
 
   const overflow = await prisma.version.findMany({
@@ -222,7 +250,8 @@ router.post('/:versionId/restore', requireAuth, resolveTenantContext, requirePer
 
   const updatedDoc = await prisma.document.update({
     where: { id: doc.id },
-    data: { content: version.content },
+    // The document is now on this version, so its comments become the current ones.
+    data: { content: version.content, baseVersionId: version.id },
   });
   res.json({ doc: updatedDoc });
 });

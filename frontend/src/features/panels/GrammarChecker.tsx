@@ -25,7 +25,7 @@ const GrammarChecker: React.FC<{ token: string; docText: string }> = ({ token, d
     setState('loading');
     setDismissed([]);
     try {
-      const { issues: found } = await grammarApi.check(token, docText || ' ');
+      const { issues: found } = await grammarApi.check(token, docText || ' ', { background: true });
       setIssues(found);
     } catch {
       setIssues([]);
