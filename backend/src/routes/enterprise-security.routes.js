@@ -23,7 +23,6 @@ const {
   findTenantBySlug,
 } = require('../store');
 const { listAuditLogs, toAuditCsv, writeAuditLog } = require('../lib/audit');
-const { findUserByIdentifier } = require('../middleware/auth');
 
 async function getSecurityByDomain(email) {
   const normalizedEmail = String(email || '').toLowerCase().trim();

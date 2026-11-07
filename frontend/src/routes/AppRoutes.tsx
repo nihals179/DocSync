@@ -14,7 +14,6 @@ const LandingPage = lazy(() => import('../pages/LandingPage'));
 const AdminLoginPage = lazy(() => import('../pages/AdminLoginPage'));
 const TenantAdminPage = lazy(() => import('../pages/TenantAdminPage'));
 const ResetPasswordPage = lazy(() => import('../pages/ResetPasswordPage'));
-const SecuritySettingsPage = lazy(() => import('../pages/SecuritySettingsPage'));
 const SettingsDashboardPage = lazy(() => import('../pages/SettingsDashboardPage'));
 const VerifyEmailPage = lazy(() => import('../pages/VerifyEmailPage'));
 const AcceptInvitePage = lazy(() => import('../pages/AcceptInvitePage'));
@@ -35,7 +34,7 @@ function ReadOnlyDocumentRoute({ token, userName }: { token: string; userName: s
   return <DocumentViewerPage token={token} docId={docId} userName={userName} />;
 }
 
-export function AppRoutes() {
+function AppRoutes() {
   const navigate = useNavigate();
   const {
     session,
@@ -131,23 +130,10 @@ export function AppRoutes() {
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/invites/:token" element={<AcceptInvitePage />} />
+      <Route path="/security" element={<Navigate to="/settings?view=security" replace />} />
       <Route
-        path="/security"
-        element={
-          session ? (
-            <SecuritySettingsPage
-              token={session.accessToken}
-              user={session.user}
-              onUserUpdate={handleUserUpdate}
-              onLoggedOut={() => {
-                applySession(null);
-                navigate('/auth', { replace: true });
-              }}
-            />
-          ) : (
-            <Navigate to="/auth" replace />
-          )
-        }
+        path="/admin/auth/callback"
+        element={<SsoCallbackPage />}
       />
       <Route
         path="/workspace"
@@ -197,7 +183,16 @@ export function AppRoutes() {
         path="/settings"
         element={
           session ? (
-            <SettingsDashboardPage token={session.accessToken} userName={session.user.name} />
+            <SettingsDashboardPage
+              token={session.accessToken}
+              userName={session.user.name}
+              user={session.user}
+              onUserUpdate={handleUserUpdate}
+              onLoggedOut={() => {
+                applySession(null);
+                navigate('/auth', { replace: true });
+              }}
+            />
           ) : (
             <Navigate to="/auth" replace />
           )

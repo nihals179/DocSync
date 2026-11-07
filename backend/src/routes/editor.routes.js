@@ -1,5 +1,5 @@
 const express = require('express');
-const { prisma } = require('../db/client');
+const { tenantPrisma: prisma } = require('../db/tenant-client');
 
 const { ensureWorkspaceForUserProvisioned, getVersionHistoryRetentionDays } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
@@ -53,7 +53,9 @@ router.get(
 
     let workspaceRows = [];
     try {
-      await ensureWorkspaceForUserProvisioned(req.user);
+      if (req.tenant.databaseMode !== 'dedicated') {
+        await ensureWorkspaceForUserProvisioned(req.user);
+      }
       workspaceRows = await prisma.workspace.findMany({
         where: {
           OR: [

@@ -381,10 +381,6 @@ async function getSessionById(sessionId) {
   return session || null;
 }
 
-function matchesRefreshToken(session, token) {
-  return session.refreshTokenHash === hashToken(token);
-}
-
 async function findSessionByRefreshToken(refreshToken) {
   if (!refreshToken) return null;
   if (!isDatabaseConfigured()) return null;

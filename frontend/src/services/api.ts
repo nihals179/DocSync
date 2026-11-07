@@ -18,6 +18,9 @@ export type TenantSummary = {
   ownerUserId: string;
   createdAt: string;
   updatedAt: string;
+  databaseMode?: 'shared' | 'dedicated';
+  databaseStatus?: 'shared' | 'provisioning' | 'active' | 'failed' | 'decommissioning';
+  databaseSecretName?: string | null;
 };
 
 export type tenantMembership = {
@@ -389,7 +392,7 @@ export function clearPersistedCsrfToken() {
   persistCsrfToken('');
 }
 
-export function getPersistedTenantContextId() {
+function getPersistedTenantContextId() {
   if (typeof window === 'undefined') return '';
   try {
     return window.sessionStorage.getItem(TENANT_CONTEXT_STORAGE_KEY) ?? '';
@@ -398,7 +401,7 @@ export function getPersistedTenantContextId() {
   }
 }
 
-export function persistTenantContextId(tenantId: string | null | undefined) {
+function persistTenantContextId(tenantId: string | null | undefined) {
   if (typeof window === 'undefined') return;
   try {
     const normalized = String(tenantId || '').trim();
@@ -975,6 +978,12 @@ export const tenantsApi = {
     }).then((response) => {
       persistTenantContextId(response.tenant?.id || null);
       return response;
+    }),
+  updateDatabase: (token: string, payload: { mode: 'shared' | 'dedicated'; databaseSecretName?: string }) =>
+    apiFetch<{ tenant: Pick<TenantSummary, 'id' | 'databaseMode' | 'databaseStatus'> }>('/api/tenants/current/database', {
+      method: 'PATCH',
+      token,
+      body: JSON.stringify(payload),
     }),
   listMembers: (token: string) =>
     apiFetch<{ members: TenantMember[] }>('/api/tenants/current/members', {

@@ -1,4 +1,5 @@
 const app = require('./app');
+const { disconnectAllTenantClients } = require('./db/tenant-client');
 
 const PORT = process.env.PORT || 4000;
 let serverHandle = null;
@@ -23,11 +24,12 @@ function shutdown(signal) {
     return;
   }
 
-  serverHandle.close((error) => {
+  serverHandle.close(async (error) => {
     if (error) {
       logAndExit(1, `${signal}:close-error`, error);
       return;
     }
+    await disconnectAllTenantClients();
     console.warn('[server-shutdown] HTTP server closed. Exiting.');
     process.exit(0);
   });

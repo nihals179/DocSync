@@ -1,4 +1,4 @@
-const { prisma } = require('../../db/client');
+const { tenantPrisma: prisma } = require('../../db/tenant-client');
 
 async function getDoc(docId, tenantId, res) {
   const doc = await prisma.document.findUnique({ where: { id: docId } });

@@ -59,7 +59,7 @@ function stub(rel, exports) {
   require.cache[id] = { id, filename: id, loaded: true, exports };
 }
 
-stub('db/client.js', { prisma });
+stub('db/client.js', { prisma, basePrisma: prisma });
 stub('store/index.js', {
   ensureWorkspaceForUserProvisioned: async () => {},
   getVersionHistoryRetentionDays: async () => state.retentionDays,

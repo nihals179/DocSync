@@ -35,7 +35,6 @@ function writeTemplateCache(list) {
 }
 
 module.exports = {
-  cloneTemplates,
   readTemplateCache,
   writeTemplateCache,
 };

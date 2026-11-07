@@ -104,13 +104,6 @@ const commonErrors = {
   502: jsonResponse({ error: 'Upstream service unavailable.' }, 'Bad Gateway', 502),
 };
 
-const tenantRequestSchema = {
-  type: 'object',
-  properties: {
-    tenantId: { type: 'string' },
-  },
-};
-
 const authRegisterSchema = {
   type: 'object',
   properties: {
@@ -496,8 +489,8 @@ const openapi = {
 
     '/api/auth/sso/login/{provider}': {
       get: {
-        summary: 'Start individual-user Google or Microsoft OIDC login',
-        description: 'Starts a personal login using DocSync platform credentials. This flow never selects or creates a tenant membership. The browser is redirected to the selected identity provider.',
+        summary: 'Start Google or Microsoft OIDC login',
+        description: 'Starts an individual login by default. Pass scope=admin to return to the admin portal and receive an admin-scoped session; the authenticated account must be an admin or owner.',
         tags: ['Auth'],
         security: [],
         parameters: [{
@@ -506,6 +499,12 @@ const openapi = {
           required: true,
           schema: { type: 'string', enum: ['google', 'microsoft'] },
           description: 'Platform identity provider.',
+        }, {
+          name: 'scope',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', enum: ['workspace', 'admin'], default: 'workspace' },
+          description: 'Session and callback scope.',
         }],
         responses: {
           302: { description: 'Redirects to the provider authorization endpoint.', headers: { Location: { schema: { type: 'string' } } } },
@@ -942,6 +941,25 @@ const openapi = {
       }),
     },
 
+    '/api/tenants/current/database': {
+      patch: op({
+        summary: 'Configure tenant database isolation',
+        description: 'Owner-only. Select shared storage or request automatic provisioning of a dedicated PostgreSQL database. Provisioning creates the database, deploys the schema, copies tenant data, stores the connection string in Azure Key Vault, and activates routing only after validation.',
+        tags: ['Tenants'],
+        parameters: [tenantHeader],
+        requestExample: { mode: 'dedicated' },
+        requestSchema: {
+          type: 'object',
+          required: ['mode'],
+          properties: {
+            mode: { type: 'string', enum: ['shared', 'dedicated'] },
+          },
+        },
+        responseExample: { tenant: { id: 'ten_123', databaseMode: 'dedicated', databaseStatus: 'provisioning' }, message: 'Dedicated database provisioning started.' },
+        extraResponses: { 400: commonErrors[400], 403: commonErrors[403], 202: jsonResponse({ tenant: { id: 'ten_123', databaseMode: 'dedicated', databaseStatus: 'provisioning' } }, 'Accepted', 202), 503: jsonResponse({ error: 'Dedicated database is unavailable.' }, 'Service Unavailable', 503) },
+      }),
+    },
+
     '/api/tenants/current/members': {
       get: op({
         summary: 'List active tenant members',
@@ -1367,6 +1385,7 @@ const openapi = {
     '/api/workspaces': {
       get: op({
         summary: 'List workspaces',
+        description: 'Returns workspaces visible to the authenticated user. The personal workspace is listed first, followed by workspaces ordered by most recently updated.',
         tags: ['Workspaces'],
         parameters: [tenantHeader],
         responseExample: { workspaces: [{ id: 'ws_123', name: 'Workspace', ownerId: 'usr_123', tenantId: 'ten_123' }] },

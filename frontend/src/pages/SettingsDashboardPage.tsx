@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { docsApi, tenantsApi, type BillingSnapshot, type TenantAuditLog, type tenantMembership, type TenantSecurityState, type TenantSummary } from '../services/api';
+import AccountSecurityPanel from '../components/settings/AccountSecurityPanel';
+import { docsApi, tenantsApi, type AuthUser, type BillingSnapshot, type TenantAuditLog, type tenantMembership, type TenantSecurityState, type TenantSummary } from '../services/api';
 
 type SettingsDashboardPageProps = {
   token: string;
   userName: string;
+  user: AuthUser;
+  onUserUpdate: (user: AuthUser) => void;
+  onLoggedOut: () => void;
 };
 
-type SettingsView = 'profile' | 'security' | 'billing' | 'audit' | 'admin';
+type SettingsView = 'profile' | 'security' | 'policies' | 'billing' | 'audit' | 'admin';
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return 'Not set';
@@ -33,13 +37,114 @@ function formatBytes(bytes: number) {
   return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-export default function SettingsDashboardPage({ token, userName }: SettingsDashboardPageProps) {
+function initialsFor(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('');
+}
+
+function Panel({
+  title,
+  description,
+  action,
+  children,
+  className = '',
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <article className={`rounded-2xl border border-slate-200 bg-white p-6 shadow-sm ${className}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-bold text-slate-900">{title}</h3>
+          {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
+        </div>
+        {action}
+      </div>
+      <div className="mt-5">{children}</div>
+    </article>
+  );
+}
+
+function InfoRows({ rows }: { rows: { label: string; value: ReactNode }[] }) {
+  return (
+    <dl className="divide-y divide-slate-100">
+      {rows.map((row) => (
+        <div key={row.label} className="flex items-center justify-between gap-4 py-2.5 text-sm">
+          <dt className="text-slate-500">{row.label}</dt>
+          <dd className="text-right font-semibold text-slate-900">{row.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function StatusBadge({ tone, children }: { tone: 'good' | 'warn' | 'neutral'; children: ReactNode }) {
+  const styles = {
+    good: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+    warn: 'bg-amber-50 text-amber-700 ring-amber-200',
+    neutral: 'bg-slate-100 text-slate-600 ring-slate-200',
+  };
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ring-1 ring-inset ${styles[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+function UsageMeter({
+  label,
+  used,
+  limit,
+  format = (value: number) => String(value),
+}: {
+  label: string;
+  used: number;
+  limit: number | null;
+  format?: (value: number) => string;
+}) {
+  const unlimited = limit === null;
+  const percent = unlimited || limit <= 0 ? 0 : Math.min((used / limit) * 100, 100);
+  const barTone = percent >= 90 ? 'bg-red-500' : percent >= 70 ? 'bg-amber-500' : 'bg-cyan-600';
+  const remaining = unlimited ? 'Unlimited' : `${format(Math.max(limit - used, 0))} left`;
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3 text-sm">
+        <span className="font-semibold text-slate-800">{label}</span>
+        <span className="text-slate-600">
+          <span className="font-bold text-slate-900">{format(used)}</span>
+          {' / '}
+          {unlimited ? 'Unlimited' : format(limit)}
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(unlimited ? 0 : percent)}
+        className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100"
+      >
+        <div className={`h-full rounded-full transition-all ${barTone}`} style={{ width: `${unlimited ? 0 : percent}%` }} />
+      </div>
+      <p className="mt-1.5 text-xs text-slate-500">{remaining}</p>
+    </div>
+  );
+}
+
+export default function SettingsDashboardPage({ token, userName, user, onUserUpdate, onLoggedOut }: SettingsDashboardPageProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedView = searchParams.get('view');
   const initialView: SettingsView =
     requestedView === 'profile' ||
     requestedView === 'security' ||
+    requestedView === 'policies' ||
     requestedView === 'billing' ||
     requestedView === 'audit' ||
     requestedView === 'admin'
@@ -55,11 +160,14 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
   const [billingSnapshot, setBillingSnapshot] = useState<BillingSnapshot | null>(null);
   const [recentAudit, setRecentAudit] = useState<TenantAuditLog[]>([]);
   const [documentsCount, setDocumentsCount] = useState(0);
+  const [tenants, setTenants] = useState<TenantSummary[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (
       requestedView === 'profile' ||
       requestedView === 'security' ||
+      requestedView === 'policies' ||
       requestedView === 'billing' ||
       requestedView === 'audit' ||
       requestedView === 'admin'
@@ -75,15 +183,17 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
       try {
         setLoading(true);
         setError('');
-        const [context, securityState, entitlements, audit, docs] = await Promise.all([
+        const [context, securityState, entitlements, audit, docs, mine] = await Promise.all([
           tenantsApi.current(token),
           tenantsApi.getSecurity(token),
           tenantsApi.entitlements(token),
           tenantsApi.getTenantAuditLogs(token, { limit: 6 }),
           docsApi.list(token),
+          tenantsApi.mine(token),
         ]);
         if (cancelled) return;
         const status = context.membership.status;
+        setTenants(mine.tenants);
         setTenant(context.tenant);
         setMembership(context.membership);
         setSecurity(securityState.security);
@@ -105,12 +215,40 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, reloadKey]);
+
+  async function handleSwitchTenant(nextTenantId: string) {
+    if (!nextTenantId || nextTenantId === tenant?.id) return;
+    setError('');
+    try {
+      await tenantsApi.switchContext(token, nextTenantId);
+      setReloadKey((key) => key + 1);
+    } catch (switchError) {
+      setError(switchError instanceof Error ? switchError.message : 'Failed to switch tenant.');
+    }
+  }
+
+  const tenantSwitcher = tenants.length > 1 ? (
+    <label className="mt-4 block">
+      <span className="text-xs font-bold uppercase tracking-wider text-cyan-700">Switch tenant</span>
+      <select
+        value={tenant?.id || ''}
+        onChange={(event) => void handleSwitchTenant(event.target.value)}
+        disabled={loading}
+        className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:opacity-50"
+      >
+        {tenants.map((item) => (
+          <option key={item.id} value={item.id}>{item.name}</option>
+        ))}
+      </select>
+    </label>
+  ) : null;
 
   const navItems = useMemo(
     () => [
       { id: 'profile' as const, label: 'Profile', icon: 'person' },
       { id: 'security' as const, label: 'Security', icon: 'shield' },
+      { id: 'policies' as const, label: 'Security Policies', icon: 'policy' },
       { id: 'billing' as const, label: 'Billing', icon: 'payments' },
       { id: 'audit' as const, label: 'Audit', icon: 'fact_check' },
       { id: 'admin' as const, label: 'Admin Tools', icon: 'admin_panel_settings' },
@@ -146,266 +284,353 @@ export default function SettingsDashboardPage({ token, userName }: SettingsDashb
     return 'Free';
   }, [currentPlanId]);
 
+  const aiRequestsLimit = billingSnapshot?.limits.aiRequestsPerMonth ?? 0;
+  const storageLimit = billingSnapshot?.limits.storageBytes ?? 0;
+  const collaboratorsLimit = billingSnapshot?.limits.collaborators ?? 0;
+
   return (
-    <div className="min-h-screen bg-slate-100">
-      <div className="space-y-0">
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-6">
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b border-slate-200 bg-white px-6 py-6 lg:px-10">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-700">Workspace Settings</p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-900">Settings Dashboard</h1>
-            <p className="mt-2 text-sm text-slate-600">Unified control surface for profile, security, billing, audit, and admin workflows. Operator: {userName}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-700">Workspace settings</p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-900">Settings</h1>
+            <p className="mt-1.5 text-sm text-slate-500">Signed in as <span className="font-semibold text-slate-700">{userName}</span></p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => navigate('/security')}
-              className="border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 transition hover:bg-cyan-50"
+              onClick={() => setActiveView('security')}
+              className="rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-semibold text-cyan-700 shadow-sm transition hover:bg-cyan-50"
             >
-              Open Security
+              Open security
             </button>
             <button
               type="button"
               onClick={() => navigate('/workspace')}
-              className="border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
+              className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
             >
-              Back to Workspace
+              Back to workspace
             </button>
           </div>
         </div>
+      </header>
 
-        {error && <div className="border-b border-red-200 bg-red-50 px-6 py-3 text-sm text-red-700">{error}</div>}
+      {error && (
+        <div className="mx-6 mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 lg:mx-10">{error}</div>
+      )}
 
-        <section className="grid min-h-[calc(100vh-118px)] lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="border-r border-slate-200 bg-white px-4 py-5">
-            <div className="mb-4 bg-cyan-50 px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-cyan-700">Current Context</p>
-              <p className="mt-1 text-sm font-bold text-slate-900">
-                {tenantRequired ? (tenant?.name || 'Tenant') : `${userName}'s Account`}
-              </p>
+      <div className="grid gap-6 p-6 lg:grid-cols-[260px_minmax(0,1fr)] lg:px-10">
+        <aside className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+          <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 p-4">
+            <p className="text-xs font-bold uppercase tracking-wider text-cyan-700">Current context</p>
+            <p className="mt-2 text-base font-bold text-slate-900">
+              {tenantRequired ? (tenant?.name || 'Tenant') : `${userName}'s account`}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <StatusBadge tone="neutral">{membershipTypeLabel}</StatusBadge>
               {tenantRequired ? (
-                <p className="text-xs text-slate-600">Status: {membership?.status || 'unknown'}</p>
+                <StatusBadge tone={membership?.status === 'active' ? 'good' : 'warn'}>
+                  {membership?.status || 'unknown'}
+                </StatusBadge>
               ) : (
-                <p className="text-xs text-slate-600">Personal workspace mode for {billingSnapshot?.plan?.name || 'Starter'}.</p>
+                <StatusBadge tone="neutral">Personal workspace</StatusBadge>
               )}
-              <p className="text-xs text-slate-600">Membership Type: {membershipTypeLabel}</p>
             </div>
+            {tenantSwitcher}
+          </div>
 
-            <nav className="space-y-1">
-              {navItems.map((item) => (
+          <nav className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+            {navItems.map((item) => {
+              const isActive = activeView === item.id;
+              return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => setActiveView(item.id)}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold transition ${
-                    activeView === item.id
-                      ? 'bg-cyan-600 text-white'
-                      : 'text-slate-700 hover:bg-slate-100'
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                    isActive ? 'bg-cyan-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
-                  <span className="material-icons" style={{ fontSize: '1rem' }}>{item.icon}</span>
+                  <span className="material-icons" style={{ fontSize: '1.1rem' }} aria-hidden="true">{item.icon}</span>
                   {item.label}
                 </button>
-              ))}
-            </nav>
-          </aside>
+              );
+            })}
+          </nav>
+        </aside>
 
-          <div className="space-y-0 bg-slate-50">
-            <article className="border-b border-slate-200 bg-white px-6 py-5">
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">Active View</p>
-              <h2 className="mt-2 text-2xl font-black text-slate-900">{currentViewLabel}</h2>
-              {loading ? <p className="mt-2 text-sm text-slate-500">Loading settings intelligence...</p> : null}
-            </article>
+        <main className="min-w-0 space-y-6">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-400">Viewing</p>
+              <h2 className="mt-1 text-2xl font-black text-slate-900">{currentViewLabel}</h2>
+            </div>
+            {loading && <p className="text-sm text-slate-500">Loading latest data…</p>}
+          </div>
 
-            {activeView === 'profile' && (
-              <section className="grid gap-px bg-slate-200 md:grid-cols-2">
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Profile Summary</h3>
-                  <p className="mt-2 text-sm text-slate-600">Display Name: {userName}</p>
-                  {tenantRequired ? (
-                    <>
-                      <p className="mt-1 text-sm text-slate-600">Tenant: {tenant?.name || 'Unavailable'}</p>
-                      <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
-                    </>
-                  ) : (
-                    <p className="mt-1 text-sm text-slate-600">Account Type: Personal</p>
-                  )}
-                  <p className="mt-1 text-sm text-slate-600">Membership Type: {membershipTypeLabel}</p>
-                  <p className="mt-1 text-sm text-slate-600">License: {billingSnapshot?.plan.name || 'Starter'} ({billingSnapshot?.plan.displayPrice || 'Free'})</p>
-                  <p className="mt-1 text-sm text-slate-600">Seat Limit: {effectiveSeatLimit}</p>
-                  <p className="mt-1 text-sm text-slate-600">Documents: {documentsCount}</p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    AI Assistant: {
-                      billingSnapshot?.plan?.featureHighlights?.some((item) => /AI Assistant/i.test(item))
-                        ? 'Enabled'
-                        : 'Not included in current license'
-                    }
-                  </p>
-                  <button type="button" onClick={() => navigate('/security')} className="mt-4 bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500">Open Account Security</button>
-                </article>
+          {activeView === 'profile' && (
+            <div className="grid gap-6 xl:grid-cols-2">
+              {tenantSwitcher && (
+                <Panel title="Tenant" description="Choose which tenant this session works in.">
+                  <p className="text-sm text-slate-600">You belong to {tenants.length} tenants. Switching reloads this page for the selected tenant.</p>
+                  {tenantSwitcher}
+                </Panel>
+              )}
 
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Usage Overview</h3>
-                  <p className="mt-2 text-sm text-slate-600">
-                    Documents Used: {documentsCount}{' '}
-                    {typeof documentLimit === 'number' ? `/ ${documentLimit}` : '/ Unlimited'}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Documents Pending: {
-                      typeof documentLimit === 'number'
-                        ? Math.max(documentLimit - documentsCount, 0)
-                        : 'Unlimited'
-                    }
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Document Updates Used: {billingSnapshot?.usage.documentUpdates || 0}{' '}
-                    {typeof documentUpdatesLimit === 'number' ? `/ ${documentUpdatesLimit}` : '/ Unlimited'}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Document Updates Pending: {
-                      typeof documentUpdatesLimit === 'number'
-                        ? Math.max(documentUpdatesLimit - (billingSnapshot?.usage.documentUpdates || 0), 0)
-                        : 'Unlimited'
-                    }
-                  </p>
-                  <p className="mt-1 text-sm text-slate-600">Version History: {typeof versionHistoryDays === 'number' ? `${versionHistoryDays} days` : 'Unlimited'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Grammar Checker Access: {typeof grammarAccessDays === 'number' ? `First ${grammarAccessDays} days` : 'Unlimited'}</p>
-                  <p className="mt-1 text-sm text-slate-600">AI Assistant Access: {typeof aiAccessDays === 'number' ? `First ${aiAccessDays} days` : 'Unlimited'}</p>
-                  <p className="mt-2 text-sm text-slate-600">AI Requests Used: {billingSnapshot?.usage.aiRequests || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">AI Requests Pending: {Math.max((billingSnapshot?.limits.aiRequestsPerMonth || 0) - (billingSnapshot?.usage.aiRequests || 0), 0)}</p>
-                  <p className="mt-1 text-sm text-slate-600">Storage Used: {formatBytes(billingSnapshot?.usage.storageUsedBytes || 0)}</p>
-                  <p className="mt-1 text-sm text-slate-600">Storage Pending: {formatBytes(Math.max((billingSnapshot?.limits.storageBytes || 0) - (billingSnapshot?.usage.storageUsedBytes || 0), 0))}</p>
-                  <p className="mt-1 text-sm text-slate-600">Collaborators Used: {billingSnapshot?.usage.collaboratorsAssigned || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">Collaborators Pending: {Math.max((billingSnapshot?.limits.collaborators || 0) - (billingSnapshot?.usage.collaboratorsAssigned || 0), 0)}</p>
-                  <p className="mt-1 text-sm text-slate-600">Seats Assigned: {billingSnapshot?.usage.assignedSeats || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">Seats Pending: {Math.max(effectiveSeatLimit - (billingSnapshot?.usage.assignedSeats || 0), 0)}</p>
-                </article>
-              </section>
-            )}
-
-            {activeView === 'security' && (
-              <section className="grid gap-px bg-slate-200 md:grid-cols-2">
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Access Security</h3>
-                  <p className="mt-2 text-sm text-slate-600">MFA Policy: {security?.requireMfa ? 'Required for all users' : 'Not enforced'}</p>
-                  <p className="mt-1 text-sm text-slate-600">IP Allowlist: {security?.ipAllowlistEnabled ? 'Enabled' : 'Disabled'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Allowed IP Count: {security?.ipAllowlist?.length || 0}</p>
-                  <button type="button" onClick={() => setActiveView('security')} className="mt-4 bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500">Open Security Policies</button>
-                </article>
-
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Identity & Sessions</h3>
-                  <p className="mt-2 text-sm text-slate-600">Session Timeout: {security?.sessionDurationHours || 8} hours</p>
-                  <p className="mt-1 text-sm text-slate-600">Domain Mappings: {security?.domainMappings?.length || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">SSO Providers: {security?.ssoProviders?.length || 0}</p>
-                  <button type="button" onClick={() => navigate('/security')} className="mt-4 border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50">Open Account Security</button>
-                </article>
-              </section>
-            )}
-
-            {activeView === 'billing' && (
-              <section className="grid gap-px bg-slate-200 md:grid-cols-2">
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Plan & Seats</h3>
-                  <p className="mt-2 text-sm text-slate-600">Plan: {billingSnapshot?.billing.planId || 'free'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Status: {billingSnapshot?.billing.status || 'active'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Purchased Seats: {billingSnapshot?.limits.seatsPurchased || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">Assigned Seats: {billingSnapshot?.usage.assignedSeats || 0}</p>
-                  <button type="button" onClick={() => setActiveView('billing')} className="mt-4 bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500">Manage Billing</button>
-                </article>
-
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Usage & Limits</h3>
-                  <p className="mt-2 text-sm text-slate-600">AI Usage: {billingSnapshot?.usage.aiRequests || 0} / {billingSnapshot?.limits.aiRequestsPerMonth || 0}</p>
-                  <p className="mt-1 text-sm text-slate-600">Storage: {formatBytes(billingSnapshot?.usage.storageUsedBytes || 0)} / {formatBytes(billingSnapshot?.limits.storageBytes || 0)}</p>
-                  <p className="mt-1 text-sm text-slate-600">Collaborators: {billingSnapshot?.usage.collaboratorsAssigned || 0} / {billingSnapshot?.limits.collaborators || 0}</p>
-                </article>
-
-                <article className="bg-white px-6 py-5 md:col-span-2">
-                  <h3 className="text-base font-black text-slate-900">License Options</h3>
-                  <p className="mt-1 text-sm text-slate-600">Available plans and included capabilities.</p>
-                  <div className="mt-4 grid gap-3 lg:grid-cols-4">
-                    {[
+              <Panel
+                title="Profile summary"
+                className="xl:col-span-1"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-lg font-black text-cyan-700">
+                    {initialsFor(userName)}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-bold text-slate-900">{userName}</p>
+                    <p className="text-sm text-slate-500">{tenantRequired ? (tenant?.name || 'Unavailable') : 'Personal account'}</p>
+                  </div>
+                </div>
+                <div className="mt-5">
+                  <InfoRows
+                    rows={[
+                      ...(tenantRequired
+                        ? [
+                            { label: 'Tenant', value: tenant?.name || 'Unavailable' },
+                            { label: 'Membership status', value: <StatusBadge tone={membership?.status === 'active' ? 'good' : 'warn'}>{membership?.status || 'unknown'}</StatusBadge> },
+                          ]
+                        : [{ label: 'Account type', value: 'Personal' }]),
+                      { label: 'Membership type', value: membershipTypeLabel },
+                      { label: 'License', value: `${billingSnapshot?.plan.name || 'Starter'} (${billingSnapshot?.plan.displayPrice || 'Free'})` },
+                      { label: 'Seat limit', value: effectiveSeatLimit },
                       {
-                        name: 'Starter',
-                        price: 'Free',
-                        features: ['1 workspace', 'Basic editor', 'Version history (7 days)', 'Community support'],
+                        label: 'AI assistant',
+                        value: billingSnapshot?.plan?.featureHighlights?.some((item) => /AI Assistant/i.test(item))
+                          ? <StatusBadge tone="good">Enabled</StatusBadge>
+                          : <StatusBadge tone="neutral">Not included</StatusBadge>,
                       },
-                      {
-                        name: 'Pro',
-                        price: '$12/mo',
-                        features: ['Unlimited workspaces', 'AI Assistant', 'Grammar checker', 'Priority support', 'Version history (90 days)'],
-                      },
-                      {
-                        name: 'Enterprise',
-                        price: 'Custom',
-                        features: ['SSO & SAML', 'Custom roles & RBAC', 'Audit logs', 'SLA & dedicated support', 'On-premise option'],
-                      },
-                      {
-                        name: 'Onprem',
-                        price: 'Custom',
-                        features: ['Self-hosted deployment', 'Private network only', 'Custom compliance controls', 'Dedicated success team'],
-                      },
-                    ].map((plan) => (
-                      <div key={plan.name} className="border border-slate-200 p-4">
-                        <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">{plan.name}</p>
-                        <p className="mt-1 text-xl font-black text-slate-900">{plan.price}</p>
-                        <ul className="mt-3 space-y-1 text-sm text-slate-700">
+                    ]}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('security')}
+                  className="mt-5 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-500"
+                >
+                  Open account security
+                </button>
+              </Panel>
+
+              <Panel title="Usage overview" description="Current month usage against your license." className="xl:col-span-2">
+                <div className="grid gap-6 md:grid-cols-2">
+                  <UsageMeter label="Documents" used={documentsCount} limit={typeof documentLimit === 'number' ? documentLimit : null} />
+                  <UsageMeter label="Document updates" used={billingSnapshot?.usage.documentUpdates || 0} limit={typeof documentUpdatesLimit === 'number' ? documentUpdatesLimit : null} />
+                  <UsageMeter label="AI requests" used={billingSnapshot?.usage.aiRequests || 0} limit={aiRequestsLimit} />
+                  <UsageMeter label="Storage" used={billingSnapshot?.usage.storageUsedBytes || 0} limit={storageLimit} format={formatBytes} />
+                  <UsageMeter label="Collaborators" used={billingSnapshot?.usage.collaboratorsAssigned || 0} limit={collaboratorsLimit} />
+                  <UsageMeter label="Seats" used={billingSnapshot?.usage.assignedSeats || 0} limit={effectiveSeatLimit} />
+                </div>
+                <div className="mt-6 border-t border-slate-100 pt-4">
+                  <InfoRows
+                    rows={[
+                      { label: 'Version history', value: typeof versionHistoryDays === 'number' ? `${versionHistoryDays} days` : 'Unlimited' },
+                      { label: 'Grammar checker access', value: typeof grammarAccessDays === 'number' ? `First ${grammarAccessDays} days` : 'Unlimited' },
+                      { label: 'AI assistant access', value: typeof aiAccessDays === 'number' ? `First ${aiAccessDays} days` : 'Unlimited' },
+                    ]}
+                  />
+                </div>
+              </Panel>
+            </div>
+          )}
+
+          {activeView === 'security' && (
+            <AccountSecurityPanel token={token} user={user} onUserUpdate={onUserUpdate} onLoggedOut={onLoggedOut} />
+          )}
+
+          {activeView === 'policies' && (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Panel
+                title="Access security"
+                action={
+                  <button
+                    type="button"
+                    disabled={!canOpenAdminConsole}
+                    onClick={() => window.open('/admin', '_blank', 'noopener,noreferrer')}
+                    className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {canOpenAdminConsole ? 'Manage in admin console' : 'Admin access required'}
+                  </button>
+                }
+              >
+                <InfoRows
+                  rows={[
+                    {
+                      label: 'MFA policy',
+                      value: security?.requireMfa
+                        ? <StatusBadge tone="good">Required for all users</StatusBadge>
+                        : <StatusBadge tone="warn">Not enforced</StatusBadge>,
+                    },
+                    {
+                      label: 'IP allowlist',
+                      value: security?.ipAllowlistEnabled
+                        ? <StatusBadge tone="good">Enabled</StatusBadge>
+                        : <StatusBadge tone="neutral">Disabled</StatusBadge>,
+                    },
+                    { label: 'Allowed IP count', value: security?.ipAllowlist?.length || 0 },
+                  ]}
+                />
+              </Panel>
+
+              <Panel title="Identity & sessions">
+                <InfoRows
+                  rows={[
+                    { label: 'Session timeout', value: `${security?.sessionDurationHours || 8} hours` },
+                    { label: 'Domain mappings', value: security?.domainMappings?.length || 0 },
+                    { label: 'SSO providers', value: security?.ssoProviders?.length || 0 },
+                  ]}
+                />
+              </Panel>
+            </div>
+          )}
+
+          {activeView === 'billing' && (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Panel
+                title="Plan & seats"
+                action={
+                  <button type="button" onClick={() => setActiveView('billing')} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-500">
+                    Manage billing
+                  </button>
+                }
+              >
+                <InfoRows
+                  rows={[
+                    { label: 'Plan', value: billingSnapshot?.billing.planId || 'free' },
+                    {
+                      label: 'Status',
+                      value: <StatusBadge tone={(billingSnapshot?.billing.status || 'active') === 'active' ? 'good' : 'warn'}>{billingSnapshot?.billing.status || 'active'}</StatusBadge>,
+                    },
+                    { label: 'Purchased seats', value: billingSnapshot?.limits.seatsPurchased || 0 },
+                    { label: 'Assigned seats', value: billingSnapshot?.usage.assignedSeats || 0 },
+                  ]}
+                />
+              </Panel>
+
+              <Panel title="Usage & limits" description="How much of your plan you have used.">
+                <div className="space-y-5">
+                  <UsageMeter label="AI requests" used={billingSnapshot?.usage.aiRequests || 0} limit={aiRequestsLimit} />
+                  <UsageMeter label="Storage" used={billingSnapshot?.usage.storageUsedBytes || 0} limit={storageLimit} format={formatBytes} />
+                  <UsageMeter label="Collaborators" used={billingSnapshot?.usage.collaboratorsAssigned || 0} limit={collaboratorsLimit} />
+                </div>
+              </Panel>
+
+              <Panel title="License options" description="Available plans and what each one includes." className="xl:col-span-2">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    {
+                      name: 'Starter',
+                      price: 'Free',
+                      features: ['1 workspace', 'Basic editor', 'Version history (7 days)', 'Community support'],
+                    },
+                    {
+                      name: 'Pro',
+                      price: '$12/mo',
+                      features: ['Unlimited workspaces', 'AI Assistant', 'Grammar checker', 'Priority support', 'Version history (90 days)'],
+                    },
+                    {
+                      name: 'Enterprise',
+                      price: 'Custom',
+                      features: ['SSO & SAML', 'Custom roles & RBAC', 'Audit logs', 'SLA & dedicated support', 'On-premise option'],
+                    },
+                    {
+                      name: 'Onprem',
+                      price: 'Custom',
+                      features: ['Self-hosted deployment', 'Private network only', 'Custom compliance controls', 'Dedicated success team'],
+                    },
+                  ].map((plan) => {
+                    const isCurrent = plan.name.toLowerCase() === currentPlanId;
+                    return (
+                      <div
+                        key={plan.name}
+                        className={`flex flex-col rounded-xl border p-5 ${isCurrent ? 'border-cyan-500 bg-cyan-50/50 ring-1 ring-cyan-500' : 'border-slate-200'}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">{plan.name}</p>
+                          {isCurrent && <StatusBadge tone="good">Current plan</StatusBadge>}
+                        </div>
+                        <p className="mt-2 text-2xl font-black text-slate-900">{plan.price}</p>
+                        <ul className="mt-4 space-y-2 text-sm text-slate-700">
                           {plan.features.map((feature) => (
                             <li key={feature} className="flex items-start gap-2">
-                              <span className="text-cyan-600">✓</span>
+                              <span className="font-bold text-cyan-600" aria-hidden="true">✓</span>
                               <span>{feature}</span>
                             </li>
                           ))}
                         </ul>
                       </div>
-                    ))}
-                  </div>
-                </article>
-              </section>
-            )}
-
-            {activeView === 'audit' && (
-              <section className="bg-white px-6 py-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="text-base font-black text-slate-900">Recent Audit Events</h3>
-                  <button type="button" onClick={() => setActiveView('audit')} className="bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500">Open Full Audit Section</button>
+                    );
+                  })}
                 </div>
-                <div className="mt-4 space-y-2">
-                  {recentAudit.length === 0 && <p className="text-sm text-slate-500">No recent audit events available.</p>}
-                  {recentAudit.map((log) => (
-                    <div key={log.id} className="border border-slate-200 px-3 py-2 text-sm">
-                      <p className="font-semibold text-slate-800">{log.action}</p>
-                      <p className="text-slate-600">Status: {log.status} • {formatDate(log.createdAt)}</p>
+              </Panel>
+            </div>
+          )}
+
+          {activeView === 'audit' && (
+            <Panel
+              title="Recent audit events"
+              description="The six most recent events for this tenant."
+              action={
+                <button type="button" onClick={() => setActiveView('audit')} className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-500">
+                  Open full audit section
+                </button>
+              }
+            >
+              <ul className="divide-y divide-slate-100">
+                {recentAudit.length === 0 && <li className="py-3 text-sm text-slate-500">No recent audit events available.</li>}
+                {recentAudit.map((log) => (
+                  <li key={log.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900">{log.action}</p>
+                      <p className="text-xs text-slate-500">{formatDate(log.createdAt)}</p>
                     </div>
-                  ))}
-                </div>
-              </section>
-            )}
+                    <StatusBadge tone={log.status === 'success' ? 'good' : log.status === 'failure' ? 'warn' : 'neutral'}>{log.status}</StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          )}
 
-            {activeView === 'admin' && (
-              <section className="grid gap-px bg-slate-200 md:grid-cols-2">
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Admin Console</h3>
-                  <p className="mt-2 text-sm text-slate-600">Access member, role, invite, compliance, and operational tools from the admin interface.</p>
+          {activeView === 'admin' && (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Panel
+                title="Admin console"
+                description="Member, role, invite, compliance, and operational tools in the admin interface."
+                action={
                   <button
                     type="button"
                     disabled={!canOpenAdminConsole}
                     onClick={() => window.open('/admin', '_blank', 'noopener,noreferrer')}
-                    className="mt-4 bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {canOpenAdminConsole ? 'Open Admin Console' : 'Admin Access Required'}
+                    {canOpenAdminConsole ? 'Open admin console' : 'Admin access required'}
                   </button>
-                </article>
+                }
+              >
+                <p className="text-sm text-slate-500">{canOpenAdminConsole ? 'Opens in a new tab.' : 'Your membership must be active to open the admin console.'}</p>
+              </Panel>
 
-                <article className="bg-white px-6 py-5">
-                  <h3 className="text-base font-black text-slate-900">Tenant Context</h3>
-                  <p className="mt-2 text-sm text-slate-600">Tenant: {tenant?.name || 'Unavailable'}</p>
-                  <p className="mt-1 text-sm text-slate-600">Membership Status: {membership?.status || 'unknown'}</p>
-                </article>
-              </section>
-            )}
-          </div>
-        </section>
+              <Panel title="Tenant context">
+                <InfoRows
+                  rows={[
+                    { label: 'Tenant', value: tenant?.name || 'Unavailable' },
+                    { label: 'Membership status', value: membership?.status || 'unknown' },
+                  ]}
+                />
+              </Panel>
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { prisma } = require('../db/client');
+const { tenantPrisma: prisma } = require('../db/tenant-client');
 
 const {
   canCreateDocuments,

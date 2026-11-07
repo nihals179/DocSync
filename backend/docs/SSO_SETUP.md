@@ -84,7 +84,13 @@ Restart the backend after changing environment variables.
    https://app.example.com/auth/callback
    ```
 
-9. Copy the client ID and secret to `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+9. Also register the admin portal callback:
+
+   ```text
+   https://app.example.com/admin/auth/callback
+   ```
+
+10. Copy the client ID and secret to `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 ### Microsoft Entra admin center
 
@@ -97,10 +103,16 @@ Restart the backend after changing environment variables.
    https://app.example.com/auth/callback
    ```
 
-4. Copy the **Application (client) ID** to `MICROSOFT_CLIENT_ID`.
-5. Create a client secret under **Certificates & secrets** and copy its value to
+4. Add this additional **Web** redirect URI for Admin SSO:
+
+   ```text
+   https://app.example.com/admin/auth/callback
+   ```
+
+5. Copy the **Application (client) ID** to `MICROSOFT_CLIENT_ID`.
+6. Create a client secret under **Certificates & secrets** and copy its value to
    `MICROSOFT_CLIENT_SECRET`.
-6. Add delegated permissions for `openid`, `profile`, `email`, and `User.Read` as
+7. Add delegated permissions for `openid`, `profile`, `email`, and `User.Read` as
    required by the provider configuration.
 
 ## Tenant OIDC Configuration

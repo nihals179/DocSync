@@ -1,5 +1,5 @@
 const express = require('express');
-const { generateSync: _totpGenerateSync, verifySync: _totpVerifySync } = require('@otplib/totp');
+const { verifySync: _totpVerifySync } = require('@otplib/totp');
 const { NobleCryptoPlugin: _NobleCryptoPlugin } = require('@otplib/plugin-crypto-noble');
 const { ScureBase32Plugin: _ScureBase32Plugin } = require('@otplib/plugin-base32-scure');
 const { generateSecret: _otpGenerateSecret } = require('otplib');

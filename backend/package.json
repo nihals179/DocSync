@@ -31,6 +31,8 @@
   "type": "commonjs",
   "dependencies": {
     "@azure/communication-email": "^1.1.0",
+    "@azure/identity": "^4.13.0",
+    "@azure/keyvault-secrets": "^4.10.0",
     "@prisma/client": "^6.16.2",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
@@ -44,6 +46,7 @@
     "openid-client": "^5.7.1",
     "otplib": "^13.4.0",
     "passport-saml": "^3.2.4",
+    "pg": "^8.23.1",
     "prisma": "^6.16.2",
     "qrcode": "^1.5.4",
     "redis": "^5.12.1",

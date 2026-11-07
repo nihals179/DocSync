@@ -2,8 +2,6 @@ const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
 const { PLAN_CATALOG, TRIAL_DAYS_BY_PLAN, refreshPlanCatalogFromDb, mapDbPlanToCatalogRecord } = require('./catalog');
 const { nowIso: runtimeNowIso, isDatabaseConfigured: runtimeIsDatabaseConfigured, toIsoOrNull: runtimeToIsoOrNull } = require('../lib/runtime-utils');
-const { get } = require('../app');
-const { security } = require('../openapi');
 
 const nowIso = () => runtimeNowIso();
 const isDatabaseConfigured = () => runtimeIsDatabaseConfigured();
@@ -42,29 +40,7 @@ function normalizeTenantUsageRecords(usageRows) {
 	}));
 }
 
-function normalizeTenantEntitlementSnapshot(input, tenantId, monthKey) {
-	return {
-		tenantId,
-		monthKey,
-		aiRequests: Number(input?.aiRequests || 0),
-		documentUpdates: Number(input?.documentUpdates || 0),
-		assignedSeats: Number(input?.assignedSeats || 0),
-		storageUsedBytes:
-			typeof input?.storageUsedBytes === 'bigint'
-				? Number(input.storageUsedBytes)
-				: Number(input?.storageUsedBytes || 0),
-		updatedAt: toIsoOrNull(input?.updatedAt) || nowIso(),
-	};
-}
 
-function isTenantEntitlementsViewMissing(error) {
-	if (!error || typeof error !== 'object') return false;
-	const prismaCode = error.code;
-	const tableName = String(error?.meta?.table || '').toLowerCase();
-	const message = String(error.message || '').toLowerCase();
-	if (prismaCode === 'P2021' && tableName.includes('tenant_entitlements')) return true;
-	return message.includes('tenant_entitlements') && message.includes('does not exist');
-}
 
 function normalizeTenantBillingState(input, tenantId) {
 	const state = {
@@ -291,12 +267,6 @@ async function getAllPlans() {
 	return Object.values(PLAN_CATALOG);
 }
 
-async function getPlanById(planId) {
-	if (isDatabaseConfigured()) {
-		await refreshPlanCatalogFromDb();
-	}
-	return getPlan(planId);
-}
 
 async function getProfileTable() {
 	if (!isDatabaseConfigured()) return [];
@@ -752,24 +722,6 @@ async function canAssignResources(tenantId, additionalSeats = 1, additionalColla
 	};
 }
 
-async function calculateTenantStorageBytes(tenantId) {
-	try {
-		const rows = await prisma.$queryRaw`
-			SELECT "storageUsedBytes" AS total
-			FROM tenant_storage_v
-			WHERE "tenantId" = ${tenantId}
-		`;
-		const total = Array.isArray(rows) && rows[0] ? rows[0].total : 0;
-		if (typeof total === 'bigint') return Number(total);
-		return Number(total || 0);
-	} catch {
-		const docs = await prisma.document.findMany({
-			where: { tenantId },
-			select: { content: true },
-		});
-		return docs.reduce((total, doc) => total + Buffer.byteLength(String(doc.content || ''), 'utf8'), 0);
-	}
-}
 
 async function canConsumeAiRequests(tenantId, count = 1) {
 	const tenant = await resolveTenantById(tenantId);
@@ -991,17 +943,6 @@ async function listWebhookJobs() {
 	return prisma.webhookJob.findMany({ orderBy: { createdAt: 'asc' } });
 }
 
-async function getDueWebhookJobs(limit = 20) {
-	if (!isDatabaseConfigured()) return [];
-	return prisma.webhookJob.findMany({
-		where: {
-			status: { in: ['queued', 'failed'] },
-			nextAttemptAt: { lte: new Date() },
-		},
-		orderBy: { nextAttemptAt: 'asc' },
-		take: limit,
-	});
-}
 
 async function markWebhookJobProcessing(jobId) {
 	if (!isDatabaseConfigured()) return null;
@@ -1025,23 +966,6 @@ async function markWebhookJobProcessed(jobId) {
 	return job;
 }
 
-async function markWebhookJobFailed(jobId, errorMessage) {
-	if (!isDatabaseConfigured()) return null;
-	const job = await prisma.webhookJob.findUnique({ where: { id: jobId } });
-	if (!job) return null;
-	const attempts = (job.attempts || 0) + 1;
-	const status = attempts >= job.maxAttempts ? 'failed' : 'queued';
-	const backoffMs = Math.min(60 * 60 * 1000, Math.pow(2, attempts) * 1000);
-	return prisma.webhookJob.update({
-		where: { id: jobId },
-		data: {
-			attempts,
-			lastError: String(errorMessage || 'Unknown webhook processing error'),
-			status,
-			nextAttemptAt: new Date(Date.now() + backoffMs),
-		},
-	});
-}
 
 function mapWorkspaceRowToRecord(row) {
 	return {
@@ -1318,10 +1242,8 @@ module.exports = {
 	findTenantByDomain,
 	findTenantBySlug,
 	updateTenantSecurityState,
-	refreshBillingStatus,
 	isBillingWriteBlocked,
 	getTenantEntitlements,
-	getTenantUsageMetrics,
 	canAssignResources,
 	canConsumeAiRequests,
 	consumeAiRequests,

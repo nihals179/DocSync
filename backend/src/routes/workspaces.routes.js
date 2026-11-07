@@ -1,14 +1,30 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
+const { getTenantClient, isDedicatedTenant, tenantPrisma } = require('../db/tenant-client');
 
 const { ensureWorkspaceForUserProvisioned } = require('../store');
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
 const { attachEntitlements } = require('../middleware/entitlements');
-const { isWorkspaceVisibleToUser, sortWorkspacesForUser } = require('../middleware/workspaces');
+const { isWorkspaceVisibleToUser } = require('../middleware/workspaces');
 
 const router = express.Router();
+
+/**
+ * Finds a workspace in the shared database, then in the dedicated database of the user's
+ * current tenant, where workspaces created after provisioning live.
+ */
+async function findWorkspaceForUser(user, workspaceId) {
+  const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+  if (workspace || !user.currentTenantId) return workspace;
+
+  const tenant = await prisma.tenant.findUnique({ where: { id: user.currentTenantId } });
+  if (!isDedicatedTenant(tenant)) return null;
+
+  const tenantDb = await getTenantClient(tenant);
+  return tenantDb.workspace.findUnique({ where: { id: workspaceId } });
+}
 
 /**
  * GET /api/workspaces
@@ -16,22 +32,51 @@ const router = express.Router();
  */
 router.get('/', requireAuth, resolveTenantContext, requirePermission('workspace.read'), async (req, res) => {
   try {
-    await ensureWorkspaceForUserProvisioned(req.user);
+    if (req.tenant.databaseMode !== 'dedicated') {
+      await ensureWorkspaceForUserProvisioned(req.user);
+    }
   } catch {
     return res.status(500).json({ error: 'Failed to initialize workspace.' });
   }
 
-  const rows = await prisma.workspace.findMany({
-    where: {
-      OR: [
-        { tenantId: req.tenant.id },
-        { ownerId: req.user.id },
-      ],
-    },
-    orderBy: { updatedAt: 'desc' },
-  });
+  const rows = await tenantPrisma.$queryRaw`
+    SELECT "id", "name", "ownerId", "memberIds", "tenantId", "createdAt", "updatedAt"
+    FROM "workspaces"
+    WHERE (
+        "tenantId" = ${req.tenant.id}
+        OR (
+          "ownerId" = ${req.user.id}
+          -- Provisioning leaves a copy of a dedicated tenant's rows in the shared database.
+          AND NOT EXISTS (
+            SELECT 1 FROM "tenants" t
+            WHERE t."id" = "workspaces"."tenantId"
+              AND t."databaseMode" = 'dedicated'
+              AND t."databaseStatus" = 'active'
+          )
+        )
+      )
+      AND (
+        ("tenantId" = "ownerId" AND "ownerId" = ${req.user.id})
+        OR (
+          CASE WHEN jsonb_typeof("memberIds") = 'array'
+            THEN jsonb_array_length("memberIds") = 1
+            ELSE "memberIds" IS NULL
+          END
+          AND "memberIds"->>0 = "ownerId"
+          AND "ownerId" = ${req.user.id}
+        )
+        OR "memberIds" IS NULL
+        OR jsonb_typeof("memberIds") <> 'array'
+        OR CASE WHEN jsonb_typeof("memberIds") = 'array'
+          THEN jsonb_array_length("memberIds") = 0
+          ELSE false
+        END
+        OR "memberIds" @> to_jsonb(ARRAY[${req.user.id}]::text[])
+      )
+    ORDER BY ("ownerId" = ${req.user.id} AND "tenantId" = ${req.user.id}) DESC, "updatedAt" DESC
+  `;
 
-  const items = sortWorkspacesForUser(rows.map((row) => ({
+  const items = rows.map((row) => ({
     id: row.id,
     name: row.name,
     ownerId: row.ownerId,
@@ -39,7 +84,7 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('workspace.
     tenantId: row.tenantId,
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
-  })).filter((workspace) => isWorkspaceVisibleToUser(workspace, req.user.id)), req.user.id);
+  }));
   return res.json({ workspaces: items });
 });
 
@@ -73,7 +118,7 @@ router.post('/', requireAuth, resolveTenantContext, requirePermission('workspace
   };
 
   try {
-    const saved = await prisma.workspace.create({
+    const saved = await tenantPrisma.workspace.create({
       data: {
         id: workspace.id,
         name: workspace.name,
@@ -105,11 +150,21 @@ router.post('/current', requireAuth, async (req, res) => {
 
   try {
     // Verify the workspace exists and user has access
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-    });
+    const workspace = await findWorkspaceForUser(req.user, workspaceId);
 
-    if (!workspace) {
+    if (!workspace || !isWorkspaceVisibleToUser(workspace, req.user.id)) {
+      return res.status(404).json({ error: 'Workspace not found.' });
+    }
+
+    // A personal workspace belongs to the user, so there is no tenant to switch to.
+    if (workspace.tenantId === req.user.id) {
+      return res.json({ message: 'Current workspace updated.' });
+    }
+
+    const membership = await prisma.tenantMembership.findFirst({
+      where: { tenantId: workspace.tenantId, userId: req.user.id, status: 'active' },
+    });
+    if (!membership) {
       return res.status(404).json({ error: 'Workspace not found.' });
     }
 
@@ -136,7 +191,7 @@ router.delete('/:workspaceId', requireAuth, resolveTenantContext, requirePermiss
     return res.status(400).json({ error: 'Workspace id is required.' });
   }
 
-  const row = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+  const row = await tenantPrisma.workspace.findUnique({ where: { id: workspaceId } });
   if (!row) {
     return res.status(404).json({ error: 'Workspace not found.' });
   }
@@ -155,10 +210,10 @@ router.delete('/:workspaceId', requireAuth, resolveTenantContext, requirePermiss
   }
 
   try {
-    await prisma.$transaction([
+    await tenantPrisma.$transaction([
       // The workspace's top-level chapters join the tenant's no-workspace chapters; shift
       // them so they keep their order and sit above the existing ones. Subtrees move intact.
-      prisma.$executeRaw`
+      tenantPrisma.$executeRaw`
         UPDATE documents
         SET "sortOrder" = "sortOrder"
           - (SELECT COALESCE(MAX("sortOrder"), 0) FROM documents
@@ -168,14 +223,14 @@ router.delete('/:workspaceId', requireAuth, resolveTenantContext, requirePermiss
           - 1
         WHERE "tenantId" = ${req.tenant.id} AND "workspaceId" = ${workspaceId} AND "parentId" IS NULL
       `,
-      prisma.document.updateMany({
+      tenantPrisma.document.updateMany({
         where: {
           workspaceId,
           tenantId: req.tenant.id,
         },
         data: { workspaceId: null },
       }),
-      prisma.workspace.delete({ where: { id: workspaceId } }),
+      tenantPrisma.workspace.delete({ where: { id: workspaceId } }),
     ]);
   } catch {
     return res.status(500).json({ error: 'Failed to delete workspace.' });

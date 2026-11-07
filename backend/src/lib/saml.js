@@ -139,14 +139,8 @@ function extractUserInfo(samlProfile) {
   };
 }
 
-function clearSamlCache(providerId) {
-  samlInstances.delete(providerId);
-}
-
 module.exports = {
   generateSamlAuthRequest,
   validateSamlResponse,
   extractUserInfo,
-  clearSamlCache,
-  getSamlInstance,
 };

@@ -5,10 +5,6 @@ const { isDatabaseConfigured, normalizeSession, getRequestIp } = require('../../
 
 const JWT_SECRET = process.env.JWT_SECRET || 'docsync_dev_secret_change_in_production';
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
-const SESSION_ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
-const TENANT_SECURITY_CACHE_TTL_MS = Number(process.env.TENANT_SECURITY_CACHE_TTL_MS || 5000);
-
-const tenantSecurityCache = new Map();
 
 function parseDurationToMs(input, fallbackMs) {
   const raw = String(input || '').trim().toLowerCase();
@@ -36,7 +32,6 @@ function parseDurationToMs(input, fallbackMs) {
 }
 
 const ACCESS_TOKEN_TTL_MS = parseDurationToMs(ACCESS_TOKEN_TTL, 15 * 60 * 1000);
-const INACTIVITY_TTL_MS = 30 * 60 * 1000; // Session expires after 30 min of UI inactivity
 const REFRESH_COOKIE = 'docsync_refresh';
 const CSRF_COOKIE = 'docsync_csrf';
 const ADMIN_REFRESH_COOKIE = 'docsync_admin_refresh';
@@ -86,25 +81,6 @@ function getCsrfCookieOptions(expiresAt, crossSite = false) {
     path: '/',
     expires: new Date(expiresAt),
   };
-}
-
-function getCachedTenantSecurityState(tenantId) {
-  if (!tenantId) return null;
-  const cached = tenantSecurityCache.get(tenantId);
-  if (!cached) return null;
-  if (cached.expiresAt <= Date.now()) {
-    tenantSecurityCache.delete(tenantId);
-    return null;
-  }
-  return cached.value;
-}
-
-function setCachedTenantSecurityState(tenantId, value) {
-  if (!tenantId) return;
-  tenantSecurityCache.set(tenantId, {
-    value,
-    expiresAt: Date.now() + TENANT_SECURITY_CACHE_TTL_MS,
-  });
 }
 
 function signAccessToken(user, sessionId) {
@@ -268,6 +244,5 @@ module.exports = {
   signAccessToken,
   signTwoFactorToken,
   verifyTwoFactorToken,
-  resolveUserFromSession,
   requireAuth,
 };

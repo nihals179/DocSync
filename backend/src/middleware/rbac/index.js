@@ -1,4 +1,5 @@
 const { prisma } = require('../../db/client');
+const { getTenantClient, runWithTenantClient } = require('../../db/tenant-client');
 
 const MEMBER_PERMISSIONS = new Set([
   'tenant.read',
@@ -98,7 +99,13 @@ async function resolveTenantContext(req, res, next) {
   if (!tenant) return res.status(404).json({ error: 'Tenant not found.' });
   req.tenant = tenant;
   req.membership = resolvedMembership;
-  next();
+  try {
+    req.tenantDb = await getTenantClient(tenant);
+  } catch (error) {
+    console.error(`Failed to connect tenant database for ${tenant.id}:`, error);
+    return res.status(503).json({ error: 'Tenant database is temporarily unavailable.' });
+  }
+  return runWithTenantClient(req.tenantDb, next);
 }
 
 function hasPermission(membership, permission) {

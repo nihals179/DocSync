@@ -1,8 +1,6 @@
 const {
   getTenantEntitlements,
   isBillingWriteBlocked,
-  refreshBillingStatus,
-  getTenantEntitlement,
 } = require('../../store');
 
 function ensureTenantContext(req, res) {

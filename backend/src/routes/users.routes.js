@@ -2,7 +2,6 @@ const express = require('express');
 const { prisma } = require('../db/client');
 const { requireAuth } = require('../middleware/auth/core');
 const { writeAuditLog } = require('../lib/audit');
-const { getRequestIp, getUserAgent } = require('../middleware/auth');
 
 const router = express.Router();
 
