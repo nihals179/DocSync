@@ -1,11 +1,11 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { prisma } = require('../db/client');
+const { disconnectTenantClient } = require('../db/tenant-client');
+const { provisionDedicatedTenantDatabase } = require('../db/tenant-provisioning');
 
 const {
   canAssignResources,
-  ensureWorkspaceForUserProvisioned,
-  getTenantBillingState,
   getTenantEntitlements,
   getProfileTable,
 } = require('../store');
@@ -140,6 +140,61 @@ router.post('/switch', requireAuth, async (req, res) => {
 
 router.get('/current', requireAuth, resolveTenantContext, requirePermission('tenant.read'), (req, res) => {
   res.json({ tenant: req.tenant, membership: req.membership });
+});
+
+/**
+ * PATCH /api/tenants/current/database
+ * Enables or disables tenant database isolation.
+ * Body: { mode: 'shared' | 'dedicated' }
+ */
+router.patch('/current/database', requireAuth, resolveTenantContext, requirePermission('tenant.member.manage'), async (req, res) => {
+  const mode = String(req.body?.mode || '').trim().toLowerCase();
+  if (!['shared', 'dedicated'].includes(mode)) {
+    return res.status(400).json({ error: 'Database mode must be shared or dedicated.' });
+  }
+
+  if (mode === 'shared') {
+    await disconnectTenantClient(req.tenant.id);
+    const tenant = await prisma.tenant.update({
+      where: { id: req.tenant.id },
+      data: { databaseMode: 'shared', databaseStatus: 'shared', databaseSecretName: null },
+    });
+    return res.json({ tenant: { id: tenant.id, databaseMode: tenant.databaseMode, databaseStatus: tenant.databaseStatus } });
+  }
+
+  if (req.tenant.databaseStatus === 'provisioning') {
+    return res.status(202).json({
+      tenant: { id: req.tenant.id, databaseMode: req.tenant.databaseMode, databaseStatus: 'provisioning' },
+      message: 'Dedicated database provisioning is already in progress.',
+    });
+  }
+
+  if (req.tenant.databaseMode === 'dedicated' && req.tenant.databaseStatus === 'active') {
+    return res.json({
+      tenant: { id: req.tenant.id, databaseMode: 'dedicated', databaseStatus: 'active' },
+      message: 'Dedicated database is already active.',
+    });
+  }
+
+  await prisma.tenant.update({
+    where: { id: req.tenant.id },
+    data: { databaseMode: 'dedicated', databaseStatus: 'provisioning', databaseSecretName: null },
+  });
+
+  // Database creation, migration, data copy, and Key Vault writes can take minutes.
+  // Do not hold the request open or expose the administrative connection string.
+  void provisionDedicatedTenantDatabase(req.tenant.id).catch(async (error) => {
+    console.error(`Failed to provision dedicated database for tenant ${req.tenant.id}:`, error);
+    await prisma.tenant.update({
+      where: { id: req.tenant.id },
+      data: { databaseStatus: 'failed' },
+    }).catch((updateError) => console.error('Failed to record provisioning failure:', updateError));
+  });
+
+  return res.status(202).json({
+    tenant: { id: req.tenant.id, databaseMode: 'dedicated', databaseStatus: 'provisioning' },
+    message: 'Dedicated database provisioning started.',
+  });
 });
 
 // Renames the active organization. Owner-only, since requirePermission('tenant.member.manage') only admits the owner.
@@ -303,15 +358,6 @@ router.post('/invites/accept', async (req, res) => {
           email: true,
         },
       },
-      acceptedByUser: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          emailVerified: true,
-          createdAt: true,
-        },
-      },
     },
   });
   if (!invite || invite.status !== 'pending') {
@@ -394,6 +440,13 @@ router.post('/invites/accept', async (req, res) => {
 
 
 
+  // Invites can be for emails without an account yet, so look the user up by email
+  // rather than through a foreign key on tenant_invites.email.
+  const acceptedUser = await prisma.user.findUnique({
+    where: { email: invite.email },
+    select: { id: true, name: true, email: true, emailVerified: true, createdAt: true },
+  });
+
   res.json({
     message: 'Invite accepted successfully.',
     tenantId: invite.tenantId,
@@ -404,12 +457,12 @@ router.post('/invites/accept', async (req, res) => {
       name: invite.invitedByUser.name,
       email: invite.invitedByUser.email,
     } : null,
-    invitedUser: invite.acceptedByUser ? {
-      id: invite.acceptedByUser.id,
-      name: invite.acceptedByUser.name,
-      email: invite.acceptedByUser.email,
-      emailVerified: invite.acceptedByUser.emailVerified,
-      createdAt: invite.acceptedByUser.createdAt,
+    invitedUser: acceptedUser ? {
+      id: acceptedUser.id,
+      name: acceptedUser.name,
+      email: acceptedUser.email,
+      emailVerified: acceptedUser.emailVerified,
+      createdAt: acceptedUser.createdAt,
     } : null,
   });
 });

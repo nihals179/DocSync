@@ -168,6 +168,9 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
   const [signInChoice, setSignInChoice] = useState('');
   const [tenantNameText, setTenantNameText] = useState('');
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>(EMPTY_PROVIDER);
+  const [databaseMode, setDatabaseMode] = useState<'shared' | 'dedicated'>('shared');
+  const [databaseStatus, setDatabaseStatus] = useState('shared');
+  const [databaseSaving, setDatabaseSaving] = useState(false);
   const [simulateEmail, setSimulateEmail] = useState('');
   const [simulateDetails, setSimulateDetails] = useState<Awaited<ReturnType<typeof tenantsApi.simulateSsoLogin>> | null>(null);
 
@@ -268,6 +271,23 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
   );
 
   const isTenantOwner = Boolean(membership && activeTenant && membership.userId === activeTenant.ownerUserId);
+
+  useEffect(() => {
+    setDatabaseMode(activeTenant?.databaseMode === 'dedicated' ? 'dedicated' : 'shared');
+    setDatabaseStatus(activeTenant?.databaseStatus || 'shared');
+  }, [activeTenant]);
+
+  useEffect(() => {
+    if (!token || activeTenant?.databaseStatus !== 'provisioning') return undefined;
+    const timer = window.setInterval(() => {
+      void tenantsApi.mine(token).then(({ tenants: nextTenants }) => {
+        setTenants(nextTenants);
+      }).catch(() => {
+        // The next polling cycle can recover from a transient request failure.
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activeTenant?.databaseStatus, token]);
 
   // Providers an organization's sign-in address can use: enabled OIDC or SAML.
   const signInOptions = (security?.ssoProviders ?? []).filter(
@@ -796,6 +816,35 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
       setError(err instanceof Error ? err.message : 'Failed to delete workspace.');
     } finally {
       setDeletingWorkspaceId(null);
+    }
+  }
+
+  async function saveDatabaseConfiguration() {
+    setMessage('');
+    setError('');
+    if (!isTenantOwner) {
+      setError('Only the tenant owner can change database isolation.');
+      return;
+    }
+    setDatabaseSaving(true);
+    try {
+      const result = await tenantsApi.updateDatabase(token, {
+        mode: databaseMode,
+      });
+      setDatabaseStatus(result.tenant.databaseStatus || databaseMode);
+      setMessage(databaseMode === 'dedicated'
+        ? 'Dedicated database provisioning started. This page will show the result when it is ready.'
+        : 'Tenant returned to shared database storage.');
+      const updatedTenant = result.tenant;
+      setTenants((prev) => prev.map((tenant) => (
+        tenant.id === updatedTenant.id
+          ? { ...tenant, databaseMode: updatedTenant.databaseMode, databaseStatus: updatedTenant.databaseStatus }
+          : tenant
+      )));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update database isolation.');
+    } finally {
+      setDatabaseSaving(false);
     }
   }
 
@@ -1836,6 +1885,68 @@ export default function TenantAdminPage({ token, userName, onAdminLogout }: Tena
                         Add support here for S3, SharePoint, or on-prem file repositories if you want external repository connectors.
                       </p>
                     </div>
+                  </div>
+                )}
+
+                {activeView === 'enterpriseSecurity' && (
+                  <div className="space-y-4 p-6">
+                    <section className="rounded-none border border-slate-200 bg-white p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Tenant data plane</p>
+                          <h3 className="mt-1 text-lg font-black text-slate-900">Database isolation</h3>
+                          <p className="mt-2 max-w-2xl text-sm text-slate-600">
+                            Use a dedicated PostgreSQL database to isolate this tenant&apos;s documents and improve workload consistency. Identity, membership, billing, and tenant metadata remain in the shared control database.
+                          </p>
+                        </div>
+                        <span className={`rounded-none px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+                          databaseStatus === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          {databaseStatus}
+                        </span>
+                      </div>
+
+                      {!isTenantOwner ? (
+                        <div className="mt-5 border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                          Only the tenant owner can change database isolation settings.
+                        </div>
+                      ) : null}
+
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <label className="text-sm font-semibold text-slate-700">
+                          Storage mode
+                          <select
+                            value={databaseMode}
+                            disabled={!isTenantOwner || databaseSaving}
+                            onChange={(event) => setDatabaseMode(event.target.value as 'shared' | 'dedicated')}
+                            className="mt-1 w-full rounded-none border border-slate-200 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-cyan-500 disabled:bg-slate-100"
+                          >
+                            <option value="shared">Shared database</option>
+                            <option value="dedicated">Dedicated database</option>
+                          </select>
+                        </label>
+
+                        <div className="text-sm text-slate-600">
+                          <span className="font-semibold text-slate-700">Provisioning</span>
+                          <p className="mt-1 text-xs leading-5">The backend creates the database, deploys the schema, copies this tenant&apos;s data, and stores the generated connection secret in Azure Key Vault.</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+                        Dedicated provisioning can take several minutes. The tenant remains on the shared database until the schema, data copy, connection secret, and connectivity checks have completed successfully.
+                      </div>
+
+                      <div className="mt-5 flex justify-end">
+                        <button
+                          type="button"
+                          disabled={!isTenantOwner || databaseSaving}
+                          onClick={() => void saveDatabaseConfiguration()}
+                          className="rounded-none bg-cyan-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          {databaseSaving ? 'Starting...' : 'Save database configuration'}
+                        </button>
+                      </div>
+                    </section>
                   </div>
                 )}
               </>

@@ -3,7 +3,7 @@ const { prisma } = require('../db/client');
 
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
-const { cloneTemplates, readTemplateCache, writeTemplateCache } = require('../middleware/templates');
+const { readTemplateCache, writeTemplateCache } = require('../middleware/templates');
 
 const router = express.Router();
 

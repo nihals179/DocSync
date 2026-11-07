@@ -176,10 +176,8 @@ async function sendInviteEmail(email, inviterName, tenantName, acceptLink, expir
 }
 
 module.exports = {
-  sendEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendInviteEmail,
-  emailClient,
 };

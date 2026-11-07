@@ -1,6 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { prisma } = require('../db/client');
+const { basePrisma } = require('../db/client');
+const { tenantPrisma: prisma } = require('../db/tenant-client');
 
 const { requireAuth } = require('../middleware/auth/core');
 const { requirePermission, resolveTenantContext } = require('../middleware/rbac');
@@ -57,7 +58,7 @@ router.get('/', requireAuth, resolveTenantContext, requirePermission('document.c
 
   const userIds = [...new Set(rows.map((row) => row.userId))];
   const users = userIds.length
-    ? await prisma.user.findMany({
+    ? await basePrisma.user.findMany({
       where: { id: { in: userIds } },
       select: { id: true, name: true },
     })

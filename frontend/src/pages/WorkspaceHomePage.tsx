@@ -861,6 +861,7 @@ export default function WorkspaceHomePage({
                     value={selectedWorkspaceId}
                     options={workspaceOptions}
                     onChange={async (nextValue) => {
+                      const previousValue = selectedWorkspaceIdRef.current;
                       selectedWorkspaceIdRef.current = nextValue;
                       setSelectedWorkspaceId(nextValue);
 
@@ -869,6 +870,12 @@ export default function WorkspaceHomePage({
                         await workspaceApi.setCurrent(token, nextValue);
                       } catch (err) {
                         console.error('Failed to update current workspace:', err);
+                        setError(err instanceof Error ? err.message : 'Failed to switch workspace');
+                        // Leave a newer selection alone if the user has already moved on.
+                        if (selectedWorkspaceIdRef.current === nextValue) {
+                          selectedWorkspaceIdRef.current = previousValue;
+                          setSelectedWorkspaceId(previousValue);
+                        }
                       }
                     }}
                     placeholder="Select workspace"

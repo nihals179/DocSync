@@ -66,7 +66,6 @@ model User {
   userUsage           UserUsage[]
   authSessions        AuthSession[]
   invitesSent         tenantsInvite[]    @relation("InvitedByUser")
-  invitesAccepted     tenantsInvite[]    @relation("AcceptedByUser")
   auditLogs           AuditLog[]         @relation("AuditLogs")
 
   @@map("users")
@@ -77,6 +76,9 @@ model Tenant {
   name           String
   ownerUserId    String
   ownerEmail     String?
+  databaseMode   String                @default("shared")
+  databaseStatus String                @default("shared")
+  databaseSecretName String?
   memberships    tenantMembership[]
   currentUsers   User[]                @relation("UserCurrentTenant")
   billing        tenantBilling?
@@ -169,7 +171,6 @@ model tenantsInvite {
   status          String
   invitedByUserId String?
   invitedByUser   User?     @relation("InvitedByUser", fields: [invitedByUserId], references: [id], onDelete: SetNull)
-  acceptedByUser  User?     @relation("AcceptedByUser", fields: [email], references: [email], onDelete: Cascade)
   inviteLink      String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -414,8 +415,8 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([ownerId])
-  @@index([tenantId])
+  @@index([ownerId, updatedAt])
+  @@index([tenantId, updatedAt])
   @@map("workspaces")
 }
 

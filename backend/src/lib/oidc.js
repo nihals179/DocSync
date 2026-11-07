@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { Issuer, generators } = require('openid-client');
 
 const oidcClientCache = new Map();
@@ -71,20 +70,6 @@ async function getUserInfoFromToken(provider, tokenSet) {
   } catch (error) {
     throw new Error('Failed to retrieve user information');
   }
-}
-
-async function verifyIdToken(provider, tokenSet) {
-  const client = await getOidcClient(provider);
-  try {
-    const claims = tokenSet.claims();
-    return claims;
-  } catch (error) {
-    throw new Error('Token verification failed');
-  }
-}
-
-function clearOidcClientCache(providerId) {
-  oidcClientCache.delete(providerId);
 }
 
 // Microsoft authorities that accept accounts from many directories. For these, the ID token's `tid`
@@ -230,9 +215,6 @@ module.exports = {
   getTenantLoginConfig,
   beginLogin,
   completeLogin,
-  getOidcClient,
   exchangeCodeForToken,
   getUserInfoFromToken,
-  verifyIdToken,
-  clearOidcClientCache,
 };

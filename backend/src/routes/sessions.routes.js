@@ -6,12 +6,10 @@ const {
   getAuthScope,
   resolveCookieNames,
   requireAuth,
-  resolveUserFromSession,
 } = require('../middleware/auth/core');
 const {
   getRequestIp,
   getUserAgent,
-  isTenantIpAllowedForUser,
   ensureUserShape,
   publicUser,
   clearAuthCookies,

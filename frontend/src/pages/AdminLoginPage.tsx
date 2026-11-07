@@ -6,6 +6,28 @@ interface AdminLoginPageProps {
   onAuthSuccess: (session: AuthSuccess) => void;
 }
 
+function GoogleLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" role="img">
+      <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.55-.2-2.27H12v4.3h6.45a5.51 5.51 0 0 1-2.39 3.61v3h3.87c2.27-2.09 3.56-5.17 3.56-8.64Z" />
+      <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.95-2.9l-3.87-3c-1.07.72-2.44 1.15-4.08 1.15-3.13 0-5.78-2.11-6.73-4.95H1.27v3.09A12 12 0 0 0 12 24Z" />
+      <path fill="#FBBC05" d="M5.27 14.3A7.2 7.2 0 0 1 4.9 12c0-.8.14-1.58.37-2.3V6.61H1.27A12 12 0 0 0 0 12c0 1.94.46 3.78 1.27 5.39l4-3.09Z" />
+      <path fill="#EA4335" d="M12 4.75c1.77 0 3.36.61 4.61 1.81l3.45-3.45C17.95 1.06 15.24 0 12 0A12 12 0 0 0 1.27 6.61l4 3.09C6.22 6.86 8.87 4.75 12 4.75Z" />
+    </svg>
+  );
+}
+
+function MicrosoftLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" role="img">
+      <path fill="#F35325" d="M1 1h10.5v10.5H1z" />
+      <path fill="#81BC06" d="M12.5 1H23v10.5H12.5z" />
+      <path fill="#05A6F0" d="M1 12.5h10.5V23H1z" />
+      <path fill="#FFBA08" d="M12.5 12.5H23V23H12.5z" />
+    </svg>
+  );
+}
+
 export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -141,6 +163,27 @@ export default function AdminLoginPage({ onAuthSuccess }: AdminLoginPageProps) {
               ) : 'Sign in to Admin Portal'}
             </button>
           </form>
+
+          <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />
+            <span>or continue with SSO</span>
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {(['google', 'microsoft'] as const).map((provider) => (
+              <button
+                key={provider}
+                type="button"
+                disabled={loading}
+                onClick={() => { window.location.href = `/api/auth/sso/login/${provider}?scope=admin`; }}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold capitalize text-slate-700 transition hover:border-cyan-400 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {provider === 'google' ? <GoogleLogo /> : <MicrosoftLogo />}
+                {provider === 'google' ? 'Google' : 'Microsoft'}
+              </button>
+            ))}
+          </div>
 
           <p className="mt-6 text-center text-xs text-slate-400">
             This portal is not accessible from the regular workspace menu.

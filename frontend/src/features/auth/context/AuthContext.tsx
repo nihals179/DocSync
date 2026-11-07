@@ -228,7 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (auth: Session) => {
       applySession(auth);
       if (auth.mfaSetupRequired) {
-        navigate('/security?setupMfa=1', { replace: true });
+        navigate('/settings?view=security&setupMfa=1', { replace: true });
         return;
       }
 

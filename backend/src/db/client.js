@@ -25,6 +25,8 @@ if (explicitDatabaseUrl) {
   process.env.DATABASE_URL = resolveDatabaseUrlFromEnvSwitch();
 }
 
+const resolvedDatabaseUrl = sanitizeDatabaseUrl(process.env.DATABASE_URL);
+
 const { PrismaClient } = require('@prisma/client');
 
 const globalRef = global;
@@ -38,5 +40,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = {
+  basePrisma: prisma,
+  databaseUrl: resolvedDatabaseUrl,
   prisma,
 };

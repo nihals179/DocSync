@@ -1,4 +1,4 @@
-const { prisma } = require('../../db/client');
+const { tenantPrisma: prisma } = require('../../db/tenant-client');
 
 function parseSavedAtMs(savedAt) {
   const ts = Date.parse(String(savedAt || ''));

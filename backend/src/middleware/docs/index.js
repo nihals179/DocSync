@@ -1,4 +1,4 @@
-const { prisma } = require('../../db/client');
+const { tenantPrisma: prisma } = require('../../db/tenant-client');
 
 const PREVIEW_LENGTH = 100;
 // Raw HTML spends most of its first characters on tags and inline styles, so the list
@@ -77,9 +77,7 @@ async function listDocSummaries(tenantId) {
 
 module.exports = {
   bytes,
-  buildPreview,
   formatDoc,
-  formatDocSummary,
   listDocSummaries,
   toIso,
 };

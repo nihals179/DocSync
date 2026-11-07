@@ -847,13 +847,18 @@ router.get('/sso/login/:provider', authRateLimit, async (req, res) => {
   const config = getPlatformConfig(String(req.params.provider || '').toLowerCase());
   if (!config) return res.redirect(`${frontendUrl}/auth?sso_error=${encodeURIComponent('Unknown sign-in provider.')}`);
 
+  const isAdminLogin = String(req.query?.scope || '').toLowerCase() === 'admin';
+  const callbackPath = isAdminLogin ? '/admin/auth/callback' : '/auth/callback';
+  const failurePath = isAdminLogin ? '/admin' : '/auth';
+
   try {
-    const { authorizationUrl, txn } = await beginLogin(config, `${frontendUrl}/auth/callback`);
+    const { authorizationUrl, txn } = await beginLogin(config, `${frontendUrl}${callbackPath}`);
+    if (isAdminLogin) txn.authScope = 'admin';
     setSsoTxn(res, txn);
     return res.redirect(authorizationUrl);
   } catch (error) {
     console.error('[SSO] Could not start platform login:', error.message);
-    return res.redirect(`${frontendUrl}/auth?sso_error=${encodeURIComponent('Sign-in with this provider is not available.')}`);
+    return res.redirect(`${frontendUrl}${failurePath}?sso_error=${encodeURIComponent('Sign-in with this provider is not available.')}`);
   }
 });
 
@@ -897,6 +902,23 @@ async function finishSsoLogin(req, res, { tenant, userInfo, providerName }) {
     console.error('[SSO] syncCurrentTenantFromMembership returned null for user:', normalizedEmail);
     audit(req, 'sso-exchange', 'failure', null, { reason: 'sync-tenant-failed' });
     return res.status(500).json({ error: 'Failed to sync tenant membership. Please try again.' });
+  }
+
+  if (getAuthScope(req) === 'admin') {
+    const membership = user.currentTenantId
+      ? await prisma.tenantMembership.findFirst({
+        where: { tenantId: user.currentTenantId, userId: user.id, status: 'active' },
+        select: { role: true },
+      })
+      : null;
+    const hasAdminAccess = user.role === 'admin'
+      || user.role === 'owner'
+      || membership?.role === 'admin'
+      || membership?.role === 'owner';
+    if (!hasAdminAccess) {
+      audit(req, 'sso-admin-access', 'failure', user.id, { reason: 'insufficient-role' });
+      return res.status(403).json({ error: 'Access denied. This portal is restricted to admin and owner accounts only.' });
+    }
   }
 
   if (!await isTenantIpAllowedForUser(req, user)) {
